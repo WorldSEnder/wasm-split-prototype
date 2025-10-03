@@ -20,6 +20,7 @@ struct Cli {
 
 mod dep_graph;
 mod emit;
+mod range_map;
 mod read;
 mod split_point;
 
