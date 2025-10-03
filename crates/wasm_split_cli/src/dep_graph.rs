@@ -1,69 +1,139 @@
 use std::{
-    cmp::Ordering,
     collections::{HashMap, HashSet},
     fmt::Debug,
     ops::Range,
 };
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{bail, Context};
+use wasmparser::RelocationEntry;
 
-use crate::read::{InputFuncId, InputModule, SymbolIndex};
+use crate::{
+    read::{GlobalId, InputFuncId, InputModule, MemoryId, SymbolIndex, TableId, TagId},
+    reloc::RelocVisitor,
+};
 
 #[derive(Debug, PartialEq, Eq, Hash, Copy, PartialOrd, Ord, Clone)]
 pub enum DepNode {
     Function(InputFuncId),
     DataSymbol(SymbolIndex),
+    Global(GlobalId),
+    Table(TableId),
+    Tag(TagId),
+    Memory(MemoryId),
 }
 
 pub type DepGraph = HashMap<DepNode, HashSet<DepNode>>;
 
-pub trait SymbolTable {
-    fn get_symbol_dep_node(&self, symbol_index: SymbolIndex) -> Option<DepNode>;
+struct DepRelocVisitor(u32);
+impl RelocVisitor for DepRelocVisitor {
+    type Result = anyhow::Result<Option<DepNode>>;
+    fn visit_type_index(self, _: usize, _: &wasmparser::SymbolInfo<'_>) -> Self::Result {
+        Ok(None)
+    }
+    fn visit_memory_addr(
+        self,
+        _symbol_index: usize,
+        _flags: wasmparser::SymbolFlags,
+        _: &str,
+        _: Option<&wasmparser::DefinedDataSymbol>,
+    ) -> Self::Result {
+        Ok(Some(DepNode::DataSymbol(self.0 as usize)))
+    }
+    fn visit_table_index(
+        self,
+        _symbol_index: usize,
+        _flags: wasmparser::SymbolFlags,
+        index: InputFuncId,
+        _name: Option<&str>,
+    ) -> Self::Result {
+        // If an instruction takes the "address" of a function, that function needs to be loaded too.
+        Ok(Some(DepNode::Function(index)))
+    }
+    fn visit_rel_table_index(
+        self,
+        _symbol_index: usize,
+        _flags: wasmparser::SymbolFlags,
+        index: InputFuncId,
+        _name: Option<&str>,
+    ) -> Self::Result {
+        Ok(Some(DepNode::Function(index)))
+    }
+    fn visit_function_index(
+        self,
+        _symbol_index: usize,
+        _flags: wasmparser::SymbolFlags,
+        index: InputFuncId,
+        _name: Option<&str>,
+    ) -> Self::Result {
+        Ok(Some(DepNode::Function(index)))
+    }
+    fn visit_table_number(
+        self,
+        _symbol_index: usize,
+        _flags: wasmparser::SymbolFlags,
+        index: TableId,
+        _name: Option<&str>,
+    ) -> Self::Result {
+        Ok(Some(DepNode::Table(index)))
+    }
+    fn visit_global_index(
+        self,
+        _symbol_index: usize,
+        _flags: wasmparser::SymbolFlags,
+        index: GlobalId,
+        _name: Option<&str>,
+    ) -> Self::Result {
+        Ok(Some(DepNode::Global(index)))
+    }
+    fn visit_tag_index(
+        self,
+        _symbol_index: usize,
+        _flags: wasmparser::SymbolFlags,
+        index: TagId,
+        _name: Option<&str>,
+    ) -> Self::Result {
+        Ok(Some(DepNode::Tag(index)))
+    }
 }
 
-impl<'a> SymbolTable for InputModule<'a> {
-    fn get_symbol_dep_node(&self, symbol_index: SymbolIndex) -> Option<DepNode> {
-        match self.symbols[symbol_index] {
-            wasmparser::SymbolInfo::Func { index, .. } => {
-                Some(DepNode::Function(index as InputFuncId))
-            }
-            wasmparser::SymbolInfo::Data { .. } => Some(DepNode::DataSymbol(symbol_index)),
-            _ => None,
-        }
-    }
+fn shift_range(range: Range<usize>, offset: usize) -> Range<usize> {
+    (range.start + offset)..(range.end + offset)
 }
 
 pub fn get_dependencies(module: &InputModule) -> anyhow::Result<DepGraph> {
     let mut deps = DepGraph::new();
-    let mut add_dep = |a: DepNode, b: u32| {
-        if let Some(target) = module.get_symbol_dep_node(b as usize) {
+    let mut add_dep = |a: DepNode, relocation: &RelocationEntry| -> Result<(), anyhow::Error> {
+        let target = module
+            .reloc_info
+            .visit_relocation(relocation, DepRelocVisitor(relocation.index))?;
+        if let Some(target) = target {
             deps.entry(a).or_default().insert(target);
         };
+        Ok(())
     };
 
-    let shift_range =
-        |range: Range<usize>, offset: usize| (range.start + offset)..(range.end + offset);
-
-    if let Some(relocs) = module.relocs.get(&module.code_section_index) {
-        for entry in relocs {
-            let func_index = find_function_containing_range(
-                module,
-                shift_range(entry.relocation_range(), module.code_section_offset),
-            )
-            .with_context(|| format!("Invalid relocation entry {entry:?}"))?;
-            add_dep(DepNode::Function(func_index), entry.index);
-        }
+    for entry in module.reloc_info.iter_code_relocs() {
+        let func_index = find_function_containing_range(
+            module,
+            shift_range(
+                entry.relocation_range(),
+                module.reloc_info.code_section_offset(),
+            ),
+        )
+        .with_context(|| format!("Invalid relocation entry {entry:?}"))?;
+        add_dep(DepNode::Function(func_index), entry)?;
     }
 
-    if let Some(relocs) = module.relocs.get(&module.data_section_index) {
-        for entry in relocs {
-            let symbol_index = find_data_symbol_containing_range(
-                module,
-                shift_range(entry.relocation_range(), module.data_section_offset),
-            )
-            .with_context(|| format!("Invalid relocation entry {entry:?}"))?;
-            add_dep(DepNode::DataSymbol(symbol_index), entry.index);
-        }
+    for entry in module.reloc_info.iter_data_relocs() {
+        let symbol_index = find_data_symbol_containing_range(
+            module,
+            shift_range(
+                entry.relocation_range(),
+                module.reloc_info.data_section_offset(),
+            ),
+        )
+        .with_context(|| format!("Invalid relocation entry {entry:?}"))?;
+        add_dep(DepNode::DataSymbol(symbol_index), entry)?;
     }
     Ok(deps)
 }
@@ -83,11 +153,11 @@ fn find_data_symbol_containing_range(
     module: &crate::read::InputModule,
     range: Range<usize>,
 ) -> anyhow::Result<usize> {
-    let index = find_by_range(&module.data_symbols, &range, |data_symbol| {
+    let index = find_by_range(&module.reloc_info.data_symbols, &range, |data_symbol| {
         data_symbol.range.clone()
     })
     .with_context(|| format!("No match for data relocation range {range:?}"))?;
-    Ok(module.data_symbols[index].symbol_index)
+    Ok(module.reloc_info.data_symbols[index].symbol_index)
 }
 
 fn find_by_range<T: Debug, U: Debug + Ord, F: Fn(&T) -> Range<U>>(
@@ -95,29 +165,13 @@ fn find_by_range<T: Debug, U: Debug + Ord, F: Fn(&T) -> Range<U>>(
     range: &Range<U>,
     get_range: F,
 ) -> anyhow::Result<usize> {
-    let index = items
-        .binary_search_by(|item| {
-            let item_range = get_range(item);
-            if item_range.end <= range.start {
-                Ordering::Less
-            } else if item_range.start <= range.start {
-                Ordering::Equal
-            } else {
-                Ordering::Greater
-            }
-        })
-        .or_else(|index| {
-            bail!(
-                "Prev range is: {:?}, next range is: {:?}",
-                items.get(index - 1).map(|item| (item, get_range(item))),
-                items.get(index).map(|item| (item, get_range(item)))
-            )
-        })?;
-    if range.end > get_range(&items[index]).end {
+    let matching_range = super::util::find_by_range(items, range, &get_range);
+    let index = matching_range.start;
+    if matching_range.is_empty() {
         bail!(
-            "Item {:?} has incompatible range {:?}",
-            items[index],
-            get_range(&items[index])
+            "Prev range is: {:?}, next range is: {:?}",
+            items.get(index - 1).map(|item| (item, get_range(item))),
+            items.get(index).map(|item| (item, get_range(item)))
         )
     }
     Ok(index)

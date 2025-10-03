@@ -20,13 +20,20 @@ struct Cli {
 
 mod dep_graph;
 mod emit;
+mod range_map;
 mod read;
+mod reloc;
 mod split_point;
+mod util;
 
 fn main() -> Result<()> {
     let args = Cli::parse();
     let input_wasm = std::fs::read(&args.input)?;
     let module = crate::read::InputModule::parse(&input_wasm)?;
+    if args.verbose {
+        module.reloc_info.print_relocs();
+    }
+
     let dep_graph = dep_graph::get_dependencies(&module)?;
     let split_points = split_point::get_split_points(&module)?;
     let split_program_info =
@@ -38,97 +45,105 @@ fn main() -> Result<()> {
         }
     }
 
-    crate::emit::emit_modules(
-        &module,
-        &split_program_info,
-        &|output_module_index: usize, data: &[u8]| -> Result<()> {
-            let identifier = &split_program_info.output_modules[output_module_index].0;
-            let output_filename = identifier.name() + ".wasm";
-            let output_path = args.output.join(output_filename);
-            std::fs::create_dir_all(&args.output)?;
-            std::fs::write(output_path, data)?;
-            Ok(())
-        },
-    )?;
+    let emit_fn = |output_module_index: usize, data: &[u8]| -> Result<()> {
+        let identifier = &split_program_info.output_modules[output_module_index].0;
+        let output_filename = identifier.filename(output_module_index) + ".wasm";
+        let output_path = args.output.join(output_filename);
+        std::fs::create_dir_all(&args.output)?;
+        std::fs::write(output_path, data)?;
+        Ok(())
+    };
+    crate::emit::emit_modules(&module, &split_program_info, emit_fn)?;
 
     let mut javascript = String::new();
     javascript.push_str(
         r#"import { initSync } from "./main.js";
-function makeLoad(url, deps) {
-  let alreadyLoaded = false;
+let sharedImports = undefined;
+function getSharedImports() {
+  if (sharedImports === undefined) {
+    const mainExports = initSync(undefined, undefined);
+    sharedImports = {
+      __wasm_split: {
+        __indirect_function_table: mainExports.__indirect_function_table,
+        __stack_pointer: mainExports.__stack_pointer,
+        __tls_base: mainExports.__tls_base,
+        memory: mainExports.memory,
+      },
+    };
+  }
+  return sharedImports;
+}
+function wrapAsyncCb(callee) {
   return async(callbackIndex, callbackData) => {
-    if (alreadyLoaded) return;
-    for (let dep of deps) {
-      await dep();
+    try {
+      await callee();
+      const sharedImports = getSharedImports();
+      sharedImports.__wasm_split.__indirect_function_table.get(callbackIndex)(
+        callbackData,
+        true,
+      );
+    } catch (e) {
+      console.error(e);
+      const sharedImports = getSharedImports();
+      sharedImports.__wasm_split.__indirect_function_table.get(callbackIndex)(
+        callbackData,
+        false,
+      );
     }
-    let mainExports = undefined;
-      try {
-        const response = await fetch(url);
-        mainExports = initSync(undefined, undefined);
-        const imports = {
-          env: {
-            memory: mainExports.memory,
-          },
-          __wasm_split: {
-            __indirect_function_table: mainExports.__indirect_function_table,
-            __stack_pointer: mainExports.__stack_pointer,
-            __tls_base: mainExports.__tls_base,
-            memory: mainExports.memory,
-          },
-        };
-        const module = await WebAssembly.instantiateStreaming(response, imports);
-        alreadyLoaded = true;
-        if (callbackIndex === undefined) return;
-        mainExports.__indirect_function_table.get(callbackIndex)(
-          callbackData,
-          true,
-        );
-      } catch (e) {
-        if (callbackIndex === undefined) throw e;
-        console.error("Failed to load " + url.href, e);
-        if (mainExports === undefined) {
-          mainExports = initSync(undefined, undefined);
-        }
-        mainExports.__indirect_function_table.get(callbackIndex)(
-          callbackData,
-          false,
-        );
-      }
+  }
+}
+function makeLoad(url, deps) {
+  const loader = async () => {
+    const parallelStuff = deps.map(d => d());
+    const fetchSelf = fetch(url);
+    parallelStuff.push(fetchSelf);
+    await Promise.all(parallelStuff);
+    const response = await fetchSelf;
+    const imports = getSharedImports();
+    return await WebAssembly.instantiateStreaming(response, imports);
   };
+  let loadingModule = undefined;
+  return () => {
+    if (loadingModule === undefined) loadingModule = loader();
+    return loadingModule;
+  }
 }
 "#,
     );
     let mut split_deps = HashMap::<String, Vec<String>>::new();
-    for (name, _) in split_program_info.output_modules.iter() {
+    for (module_index, (name, _)) in split_program_info.output_modules.iter().enumerate() {
         let SplitModuleIdentifier::Chunk(splits) = name else {
             continue;
         };
+        let file_name = name.filename(module_index);
+        let var_name = format!("__chunk_{module_index}");
         for split in splits {
             split_deps
                 .entry(split.clone())
                 .or_default()
-                .push(name.name());
+                .push(var_name.clone());
         }
-        javascript.push_str(format!(
-            "const __wasm_split_load_{name} = makeLoad(new URL(\"./{name}.wasm\", import.meta.url), []);\n",
-            name = name.name(),
-        ).as_str())
+        let splits = splits.join(", ");
+        javascript.push_str(
+            format!(
+                "/* {splits} */\nconst {var_name} = makeLoad(new URL(\"./{file_name}.wasm\", import.meta.url), []);\n",
+            )
+            .as_str(),
+        )
     }
-    for (identifier, _) in split_program_info.output_modules.iter().rev() {
-        if matches!(identifier, SplitModuleIdentifier::Chunk(_)) {
-            continue;
-        }
-        let name = identifier.name();
+    for (module_index, (identifier, _)) in
+        split_program_info.output_modules.iter().enumerate().rev()
+    {
+        let split = match identifier {
+            SplitModuleIdentifier::Main | SplitModuleIdentifier::Chunk(_) => continue,
+            SplitModuleIdentifier::Split(split) => split,
+        };
+        let file_name = identifier.filename(module_index);
+        let loader_name = identifier.loader_name();
+        let deps = split_deps.remove(split).unwrap_or_default();
+        let deps = deps.join(", ");
         javascript.push_str(format!(
-            "export const __wasm_split_load_{name} = makeLoad(new URL(\"./{name}.wasm\", import.meta.url), [{deps}]);\n",
-            name = name,
-            deps = split_deps
-            .remove(&name)
-            .unwrap_or_default()
-            .iter()
-            .map(|x| format!("__wasm_split_load_{x}"))
-            .collect::<Vec<_>>()
-            .join(", "),
+            "export const {loader_name} = wrapAsyncCb(makeLoad(new URL(\"./{file_name}.wasm\", import.meta.url), [{deps}]));\n",
         ).as_str())
     }
 
