@@ -1,16 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::dep_graph::{DepGraph, DepNode};
-use crate::read::{ExportId, ImportId, InputFuncId, InputModule, SymbolIndex};
+use crate::read::{ExportId, ImportId, InputFuncId, InputModule};
 use anyhow::{anyhow, bail};
 use lazy_static::lazy_static;
 use regex::Regex;
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SplitModule {
-    pub module_name: String,
-    pub load_func: SymbolIndex,
-}
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SplitPoint {
