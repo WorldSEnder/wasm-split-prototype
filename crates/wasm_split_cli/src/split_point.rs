@@ -21,32 +21,6 @@ pub struct SplitPoint {
     pub export_func: InputFuncId,
 }
 
-pub fn get_split_modules(module: &InputModule) -> HashMap<String, SplitModule> {
-    const PREFIX: &str = "__wasm_split_load_";
-    let mut split_modules: HashMap<String, SplitModule> = HashMap::new();
-    for (i, info) in module.symbols.iter().enumerate() {
-        let wasmparser::SymbolInfo::Func {
-            name: Some(symbol_name),
-            ..
-        } = info
-        else {
-            continue;
-        };
-        if !symbol_name.starts_with(PREFIX) {
-            continue;
-        }
-        let name = &symbol_name[PREFIX.len()..];
-        split_modules.insert(
-            name.into(),
-            SplitModule {
-                module_name: String::from(name),
-                load_func: i,
-            },
-        );
-    }
-    split_modules
-}
-
 pub fn get_split_points(module: &InputModule) -> anyhow::Result<Vec<SplitPoint>> {
     macro_rules! process_imports_or_exports {
         ($pattern:expr, $map:ident, $member:ident, $id_ty:ty) => {
@@ -111,6 +85,7 @@ pub fn get_split_points(module: &InputModule) -> anyhow::Result<Vec<SplitPoint>>
         })
         .collect::<anyhow::Result<Vec<SplitPoint>>>()?;
 
+    #[allow(clippy::never_loop)]
     for (key, _) in export_map.iter() {
         anyhow::bail!("No corresponding import for split export {key:?}");
     }
@@ -127,9 +102,9 @@ pub struct ReachabilityGraph {
 #[derive(Debug, Default)]
 pub struct OutputModuleInfo {
     pub included_symbols: HashSet<DepNode>,
-    pub parents: HashMap<DepNode, DepNode>,
-    pub shared_imports: HashSet<InputFuncId>,
+    pub parents: HashMap<DepNode, DepNode>, // for debug only
     pub split_points: Vec<SplitPoint>,
+    pub used_shared_deps: HashSet<DepNode>,
 }
 
 impl OutputModuleInfo {
@@ -160,28 +135,36 @@ fn print_deps(
             format!("func[{index}] <{name:?}>")
         }
         DepNode::DataSymbol(index) => {
-            let symbol = module.symbols[*index];
+            let symbol = module.reloc_info.symbols[*index];
             format!("{symbol:?}")
+        }
+        DepNode::Global(index) => {
+            format!("global[{index}]")
+        }
+        DepNode::Table(index) => {
+            format!("table[{index}]")
+        }
+        DepNode::Tag(index) => {
+            format!("tag[{index}]")
+        }
+        DepNode::Memory(index) => {
+            format!("memory[{index}]")
         }
     };
 
     println!("SPLIT: ============== {module_name}");
     let mut total_size: usize = 0;
     for dep in reachable.iter() {
-        let DepNode::Function(index) = dep else {
-            continue;
-        };
-        let size = index
-            .checked_sub(module.imported_funcs.len())
-            .map(|defined_index| {
-                module.defined_funcs[index - module.imported_funcs.len()]
-                    .body
-                    .range()
-                    .len()
-            })
-            .unwrap_or_default();
-        total_size += size;
-        println!("   {} size={size:?}", format_dep(dep));
+        if let DepNode::Function(index) = dep {
+            let size = index
+                .checked_sub(module.imported_funcs.len())
+                .map(|defined_index| module.defined_funcs[defined_index].body.range().len())
+                .unwrap_or_default();
+            total_size += size;
+            println!("   {} size={size:?}", format_dep(dep));
+        } else {
+            println!("   {}", format_dep(dep));
+        }
         let mut node = dep;
         while let Some(parent) = parents.get(node) {
             println!("      <== {}", format_dep(parent));
@@ -189,12 +172,6 @@ fn print_deps(
         }
     }
     println!("SPLIT: ============== {module_name}  : total size: {total_size}");
-}
-
-impl ReachabilityGraph {
-    pub fn print(&self, module_name: &str, module: &InputModule) {
-        print_deps(module_name, module, &self.reachable, &self.parents);
-    }
 }
 
 pub fn find_reachable_deps(
@@ -211,7 +188,7 @@ pub fn find_reachable_deps(
             continue;
         };
         for child in children {
-            if seen.contains(&child) || exclude.contains(&child) {
+            if seen.contains(child) || exclude.contains(child) {
                 continue;
             }
             parents.entry(*child).or_insert(node);
@@ -232,18 +209,35 @@ pub fn get_main_module_roots(
     if let Some(id) = module.start {
         roots.insert(DepNode::Function(id));
     }
-    for export in module.exports.iter() {
-        let wasmparser::Export {
-            index,
-            kind: wasmparser::ExternalKind::Func,
-            ..
-        } = export
-        else {
-            continue;
-        };
-        roots.insert(DepNode::Function(*index as usize));
-    }
+
+    // We root all imports and exports in the main module
     for func_id in 0..module.imported_funcs.len() {
+        roots.insert(DepNode::Function(func_id));
+    }
+    for global_id in 0..module.imported_globals_num {
+        roots.insert(DepNode::Global(global_id));
+    }
+    for table_id in 0..module.imported_tables_num {
+        roots.insert(DepNode::Table(table_id));
+    }
+    for tag_id in 0..module.imported_tags_num {
+        roots.insert(DepNode::Tag(tag_id));
+    }
+    for tag_id in 0..module.imported_memories_num {
+        roots.insert(DepNode::Memory(tag_id));
+    }
+    for wasmparser::Export { index, kind, .. } in module.exports.iter() {
+        roots.insert(match kind {
+            wasmparser::ExternalKind::Func => DepNode::Function(*index as usize),
+            wasmparser::ExternalKind::Table => DepNode::Table(*index as usize),
+            wasmparser::ExternalKind::Global => DepNode::Global(*index as usize),
+            wasmparser::ExternalKind::Tag => DepNode::Tag(*index as usize),
+            wasmparser::ExternalKind::Memory => DepNode::Memory(*index as usize),
+        });
+    }
+
+    // We root every unused indirect at the root
+    for &func_id in &module.reloc_info.visible_indirects {
         roots.insert(DepNode::Function(func_id));
     }
     for split_point in split_points.iter() {
@@ -260,8 +254,8 @@ pub fn get_split_points_by_module(
         .iter()
         .fold(HashMap::new(), |mut map, split_point| {
             map.entry(split_point.module_name.clone())
-                .or_insert_with(|| Vec::new())
-                .push(&split_point);
+                .or_default()
+                .push(split_point);
             map
         })
 }
@@ -274,11 +268,18 @@ pub enum SplitModuleIdentifier {
 }
 
 impl SplitModuleIdentifier {
-    pub fn name(&self) -> String {
+    pub fn filename(&self, module_index: usize) -> String {
         match self {
             Self::Main => "main".to_string(),
-            Self::Split(name) => name.clone(),
-            Self::Chunk(names) => names.join("_"),
+            Self::Split(name) => format!("split_{name}"),
+            Self::Chunk(_) => format!("chunk_{module_index}"),
+        }
+    }
+    pub fn loader_name(&self) -> String {
+        match self {
+            // MUST match the name in wasm_split_macros
+            Self::Split(name) => format!("__wasm_split_load_{name}"),
+            _ => unreachable!("only whole modules have a loader"),
         }
     }
 }
@@ -286,8 +287,9 @@ impl SplitModuleIdentifier {
 #[derive(Debug, Default)]
 pub struct SplitProgramInfo {
     pub output_modules: Vec<(SplitModuleIdentifier, OutputModuleInfo)>,
-    pub output_module_identifiers: HashMap<SplitModuleIdentifier, usize>,
-    pub shared_funcs: HashSet<InputFuncId>,
+    pub split_point_exports: HashSet<InputFuncId>,
+
+    pub shared_deps: HashSet<DepNode>,
     pub symbol_output_module: HashMap<DepNode, usize>,
 }
 
@@ -296,7 +298,7 @@ pub fn compute_split_modules(
     dep_graph: &DepGraph,
     split_points: &[SplitPoint],
 ) -> anyhow::Result<SplitProgramInfo> {
-    let split_points_by_module = get_split_points_by_module(&split_points[..]);
+    let split_points_by_module = get_split_points_by_module(split_points);
 
     println!("split_points={split_points:?}");
 
@@ -305,22 +307,17 @@ pub fn compute_split_modules(
         .map(|split_point| (split_point.import_func, split_point.export_func))
         .collect();
 
-    let remove_ignored_deps = |deps: &mut HashSet<DepNode>| {
+    let find_reachable_non_ignored_deps = |roots: &HashSet<DepNode>, exclude: &HashSet<DepNode>| {
+        let mut deps = find_reachable_deps(dep_graph, roots, exclude);
         for split_point in split_points.iter() {
-            deps.remove(&DepNode::Function(split_point.import_func));
+            deps.reachable
+                .remove(&DepNode::Function(split_point.import_func));
         }
-    };
-    let remove_ignored_funcs = |deps: &mut HashSet<InputFuncId>| {
-        for split_point in split_points.iter() {
-            deps.remove(&split_point.import_func);
-        }
+        deps
     };
 
-    let main_roots = get_main_module_roots(module, &split_points);
-
-    let mut main_deps = find_reachable_deps(dep_graph, &main_roots, &HashSet::new());
-
-    remove_ignored_deps(&mut main_deps.reachable);
+    let main_roots = get_main_module_roots(module, split_points);
+    let main_deps = find_reachable_non_ignored_deps(&main_roots, &HashSet::new());
 
     // Determine reachable symbols (excluding main module symbols) for each
     // split module. Symbols may be reachable from more than one split module;
@@ -332,9 +329,8 @@ pub fn compute_split_modules(
             for entry_point in entry_points.iter() {
                 roots.insert(DepNode::Function(entry_point.export_func));
             }
-            let mut split_functions = find_reachable_deps(dep_graph, &roots, &main_deps.reachable);
-            remove_ignored_deps(&mut split_functions.reachable);
-            (module_name.clone(), split_functions)
+            let split_deps = find_reachable_non_ignored_deps(&roots, &main_deps.reachable);
+            (module_name.clone(), split_deps)
         })
         .collect();
 
@@ -349,12 +345,8 @@ pub fn compute_split_modules(
         }
     }
 
-    let mut program_info = SplitProgramInfo::default();
-
     let mut split_module_contents = HashMap::<SplitModuleIdentifier, OutputModuleInfo>::new();
-
     split_module_contents.insert(SplitModuleIdentifier::Main, main_deps.into());
-
     for (dep, mut modules) in dep_candidate_modules {
         if modules.len() > 1 {
             modules.sort();
@@ -369,45 +361,51 @@ pub fn compute_split_modules(
                 .insert(dep);
         }
     }
-
     split_module_contents.extend(
         split_module_candidates
             .drain()
             .map(|(module_name, deps)| (SplitModuleIdentifier::Split(module_name), deps.into())),
     );
 
-    for contents in split_module_contents.values_mut() {
-        for symbol in contents.included_symbols.iter() {
-            let Some(neighbors) = dep_graph.get(symbol) else {
+    let mut program_info = SplitProgramInfo::default();
+    for module in split_module_contents.values_mut() {
+        for symbol in module.included_symbols.iter() {
+            let Some(deps) = dep_graph.get(symbol) else {
                 continue;
             };
-            for mut called_func_id in neighbors.iter().filter_map(|symbol| match symbol {
-                DepNode::Function(func_id) => Some(*func_id),
-                _ => None,
-            }) {
-                called_func_id = *split_func_map
-                    .get(&called_func_id)
-                    .unwrap_or(&called_func_id);
-                if !contents
-                    .included_symbols
-                    .contains(&DepNode::Function(called_func_id))
-                {
-                    contents.shared_imports.insert(called_func_id);
-                    program_info.shared_funcs.insert(called_func_id);
+            for &(mut dep_to_check) in deps {
+                if let DepNode::Function(called_func_id) = &mut dep_to_check {
+                    // dependencies on module-entries are converted to their exposed impl
+                    if let Some(mapped_func_id) = split_func_map.get(called_func_id) {
+                        *called_func_id = *mapped_func_id;
+                    }
                 }
+                let in_other_module = !module.included_symbols.contains(&dep_to_check);
+                if !in_other_module {
+                    continue;
+                }
+                // data symbols will at the moment keep their memory address
+                if let DepNode::DataSymbol(_) = dep_to_check {
+                    continue;
+                }
+                module.used_shared_deps.insert(dep_to_check);
+                program_info.shared_deps.insert(dep_to_check);
             }
         }
-        remove_ignored_funcs(&mut contents.shared_imports);
     }
-    remove_ignored_funcs(&mut program_info.shared_funcs);
 
     for split_point in split_points {
-        program_info.shared_funcs.insert(split_point.export_func);
+        program_info
+            .shared_deps
+            .insert(DepNode::Function(split_point.export_func));
         let output_module = split_module_contents
             .get_mut(&SplitModuleIdentifier::Split(
                 split_point.module_name.to_string(),
             ))
             .unwrap();
+        program_info
+            .split_point_exports
+            .insert(split_point.export_func);
         output_module.split_points.push(split_point.clone());
     }
 
@@ -415,12 +413,6 @@ pub fn compute_split_modules(
     program_info
         .output_modules
         .sort_by_key(|(identifier, _)| (*identifier).clone());
-    program_info.output_module_identifiers = program_info
-        .output_modules
-        .iter()
-        .enumerate()
-        .map(|(index, (identifier, _))| (identifier.clone(), index))
-        .collect();
 
     for (output_index, (_, info)) in program_info.output_modules.iter().enumerate() {
         for &symbol in info.included_symbols.iter() {
