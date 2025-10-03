@@ -9,7 +9,7 @@ use wasmparser::RelocationEntry;
 
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, MemoryId, SymbolIndex, TableId, TagId},
-    reloc::RelocVisitor,
+    reloc::{DataDetails, RelocVisitor, SymbolDetails},
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Copy, PartialOrd, Ord, Clone)]
@@ -24,75 +24,33 @@ pub enum DepNode {
 
 pub type DepGraph = HashMap<DepNode, HashSet<DepNode>>;
 
-struct DepRelocVisitor(u32);
+struct DepRelocVisitor;
 impl RelocVisitor for DepRelocVisitor {
     type Result = anyhow::Result<Option<DepNode>>;
     fn visit_type_index(self, _: usize, _: &wasmparser::SymbolInfo<'_>) -> Self::Result {
         Ok(None)
     }
-    fn visit_memory_addr(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        _: &str,
-        _: Option<&wasmparser::DefinedDataSymbol>,
-    ) -> Self::Result {
-        Ok(Some(DepNode::DataSymbol(self.0 as usize)))
+    fn visit_memory_addr(self, details: DataDetails<'_>) -> Self::Result {
+        Ok(Some(DepNode::DataSymbol(details.symbol_index)))
     }
-    fn visit_table_index(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        index: InputFuncId,
-        _name: Option<&str>,
-    ) -> Self::Result {
+    fn visit_table_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result {
         // If an instruction takes the "address" of a function, that function needs to be loaded too.
-        Ok(Some(DepNode::Function(index)))
+        Ok(Some(DepNode::Function(details.index)))
     }
-    fn visit_rel_table_index(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        index: InputFuncId,
-        _name: Option<&str>,
-    ) -> Self::Result {
-        Ok(Some(DepNode::Function(index)))
+    fn visit_rel_table_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result {
+        Ok(Some(DepNode::Function(details.index)))
     }
-    fn visit_function_index(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        index: InputFuncId,
-        _name: Option<&str>,
-    ) -> Self::Result {
-        Ok(Some(DepNode::Function(index)))
+    fn visit_function_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result {
+        Ok(Some(DepNode::Function(details.index)))
     }
-    fn visit_table_number(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        index: TableId,
-        _name: Option<&str>,
-    ) -> Self::Result {
-        Ok(Some(DepNode::Table(index)))
+    fn visit_table_number(self, details: SymbolDetails<'_, TableId>) -> Self::Result {
+        Ok(Some(DepNode::Table(details.index)))
     }
-    fn visit_global_index(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        index: GlobalId,
-        _name: Option<&str>,
-    ) -> Self::Result {
-        Ok(Some(DepNode::Global(index)))
+    fn visit_global_index(self, details: SymbolDetails<'_, GlobalId>) -> Self::Result {
+        Ok(Some(DepNode::Global(details.index)))
     }
-    fn visit_tag_index(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        index: TagId,
-        _name: Option<&str>,
-    ) -> Self::Result {
-        Ok(Some(DepNode::Tag(index)))
+    fn visit_tag_index(self, details: SymbolDetails<'_, TagId>) -> Self::Result {
+        Ok(Some(DepNode::Tag(details.index)))
     }
 }
 
@@ -105,7 +63,7 @@ pub fn get_dependencies(module: &InputModule) -> anyhow::Result<DepGraph> {
     let mut add_dep = |a: DepNode, relocation: &RelocationEntry| -> Result<(), anyhow::Error> {
         let target = module
             .reloc_info
-            .visit_relocation(relocation, DepRelocVisitor(relocation.index))?;
+            .visit_relocation(relocation, DepRelocVisitor)?;
         if let Some(target) = target {
             deps.entry(a).or_default().insert(target);
         };

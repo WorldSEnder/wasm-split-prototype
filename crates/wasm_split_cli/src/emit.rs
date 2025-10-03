@@ -7,8 +7,8 @@ use std::{
 use crate::{
     dep_graph::DepNode,
     range_map::OffsetRangeMap,
-    read::{InputFuncId, InputModule, InputOffset},
-    reloc::{RelocInfo, RelocVisitor},
+    read::{GlobalId, InputFuncId, InputModule, InputOffset, TableId, TagId},
+    reloc::{self, RelocInfo, RelocVisitor},
     split_point::SplitProgramInfo,
 };
 use anyhow::{anyhow, bail, Context, Result};
@@ -469,15 +469,9 @@ impl RelocVisitor for &'_ ModuleEmitState<'_> {
         // We don't relocate types, we just copy them over
         Ok(None)
     }
-    fn visit_memory_addr(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        _name: &str,
-        symbol: Option<&wasmparser::DefinedDataSymbol>,
-    ) -> Result<Option<usize>> {
+    fn visit_memory_addr(self, details: reloc::DataDetails<'_>) -> Result<Option<usize>> {
         // [relocate data segments]
-        let Some(symbol) = symbol else {
+        let Some(symbol) = details.definition else {
             return Ok(None);
         };
         Ok(self
@@ -487,11 +481,9 @@ impl RelocVisitor for &'_ ModuleEmitState<'_> {
     }
     fn visit_function_index(
         self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        input_func_id: InputFuncId,
-        _name: Option<&str>,
+        details: reloc::SymbolDetails<'_, InputFuncId>,
     ) -> Result<Option<usize>> {
+        let input_func_id = details.index;
         let Some(&output_func_id) = self
             .dep_to_local_index
             .get(&DepNode::Function(input_func_id))
@@ -506,11 +498,9 @@ impl RelocVisitor for &'_ ModuleEmitState<'_> {
     }
     fn visit_table_index(
         self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        input_func_id: InputFuncId,
-        _name: Option<&str>,
+        details: reloc::SymbolDetails<'_, InputFuncId>,
     ) -> Result<Option<usize>> {
+        let input_func_id = details.index;
         let index = self
             .emit_state
             .indirect_functions
@@ -526,23 +516,14 @@ impl RelocVisitor for &'_ ModuleEmitState<'_> {
             })?;
         Ok(Some(*index))
     }
-    fn visit_rel_table_index(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        _index: InputFuncId,
-        _name: Option<&str>,
-    ) -> Self::Result {
+    fn visit_rel_table_index(self, _: reloc::SymbolDetails<'_, InputFuncId>) -> Self::Result {
         bail!("Unsupported relocation type: relative table index")
     }
     fn visit_global_index(
         self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        index: crate::read::GlobalId,
-        _name: Option<&str>,
+        details: reloc::SymbolDetails<'_, GlobalId>,
     ) -> Result<Option<usize>> {
-        if !self.is_main() && index != self.input_module.reloc_info.stack_pointer {
+        if !self.is_main() && details.index != self.input_module.reloc_info.stack_pointer {
             bail!("Relocation of globals not supported in split modules.")
         }
         // TODO: check that global indices do not get confused by the generate logic below
@@ -550,24 +531,15 @@ impl RelocVisitor for &'_ ModuleEmitState<'_> {
     }
     fn visit_table_number(
         self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        index: crate::read::TableId,
-        _name: Option<&str>,
+        details: reloc::SymbolDetails<'_, TableId>,
     ) -> Result<Option<usize>> {
-        if !self.is_main() && index != self.input_module.reloc_info.indirect_table {
+        if !self.is_main() && details.index != self.input_module.reloc_info.indirect_table {
             bail!("Relocation of globals not supported in split modules.")
         }
         // TODO: check that table indices do not get confused by the generate logic below
         Ok(Some(0))
     }
-    fn visit_tag_index(
-        self,
-        _symbol_index: usize,
-        _flags: wasmparser::SymbolFlags,
-        _index: crate::read::TagId,
-        _name: Option<&str>,
-    ) -> Self::Result {
+    fn visit_tag_index(self, _: reloc::SymbolDetails<'_, TagId>) -> Self::Result {
         if !self.is_main() {
             bail!("Exception handling in split modules not supported yet")
         }
