@@ -378,7 +378,8 @@ pub fn compute_split_modules(
                 if !in_other_module {
                     continue;
                 }
-                // data symbols will at the moment keep their memory address
+                // data symbols need no tracking for sharing, as long as they are defined
+                // when needed, as they don't need to be imported or shimmed.
                 if let DepNode::DataSymbol(_) = dep_to_check {
                     continue;
                 }
