@@ -4,7 +4,7 @@ use std::{
     ops::Range,
 };
 
-use anyhow::{bail, Context};
+use eyre::{bail, Context, Result};
 use wasmparser::RelocationEntry;
 
 use crate::{
@@ -26,7 +26,7 @@ pub type DepGraph = HashMap<DepNode, HashSet<DepNode>>;
 
 struct DepRelocVisitor;
 impl RelocVisitor for DepRelocVisitor {
-    type Result = anyhow::Result<Option<DepNode>>;
+    type Result = Result<Option<DepNode>>;
     fn visit_type_index(self, _: usize, _: &wasmparser::SymbolInfo<'_>) -> Self::Result {
         Ok(None)
     }
@@ -58,9 +58,9 @@ fn shift_range(range: Range<usize>, offset: usize) -> Range<usize> {
     (range.start + offset)..(range.end + offset)
 }
 
-pub fn get_dependencies(module: &InputModule) -> anyhow::Result<DepGraph> {
+pub fn get_dependencies(module: &InputModule) -> Result<DepGraph> {
     let mut deps = DepGraph::new();
-    let mut add_dep = |a: DepNode, relocation: &RelocationEntry| -> Result<(), anyhow::Error> {
+    let mut add_dep = |a: DepNode, relocation: &RelocationEntry| -> Result<()> {
         let target = module
             .reloc_info
             .visit_relocation(relocation, DepRelocVisitor)?;
@@ -99,7 +99,7 @@ pub fn get_dependencies(module: &InputModule) -> anyhow::Result<DepGraph> {
 fn find_function_containing_range(
     module: &crate::read::InputModule,
     range: Range<usize>,
-) -> anyhow::Result<usize> {
+) -> Result<usize> {
     let func_index = find_by_range(&module.defined_funcs, &range, |defined_func| {
         defined_func.body.range()
     })
@@ -110,7 +110,7 @@ fn find_function_containing_range(
 fn find_data_symbol_containing_range(
     module: &crate::read::InputModule,
     range: Range<usize>,
-) -> anyhow::Result<usize> {
+) -> Result<usize> {
     let index = find_by_range(&module.reloc_info.data_symbols, &range, |data_symbol| {
         data_symbol.range.clone()
     })
@@ -122,7 +122,7 @@ fn find_by_range<T: Debug, U: Debug + Ord, F: Fn(&T) -> Range<U>>(
     items: &[T],
     range: &Range<U>,
     get_range: F,
-) -> anyhow::Result<usize> {
+) -> Result<usize> {
     let matching_range = super::util::find_by_range(items, range, &get_range);
     let index = matching_range.start;
     if matching_range.is_empty() {

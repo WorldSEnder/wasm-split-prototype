@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = { version = "1.0.82", features = ["backtrace"] }
+eyre = { version = "0.6.12" }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 clap = { version = "4.5.4", features = ["derive"], optional = true }
 lazy_static = "1.4.0"
 regex = "1.10.4"

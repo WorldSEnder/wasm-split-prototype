@@ -1,6 +1,9 @@
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
-use anyhow::Result;
+use eyre::Result;
 use split_point::SplitModuleIdentifier;
 
 mod dep_graph;
@@ -25,7 +28,11 @@ pub struct Options<'a> {
     pub verbose: bool,
 }
 
-pub fn transform(opts: Options) -> Result<()> {
+pub struct SplitWasm {
+    pub split_modules: Vec<PathBuf>,
+}
+
+pub fn transform(opts: Options) -> Result<SplitWasm> {
     let module = crate::read::InputModule::parse(opts.input_wasm)?;
     if opts.verbose {
         module.reloc_info.print_relocs();
@@ -42,6 +49,7 @@ pub fn transform(opts: Options) -> Result<()> {
         }
     }
 
+    let mut split_modules = vec![];
     let emit_fn = |output_module_index: usize, data: &[u8]| -> Result<()> {
         let identifier = &split_program_info.output_modules[output_module_index].0;
         let output_path = match identifier {
@@ -50,6 +58,9 @@ pub fn transform(opts: Options) -> Result<()> {
                 .output_dir
                 .join(identifier.filename(output_module_index) + ".wasm"),
         };
+        if !matches!(identifier, SplitModuleIdentifier::Main) {
+            split_modules.push(output_path.clone());
+        }
         std::fs::write(output_path, data)?;
         Ok(())
     };
@@ -102,5 +113,5 @@ pub fn transform(opts: Options) -> Result<()> {
     }
 
     std::fs::write(opts.output_dir.join("__wasm_split.js"), javascript)?;
-    Ok(())
+    Ok(SplitWasm { split_modules })
 }

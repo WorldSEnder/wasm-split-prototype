@@ -11,7 +11,8 @@ use crate::{
     reloc::{self, RelocInfo, RelocVisitor},
     split_point::SplitProgramInfo,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use eyre::{anyhow, bail, Context, Result};
+use tracing::{trace, warn};
 use wasm_encoder::EntityType;
 use wasmparser::{
     Data, DataKind, DefinedDataSymbol, ExternalKind, SegmentFlags, SymbolInfo, TypeRef,
@@ -388,8 +389,8 @@ impl DataEmitInfo {
                     // Overlapping segments *will* overwrite data!
                     if segment_len > input_module.data_segments[segment_index].data.len() {
                         let overlength = segment_len - input_module.data_segments[segment_index].data.len();
-                        println!("{ranges:?}");
-                        eprintln!("Overlong segment {segment_index} by {overlength} after relocation, putting it in main module.");
+                        trace!("{ranges:?}");
+                        warn!("Overlong segment {segment_index} by {overlength} after relocation, putting it in main module.");
                         DataSegmentEmitInfo::FromInputOnlyIn(0)
                     } else {
                         ranges
@@ -1134,8 +1135,8 @@ impl<'a> ModuleEmitState<'a> {
 pub fn emit_modules(
     module: &InputModule,
     program_info: &SplitProgramInfo,
-    emit_fn: impl Fn(usize, &[u8]) -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
+    mut emit_fn: impl FnMut(usize, &[u8]) -> Result<()>,
+) -> Result<()> {
     let emit_state = EmitState::new(module, program_info)?;
 
     for output_module_index in 0..program_info.output_modules.len() {

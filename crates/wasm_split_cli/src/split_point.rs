@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::dep_graph::{DepGraph, DepNode};
 use crate::read::{ExportId, ImportId, InputFuncId, InputModule};
-use anyhow::{anyhow, bail};
+use eyre::{anyhow, bail, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
+use tracing::trace;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SplitPoint {
@@ -15,7 +16,7 @@ pub struct SplitPoint {
     pub export_func: InputFuncId,
 }
 
-pub fn get_split_points(module: &InputModule) -> anyhow::Result<Vec<SplitPoint>> {
+pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
     macro_rules! process_imports_or_exports {
         ($pattern:expr, $map:ident, $member:ident, $id_ty:ty) => {
             let mut $map = HashMap::<(String, String), $id_ty>::new();
@@ -50,10 +51,10 @@ pub fn get_split_points(module: &InputModule) -> anyhow::Result<Vec<SplitPoint>>
 
     let split_points = import_map
         .drain()
-        .map(|(key, import_id)| -> anyhow::Result<SplitPoint> {
-            let export_id = export_map.remove(&key).ok_or_else(|| {
-                anyhow::anyhow!("No corresponding export for split import {key:?}")
-            })?;
+        .map(|(key, import_id)| -> Result<SplitPoint> {
+            let export_id = export_map
+                .remove(&key)
+                .ok_or_else(|| anyhow!("No corresponding export for split import {key:?}"))?;
             let export = module.exports[export_id];
             let wasmparser::Export {
                 kind: wasmparser::ExternalKind::Func,
@@ -77,11 +78,11 @@ pub fn get_split_points(module: &InputModule) -> anyhow::Result<Vec<SplitPoint>>
                 export_func: index as InputFuncId,
             })
         })
-        .collect::<anyhow::Result<Vec<SplitPoint>>>()?;
+        .collect::<Result<Vec<SplitPoint>>>()?;
 
     #[allow(clippy::never_loop)]
     for (key, _) in export_map.iter() {
-        anyhow::bail!("No corresponding import for split export {key:?}");
+        bail!("No corresponding import for split export {key:?}");
     }
 
     Ok(split_points)
@@ -146,7 +147,7 @@ fn print_deps(
         }
     };
 
-    println!("SPLIT: ============== {module_name}");
+    trace!("SPLIT: ============== {module_name}");
     let mut total_size: usize = 0;
     for dep in reachable.iter() {
         if let DepNode::Function(index) = dep {
@@ -155,17 +156,17 @@ fn print_deps(
                 .map(|defined_index| module.defined_funcs[defined_index].body.range().len())
                 .unwrap_or_default();
             total_size += size;
-            println!("   {} size={size:?}", format_dep(dep));
+            trace!("   {} size={size:?}", format_dep(dep));
         } else {
-            println!("   {}", format_dep(dep));
+            trace!("   {}", format_dep(dep));
         }
         let mut node = dep;
         while let Some(parent) = parents.get(node) {
-            println!("      <== {}", format_dep(parent));
+            trace!("      <== {}", format_dep(parent));
             node = parent;
         }
     }
-    println!("SPLIT: ============== {module_name}  : total size: {total_size}");
+    trace!("SPLIT: ============== {module_name}  : total size: {total_size}");
 }
 
 pub fn find_reachable_deps(
@@ -291,10 +292,10 @@ pub fn compute_split_modules(
     module: &InputModule,
     dep_graph: &DepGraph,
     split_points: &[SplitPoint],
-) -> anyhow::Result<SplitProgramInfo> {
+) -> Result<SplitProgramInfo> {
     let split_points_by_module = get_split_points_by_module(split_points);
 
-    println!("split_points={split_points:?}");
+    trace!("split_points={split_points:?}");
 
     let split_func_map: HashMap<InputFuncId, InputFuncId> = split_points
         .iter()

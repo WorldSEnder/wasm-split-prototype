@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use eyre::{bail, Result};
 use std::collections::HashMap;
 pub use wasmparser::{
     Data, Element, Export, FuncType, FunctionBody, Global, Import, MemoryType, Table, TagType,
@@ -164,7 +164,7 @@ pub struct InputModule<'a> {
 }
 
 impl<'a> InputModule<'a> {
-    pub fn parse(wasm: &'a [u8]) -> anyhow::Result<Self> {
+    pub fn parse(wasm: &'a [u8]) -> Result<Self> {
         let mut module = Self {
             raw: wasm,
             ..Default::default()

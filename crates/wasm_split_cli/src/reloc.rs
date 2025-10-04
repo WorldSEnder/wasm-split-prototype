@@ -3,7 +3,8 @@ use std::{
     ops::Range,
 };
 
-use anyhow::{anyhow, bail, Result};
+use eyre::{anyhow, bail, Result};
+use tracing::trace;
 use wasmparser::{
     CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Payload,
     RelocAddendKind, RelocationEntry, RelocationType, Segment, SymbolFlags, SymbolInfo,
@@ -101,7 +102,7 @@ impl<'a> RelocInfoParser<'a> {
         };
         Ok(())
     }
-    pub fn finish(self, module: &InputModule<'a>) -> anyhow::Result<RelocInfo<'a>> {
+    pub fn finish(self, module: &InputModule<'a>) -> Result<RelocInfo<'a>> {
         let mut info = self.info;
         info.data_symbols = get_data_symbols(&module.data_segments, &info.symbols)?;
         // We may be able to get away with zero here, but don't!
@@ -250,25 +251,25 @@ pub struct RelocInfo<'a> {
 impl RelocInfo<'_> {
     pub fn print_relocs(&self) {
         use wasmparser::RelocAddendKind;
-        println!("Symbols >>>>>>>>>>>>>>>>>>>>>>>>");
+        trace!("Symbols >>>>>>>>>>>>>>>>>>>>>>>>");
         for symbol in &self.symbols {
-            println!("{symbol:?}");
+            trace!("{symbol:?}");
         }
-        println!("Symbols <<<<<<<<<<<<<<<<<<<<<<<<");
+        trace!("Symbols <<<<<<<<<<<<<<<<<<<<<<<<");
         for (section, relocs) in &self.relocs {
-            println!("Relocs in {section} >>>>>>>>>>>>>>>>>>>>>>>>");
+            trace!("Relocs in {section} >>>>>>>>>>>>>>>>>>>>>>>>");
             for reloc in relocs {
                 let symbol = &self.symbols[reloc.index as usize];
-                print!("  [{}] = {:?}({symbol:?})", reloc.offset, reloc.ty);
+                let mut symbol_info = format!("  [{}] = {:?}({symbol:?})", reloc.offset, reloc.ty);
                 if matches!(
                     reloc.ty.addend_kind(),
                     RelocAddendKind::Addend64 | RelocAddendKind::Addend32
                 ) {
-                    print!(" {:+}", reloc.addend);
+                    symbol_info += &format!(" {:+}", reloc.addend);
                 }
-                println!();
+                trace!(symbol_info);
             }
-            println!("Relocs in {section} <<<<<<<<<<<<<<<<<<<<<<<<");
+            trace!("Relocs in {section} <<<<<<<<<<<<<<<<<<<<<<<<");
         }
     }
     pub fn section_offset(&self, section: SectionIndex) -> InputOffset {
