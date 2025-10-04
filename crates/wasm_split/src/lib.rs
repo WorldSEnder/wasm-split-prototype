@@ -1,9 +1,8 @@
 use std::{
-    cell::Cell,
     ffi::c_void,
     future::Future,
     pin::Pin,
-    rc::Rc,
+    sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
 
@@ -15,91 +14,102 @@ pub type LoadFn = unsafe extern "C" fn(LoadCallbackFn, *const c_void) -> ();
 type Lazy = async_once_cell::Lazy<Option<()>, SplitLoaderFuture>;
 
 pub struct LazySplitLoader {
-    lazy: Pin<Rc<Lazy>>,
+    lazy: Lazy,
 }
 
 impl LazySplitLoader {
-    pub unsafe fn new(load: LoadFn) -> Self {
+    /// # Safety
+    /// The load function must be safely callable with a callback-fn-pointer and data.
+    /// It must call the callback function exactly once with the given data and a success state.
+    pub const unsafe fn new(load: LoadFn) -> Self {
         Self {
-            lazy: Rc::pin(Lazy::new(SplitLoaderFuture::new(SplitLoader::new(load)))),
+            lazy: Lazy::new(SplitLoaderFuture::new(load)),
         }
     }
 }
 
-pub async fn ensure_loaded(loader: &'static std::thread::LocalKey<LazySplitLoader>) -> Option<()> {
-    *loader.with(|inner| inner.lazy.clone()).as_ref().await
+/// # Safety
+/// The loader inside the LocalKey must be handled as pinned until the thread exits.
+pub async unsafe fn ensure_loaded(loader: &'static LazySplitLoader) {
+    let lazy = unsafe { Pin::new_unchecked(&loader.lazy) };
+    (lazy.await).expect("load callback should succeed");
 }
 
-#[derive(Clone, Copy, Debug)]
-enum SplitLoaderState {
+enum SplitLoaderFutState {
     Deferred(LoadFn),
-    Pending,
-    Completed(Option<()>),
-}
-
-struct SplitLoader {
-    state: Cell<SplitLoaderState>,
-    waker: Cell<Option<Waker>>,
-}
-
-impl SplitLoader {
-    fn new(load: LoadFn) -> Rc<Self> {
-        Rc::new(SplitLoader {
-            state: Cell::new(SplitLoaderState::Deferred(load)),
-            waker: Cell::new(None),
-        })
-    }
-
-    fn complete(&self, value: bool) {
-        self.state.set(SplitLoaderState::Completed(if value {
-            Some(())
-        } else {
-            None
-        }));
-        match self.waker.take() {
-            Some(waker) => {
-                waker.wake();
-            }
-            _ => {}
-        }
-    }
+    Pending(Arc<SplitLoader>),
 }
 
 struct SplitLoaderFuture {
-    loader: Rc<SplitLoader>,
+    state: SplitLoaderFutState,
 }
 
 impl SplitLoaderFuture {
-    fn new(loader: Rc<SplitLoader>) -> Self {
-        SplitLoaderFuture { loader }
+    const fn new(load: LoadFn) -> Self {
+        SplitLoaderFuture {
+            state: SplitLoaderFutState::Deferred(load),
+        }
     }
 }
 
 impl Future for SplitLoaderFuture {
     type Output = Option<()>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<()>> {
-        match self.loader.state.get() {
-            SplitLoaderState::Deferred(load) => {
-                self.loader.state.set(SplitLoaderState::Pending);
-                self.loader.waker.set(Some(cx.waker().clone()));
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<()>> {
+        match self.state {
+            SplitLoaderFutState::Deferred(load) => {
+                let shared_state = Arc::new(SplitLoader {
+                    state: Mutex::new(SplitLoaderState::Waiting(cx.waker().clone())),
+                });
                 unsafe {
                     load(
                         load_callback,
-                        Rc::<SplitLoader>::into_raw(self.loader.clone()) as *const c_void,
+                        Arc::<SplitLoader>::into_raw(shared_state.clone()).cast(),
                     )
                 };
+                self.state = SplitLoaderFutState::Pending(shared_state);
                 Poll::Pending
             }
-            SplitLoaderState::Pending => {
-                self.loader.waker.set(Some(cx.waker().clone()));
-                Poll::Pending
-            }
-            SplitLoaderState::Completed(value) => Poll::Ready(value),
+            SplitLoaderFutState::Pending(ref state) => state.update(|state| match state {
+                SplitLoaderState::Done(value) => Poll::Ready(value.then_some(())),
+                SplitLoaderState::Waiting(ref mut waker) => {
+                    *waker = cx.waker().clone();
+                    Poll::Pending
+                }
+            }),
         }
     }
 }
 
+// our future should never get canceled before completion. We could assert this?
+// impl Drop for SplitLoaderFuture { }
+
 unsafe extern "C" fn load_callback(loader: *const c_void, success: bool) {
-    unsafe { Rc::from_raw(loader as *const SplitLoader) }.complete(success);
+    // SAFETY: The pointer is the same as the one passed to `load`, hence comes from a call to Arc::into_raw
+    unsafe { Arc::<SplitLoader>::from_raw(loader.cast()) }.complete(success);
+}
+
+struct SplitLoader {
+    state: Mutex<SplitLoaderState>,
+}
+
+impl SplitLoader {
+    fn update<R>(&self, f: impl FnOnce(&mut SplitLoaderState) -> R) -> R {
+        let mut state = self.state.lock().expect("lock poisoned");
+        f(&mut state)
+    }
+    fn complete(&self, value: bool) {
+        self.update(|state| {
+            if let SplitLoaderState::Waiting(waker) =
+                std::mem::replace(state, SplitLoaderState::Done(value))
+            {
+                waker.wake();
+            }
+        });
+    }
+}
+
+enum SplitLoaderState {
+    Waiting(Waker),
+    Done(bool),
 }
