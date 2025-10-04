@@ -71,7 +71,8 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
     let mut javascript = String::new();
     let _ = write!(
         javascript,
-        r#"import {{ initSync }} from "{}";\n"#,
+        r#"import {{ initSync }} from "{}";
+        "#,
         opts.main_module
     );
     javascript.push_str(include_str!("./split_wasm.js"));

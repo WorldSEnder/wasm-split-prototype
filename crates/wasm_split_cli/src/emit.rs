@@ -313,10 +313,14 @@ impl DataEmitInfo {
                 let segment_align =
                     1usize << input_module.reloc_info.segments[segment_index].alignment;
 
-                // TODO: use data_range.start.isolate_least_significant_one()
-                let data_align = 1usize << data_offset.trailing_zeros();
-                let data_align = data_align.min(1usize << data_len.trailing_zeros());
-                let data_align = data_align.min(segment_align);
+                let mut data_align = segment_align;
+                if data_offset != 0 {
+                    // TODO: .isolate_least_significant_one()
+                    data_align = data_align.min(1usize << data_offset.trailing_zeros());
+                }
+                if data_len != 0 {
+                    data_align = data_align.min(1usize << data_len.trailing_zeros());
+                }
 
                 ranges.push(LateDataRange {
                     input_range: data_range,

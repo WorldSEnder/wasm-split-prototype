@@ -475,8 +475,9 @@ impl RelocInfo<'_> {
         // handle overflow maybe? Not sure if wrapping would be correct
         let value: i64 = value.try_into().expect("relocated value too big");
         debug_assert!(
-            relocation.addend == 0 || ty.addend_kind() == RelocAddendKind::None,
-            "relocation without addend should have addend == 0"
+            relocation.addend == 0 || ty.addend_kind() != RelocAddendKind::None,
+            "relocation {relocation:?} without addend should have addend == 0, not {}",
+            relocation.addend,
         );
         let value = value + relocation.addend;
         encode_for_ty(ty)(value, target);

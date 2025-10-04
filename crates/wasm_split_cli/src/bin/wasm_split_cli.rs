@@ -1,5 +1,5 @@
-use anyhow::Result;
 use clap::Parser;
+use eyre::Result;
 use std::path::Path;
 
 use wasm_split_cli_support as this;
@@ -29,5 +29,6 @@ fn main() -> Result<()> {
         verbose: args.verbose,
         main_module: "./main.js",
     };
-    this::transform(opts)
+    let _ = this::transform(opts)?;
+    Ok(())
 }
