@@ -1,7 +1,7 @@
 use proc_macro::{Span, TokenStream};
 
-use digest::Digest;
 use quote::{format_ident, quote, quote_spanned};
+use sha2::Digest;
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, Ident, ItemFn, Signature};
 

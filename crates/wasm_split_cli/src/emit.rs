@@ -75,8 +75,10 @@ impl<'a> EmitState<'a> {
         let indirect_table_size = self.indirect_functions.table_entries.len() + 1;
         wasmparser::TableType {
             element_type: wasmparser::RefType::FUNCREF,
-            initial: indirect_table_size as u32,
+            initial: (indirect_table_size as u32).into(),
             maximum: None,
+            table64: false,
+            shared: false,
         }
     }
     fn name_for(&self, dep: &DepNode) -> Cow<'a, str> {
@@ -267,7 +269,7 @@ impl DataEmitInfo {
             .data_segments
             .iter()
             .enumerate()
-            .map(|(segment_idx, segment)| match segment.kind {
+            .map(|(segment_idx, segment)| match &segment.kind {
                 // [relocate data segments]
                 // We duplicate all passive segments (there shouldn't be any except in multi-threading?)
                 // because we don't have relocation to identify which function uses which passive data
@@ -769,23 +771,13 @@ impl<'a> ModuleEmitState<'a> {
         for input_func_type in self.input_module.types.iter() {
             let output_func_type: wasm_encoder::FuncType =
                 input_func_type.clone().try_into().unwrap();
-            section.function(
+            section.ty().function(
                 output_func_type.params().iter().cloned(),
                 output_func_type.results().iter().cloned(),
             );
         }
         self.output_module.section(&section);
         Ok(())
-    }
-
-    fn get_indirect_function_table_type(&self, is_main: bool) -> wasm_encoder::TableType {
-        // + 1 due to empty entry at index 0
-        let indirect_table_size = self.emit_state.indirect_functions.table_entries.len() + 1;
-        wasm_encoder::TableType {
-            element_type: wasm_encoder::RefType::FUNCREF,
-            minimum: indirect_table_size as u32,
-            maximum: is_main.then_some(indirect_table_size as u32),
-        }
     }
 
     fn generate_import_section(&mut self) {
@@ -813,7 +805,9 @@ impl<'a> ModuleEmitState<'a> {
             return;
         }
         let mut section = wasm_encoder::TableSection::new();
-        section.table(self.get_indirect_function_table_type(true));
+        let mut defined_table_type = self.emit_state.get_indirect_function_table_type();
+        defined_table_type.maximum = Some(defined_table_type.initial);
+        section.table(defined_table_type.try_into().unwrap());
         self.output_module.section(&section);
     }
 
@@ -836,7 +830,7 @@ impl<'a> ModuleEmitState<'a> {
         for global in self.input_module.globals.iter() {
             section.global(
                 global.ty.try_into().unwrap(),
-                &global.init_expr.try_into().unwrap(),
+                &global.init_expr.clone().try_into().unwrap(),
             );
         }
         self.output_module.section(&section);
@@ -899,7 +893,7 @@ impl<'a> ModuleEmitState<'a> {
                 table: indirect_table,
                 offset: &wasm_encoder::ConstExpr::i32_const(indirect_range.start as i32),
             },
-            elements: wasm_encoder::Elements::Functions(&func_ids),
+            elements: wasm_encoder::Elements::Functions(func_ids.into()),
         });
         // generate placeholders for all other indirection functions.
         // this is to "reserve" spots to keep safe from downstream processors.
@@ -916,10 +910,12 @@ impl<'a> ModuleEmitState<'a> {
                 }
                 let mut exprs = Vec::with_capacity(range.len());
                 exprs.resize_with(range.len(), || {
-                    wasm_encoder::ConstExpr::ref_null(wasm_encoder::HeapType::Func)
+                    wasm_encoder::ConstExpr::ref_null(wasm_encoder::HeapType::FUNC)
                 });
-                let elements =
-                    wasm_encoder::Elements::Expressions(wasm_encoder::RefType::FUNCREF, &exprs);
+                let elements = wasm_encoder::Elements::Expressions(
+                    wasm_encoder::RefType::FUNCREF,
+                    exprs.into(),
+                );
                 section.segment(wasm_encoder::ElementSegment {
                     mode: wasm_encoder::ElementMode::Active {
                         table: indirect_table,
@@ -952,8 +948,8 @@ impl<'a> ModuleEmitState<'a> {
         }
         func.instruction(&wasm_encoder::Instruction::I32Const(indirect_index as i32));
         func.instruction(&wasm_encoder::Instruction::CallIndirect {
-            ty: type_id as u32,
-            table: 0,
+            type_index: type_id as u32,
+            table_index: 0,
         });
         func.instruction(&wasm_encoder::Instruction::End);
         func
@@ -1051,10 +1047,10 @@ impl<'a> ModuleEmitState<'a> {
                 }
                 DataKind::Active {
                     memory_index,
-                    offset_expr,
+                    ref offset_expr,
                 } => {
                     let offset = match addr_offset {
-                        None => offset_expr.try_into().unwrap(),
+                        None => offset_expr.clone().try_into().unwrap(),
                         Some(module_offset) => {
                             if module_offset <= i32::MAX as usize {
                                 wasm_encoder::ConstExpr::i32_const(module_offset as i32)

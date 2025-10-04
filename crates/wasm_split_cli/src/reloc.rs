@@ -6,8 +6,9 @@ use std::{
 use eyre::{anyhow, bail, Result};
 use tracing::trace;
 use wasmparser::{
-    CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Payload,
-    RelocAddendKind, RelocationEntry, RelocationType, Segment, SymbolFlags, SymbolInfo,
+    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind,
+    LinkingSectionReader, Payload, RelocAddendKind, RelocSectionReader, RelocationEntry,
+    RelocationType, Segment, SymbolFlags, SymbolInfo,
 };
 
 use crate::{
@@ -32,7 +33,7 @@ impl<'a> RelocInfoParser<'a> {
     fn visit_custom(&mut self, custom: &CustomSectionReader<'a>) -> Result<()> {
         if custom.name() == "linking" {
             let reader =
-                wasmparser::LinkingSectionReader::new(custom.data(), custom.data_offset())?;
+                LinkingSectionReader::new(BinaryReader::new(custom.data(), custom.data_offset()))?;
             for subsection in reader.subsections() {
                 let subsection = subsection?;
                 if let wasmparser::Linking::SegmentInfo(segments) = subsection {
@@ -73,7 +74,8 @@ impl<'a> RelocInfoParser<'a> {
                 }
             }
         } else if custom.name().starts_with("reloc.") {
-            let reader = wasmparser::RelocSectionReader::new(custom.data(), custom.data_offset())?;
+            let reader =
+                RelocSectionReader::new(BinaryReader::new(custom.data(), custom.data_offset()))?;
             let mut reloc_entries = reader
                 .entries()
                 .into_iter()

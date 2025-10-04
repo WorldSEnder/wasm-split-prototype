@@ -1,9 +1,9 @@
 use eyre::{bail, Result};
 use std::collections::HashMap;
+use wasmparser::{BinaryReader, NameSectionReader, Payload, TypeRef};
 pub use wasmparser::{
     Data, Element, Export, FuncType, FunctionBody, Global, Import, MemoryType, Table, TagType,
 };
-use wasmparser::{Payload, TypeRef};
 
 use crate::reloc::{RelocInfo, RelocInfoParser};
 
@@ -74,7 +74,7 @@ fn convert_indirect_name_map<'a>(
 impl<'a> Names<'a> {
     fn new(data: &'a [u8], original_offset: usize) -> Result<Self> {
         let mut names: Self = Default::default();
-        for part in wasmparser::NameSectionReader::new(data, original_offset) {
+        for part in NameSectionReader::new(BinaryReader::new(data, original_offset)) {
             use wasmparser::Name;
             match part? {
                 Name::Module { name, .. } => {

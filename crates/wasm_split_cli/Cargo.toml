@@ -6,11 +6,12 @@ edition = "2021"
 [dependencies]
 eyre = { version = "0.6.12" }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
-clap = { version = "4.5.4", features = ["derive"], optional = true }
 lazy_static = "1.4.0"
 regex = "1.10.4"
-wasm-encoder = { version = "0.206.0", features = ["wasmparser"] }
-wasmparser = "0.206.0"
+wasm-encoder = { version = "0.239.0", features = ["wasmparser"] }
+wasmparser = "0.239.0"
+# bin-only depdencies
+clap = { version = "4.5.4", features = ["derive"], optional = true }
 
 [lib]
 name = "wasm_split_cli_support"
