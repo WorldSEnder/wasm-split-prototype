@@ -5,8 +5,18 @@ edition = "2021"
 
 [dependencies]
 anyhow = { version = "1.0.82", features = ["backtrace"] }
-clap = { version = "4.5.4", features = ["derive"] }
+clap = { version = "4.5.4", features = ["derive"], optional = true }
 lazy_static = "1.4.0"
 regex = "1.10.4"
 wasm-encoder = { version = "0.206.0", features = ["wasmparser"] }
 wasmparser = "0.206.0"
+
+[lib]
+name = "wasm_split_cli_support"
+
+[[bin]]
+name = "wasm_split_cli"
+required-features = ["build-binary"]
+
+[features]
+build-binary = ["dep:clap"]
