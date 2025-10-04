@@ -36,9 +36,10 @@ impl<V> OffsetRangeMap<V> {
     pub fn insert(&mut self, range: Range<Key>, value: V) {
         assert!(!range.is_empty(), "empty ranges are not supported");
         if let Some(lap) = self.rm.range(..range.end).last() {
+            let existing = *lap.0..lap.1.end;
             assert!(
                 lap.1.end <= range.start,
-                "overlapping ranges or replacements are not supported"
+                "overlapping ranges or replacements are not supported. already at {existing:?}, inserting {range:?}"
             );
         }
         self.rm.insert(

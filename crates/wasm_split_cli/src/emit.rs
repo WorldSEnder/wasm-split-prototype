@@ -6,7 +6,6 @@ use std::{
 
 use crate::{
     dep_graph::DepNode,
-    range_map::OffsetRangeMap,
     read::{GlobalId, InputFuncId, InputModule, InputOffset, TableId, TagId},
     reloc::{self, RelocInfo, RelocVisitor},
     split_point::SplitProgramInfo,
@@ -241,7 +240,8 @@ enum DataSegmentEmitInfo {
         // the output segment is formed by concatenating all these segment
         ranges: Vec<LateDataRange>,
         // (offset_in_segment) -> (index in 'ranges')
-        range_lookup: OffsetRangeMap<usize>,
+        range_lookup: HashMap<usize, usize>,
+        range_emit_order: Vec<usize>,
     },
 }
 
@@ -256,6 +256,10 @@ impl DataEmitInfo {
             FromInputOnlyIn(usize),
             Ranges {
                 ranges: Vec<LateDataRange>,
+                // TODO: llvm will overlap (deduplicate) symbol ranges.
+                // We should keep track of this and deduplicate too.
+                // symbol -> index in ranges
+                range_lookup: HashMap<usize, usize>,
                 base_address: usize,
             },
         }
@@ -281,6 +285,7 @@ impl DataEmitInfo {
                     };
                     DataSegmentAnalysis::Ranges {
                         ranges: vec![],
+                        range_lookup: HashMap::new(),
                         base_address: address,
                     }
                 }
@@ -302,7 +307,11 @@ impl DataEmitInfo {
                     bail!("Expected data symbol dep node to ref to defined data symbol");
                 };
                 let segment_index = defined_data.index as usize;
-                let DataSegmentAnalysis::Ranges { ranges, .. } = &mut per_segment[segment_index]
+                let DataSegmentAnalysis::Ranges {
+                    ranges,
+                    range_lookup,
+                    ..
+                } = &mut per_segment[segment_index]
                 else {
                     // Only relocate if in active range
                     continue;
@@ -322,12 +331,14 @@ impl DataEmitInfo {
                     data_align = data_align.min(1usize << data_len.trailing_zeros());
                 }
 
+                let range_idx = ranges.len();
                 ranges.push(LateDataRange {
                     input_range: data_range,
                     in_module: module_index,
                     data_align,
                     in_module_offset: usize::MAX, // filled in later
-                })
+                });
+                range_lookup.insert(symbol_index, range_idx);
             }
         }
         // finally transform them into output form
@@ -341,18 +352,21 @@ impl DataEmitInfo {
                 }
                 DataSegmentAnalysis::Ranges {
                     mut ranges,
+                    range_lookup,
                     base_address,
                 } => {
                     let segment_alignment =
                         1usize << input_module.reloc_info.segments[segment_index].alignment;
 
-                    ranges.sort_by_key(|range| {
+                    let mut range_emit_order: Vec<_> = (0..ranges.len()).collect();
+                    range_emit_order.sort_by_key(|&range_idx| {
+                        let range = &ranges[range_idx];
                         (range.in_module, std::cmp::Reverse(range.data_align), range.input_range.start)
                     });
                     // reorder symbols per module
                     let mut per_module_size = HashMap::new();
-                    let mut range_lookup = OffsetRangeMap::new();
-                    for (range_index, range) in ranges.iter_mut().enumerate() {
+                    for &range_idx in &range_emit_order {
+                        let range = &mut ranges[range_idx];
                         let module_len = per_module_size.entry(range.in_module).or_insert(0);
                         let data_range = range.input_range.clone();
                         let data_offset = usize::next_multiple_of(*module_len, range.data_align);
@@ -360,8 +374,6 @@ impl DataEmitInfo {
                         // allocate it in that module
                         range.in_module_offset = data_offset;
                         *module_len = data_offset + data_range.len();
-                        // and map it
-                        range_lookup.insert(data_range, range_index);
                     }
 
                     // check that range_lookup completely covers the (non-zero) data segment?
@@ -387,6 +399,7 @@ impl DataEmitInfo {
                         base_address,
                         per_output_offset,
                         range_lookup,
+                        range_emit_order,
                     };
                     // If we could move other active segments to different base addresses, this segment getting longer
                     // would not be a problem. Since we can't guarantee this at this point though, don't risk it.
@@ -404,20 +417,25 @@ impl DataEmitInfo {
             .collect::<Vec<_>>();
         Ok(Self { per_segment })
     }
-    fn find_relocated_address(&self, data: &DefinedDataSymbol) -> Option<usize> {
+    fn find_relocated_address(
+        &self,
+        symbol_index: usize,
+        data: &DefinedDataSymbol,
+    ) -> Option<usize> {
         let segment_idx = data.index as usize;
         let DataSegmentEmitInfo::Ranges {
             ranges,
             base_address,
             per_output_offset,
             range_lookup,
+            ..
         } = &self.per_segment[segment_idx]
         else {
             // If just copied, then its not relocated
             return None;
         };
         let range_index = range_lookup
-            .get(&(data.offset as usize))
+            .get(&symbol_index)
             .expect("to find a data relocation index");
         let range = &ranges[*range_index];
         let mut address = *base_address;
@@ -482,7 +500,7 @@ impl RelocVisitor for &'_ ModuleEmitState<'_> {
         Ok(self
             .emit_state
             .data_relocations
-            .find_relocated_address(symbol))
+            .find_relocated_address(details.symbol_index, symbol))
     }
     fn visit_function_index(
         self,
@@ -1003,6 +1021,7 @@ impl<'a> ModuleEmitState<'a> {
                 }
                 DataSegmentEmitInfo::Ranges {
                     ranges,
+                    range_emit_order,
                     per_output_offset,
                     base_address,
                     ..
@@ -1013,7 +1032,8 @@ impl<'a> ModuleEmitState<'a> {
                         addr_offset = None;
                     }
                     data = vec![];
-                    for range in ranges {
+                    for &range_idx in range_emit_order {
+                        let range = &ranges[range_idx];
                         if range.in_module != self.output_module_index {
                             continue;
                         }
