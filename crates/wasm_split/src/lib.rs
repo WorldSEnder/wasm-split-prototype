@@ -28,11 +28,10 @@ impl LazySplitLoader {
     }
 }
 
-/// # Safety
-/// The loader inside the LocalKey must be handled as pinned until the thread exits.
-pub async unsafe fn ensure_loaded(loader: &'static LazySplitLoader) {
-    let lazy = unsafe { Pin::new_unchecked(&loader.lazy) };
-    (lazy.await).expect("load callback should succeed");
+pub async fn ensure_loaded(loader: Pin<&LazySplitLoader>) {
+    // SAFETY: this is just pin projection
+    let inner = unsafe { Pin::new_unchecked(&loader.lazy) };
+    inner.await.expect("load callback should succeed");
 }
 
 enum SplitLoaderFutState {

@@ -95,10 +95,11 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             }
             // This could have weak linkage to unify all mentions of the same module
             async fn #split_loader_ident () {
-                static LOADER: ::wasm_split::LazySplitLoader = const { unsafe {
-                    ::wasm_split::LazySplitLoader::new(#load_module_ident)
-                } };
-                unsafe { ::wasm_split::ensure_loaded(&LOADER) }.await;
+                ::wasm_split::ensure_loaded(::core::pin::Pin::static_ref({
+                    // SAFETY: the imported c function correctly implements the callback
+                    static LOADER: ::wasm_split::LazySplitLoader = unsafe { ::wasm_split::LazySplitLoader::new(#load_module_ident) };
+                    &LOADER
+                })).await;
             }
 
             #(#attrs)*
