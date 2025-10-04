@@ -264,7 +264,7 @@ pub enum SplitModuleIdentifier {
 impl SplitModuleIdentifier {
     pub fn filename(&self, module_index: usize) -> String {
         match self {
-            Self::Main => "main".to_string(),
+            Self::Main => unreachable!("main wasm filepath is handled separately"),
             Self::Split(name) => format!("split_{name}"),
             Self::Chunk(_) => format!("chunk_{module_index}"),
         }

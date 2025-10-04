@@ -1,4 +1,4 @@
-import { initSync } from "./main.js";
+
 let sharedImports = undefined;
 function getSharedImports() {
     if (sharedImports === undefined) {

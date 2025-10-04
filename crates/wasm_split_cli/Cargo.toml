@@ -1,5 +1,5 @@
 [package]
-name = "wasm_split_cli"
+name = "wasm_split_cli_support"
 version = "0.1.0"
 edition = "2021"
 

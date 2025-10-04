@@ -12,15 +12,22 @@ mod split_point;
 mod util;
 
 pub struct Options<'a> {
-    pub input: &'a Path,
-    pub output: &'a Path,
+    /// The input wasm to split
+    pub input_wasm: &'a [u8],
+    /// Where to put javascript wrappers, split wasm modules
+    pub output_dir: &'a Path,
+    /// Where to put the main module that has to be post-processed by wasm-bindgen.
+    /// usually a path in `output_dir`
+    pub main_out_path: &'a Path,
+    /// From where will `initSync` be imported from?
+    pub main_module: &'a str,
+    /// Verbosely output additional information about processing
     pub verbose: bool,
 }
 
-pub fn transform(args: Options) -> Result<()> {
-    let input_wasm = std::fs::read(args.input)?;
-    let module = crate::read::InputModule::parse(&input_wasm)?;
-    if args.verbose {
+pub fn transform(opts: Options) -> Result<()> {
+    let module = crate::read::InputModule::parse(opts.input_wasm)?;
+    if opts.verbose {
         module.reloc_info.print_relocs();
     }
 
@@ -29,7 +36,7 @@ pub fn transform(args: Options) -> Result<()> {
     let split_program_info =
         split_point::compute_split_modules(&module, &dep_graph, &split_points)?;
 
-    if args.verbose {
+    if opts.verbose {
         for (name, split_deps) in split_program_info.output_modules.iter() {
             split_deps.print(format!("{:?}", name).as_str(), &module);
         }
@@ -37,15 +44,25 @@ pub fn transform(args: Options) -> Result<()> {
 
     let emit_fn = |output_module_index: usize, data: &[u8]| -> Result<()> {
         let identifier = &split_program_info.output_modules[output_module_index].0;
-        let output_filename = identifier.filename(output_module_index) + ".wasm";
-        let output_path = args.output.join(output_filename);
-        std::fs::create_dir_all(args.output)?;
+        let output_path = match identifier {
+            SplitModuleIdentifier::Main => opts.main_out_path.to_path_buf(),
+            _ => opts
+                .output_dir
+                .join(identifier.filename(output_module_index) + ".wasm"),
+        };
         std::fs::write(output_path, data)?;
         Ok(())
     };
+    std::fs::create_dir_all(opts.output_dir)?;
     crate::emit::emit_modules(&module, &split_program_info, emit_fn)?;
 
+    use std::fmt::Write;
     let mut javascript = String::new();
+    let _ = write!(
+        javascript,
+        r#"import {{ initSync }} from "{}";\n"#,
+        opts.main_module
+    );
     javascript.push_str(include_str!("./split_wasm.js"));
     let mut split_deps = HashMap::<String, Vec<String>>::new();
     for (module_index, (name, _)) in split_program_info.output_modules.iter().enumerate() {
@@ -84,6 +101,6 @@ pub fn transform(args: Options) -> Result<()> {
         ).as_str())
     }
 
-    std::fs::write(args.output.join("__wasm_split.js"), javascript)?;
+    std::fs::write(opts.output_dir.join("__wasm_split.js"), javascript)?;
     Ok(())
 }

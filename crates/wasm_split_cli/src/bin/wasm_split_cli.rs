@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
-use wasm_split_cli_support::{self as this, transform, Options};
+use std::path::Path;
+
+use wasm_split_cli_support as this;
 
 #[derive(Debug, Parser)]
 #[command(name = "wasm-split")]
@@ -18,10 +20,14 @@ struct Cli {
 
 fn main() -> Result<()> {
     let args = Cli::parse();
+    let input_wasm = std::fs::read(args.input)?;
+    let main_out_path = args.output.join("main.wasm");
     let opts = this::Options {
-        input: &args.input,
-        output: &args.output,
+        input_wasm: &input_wasm,
+        output_dir: &args.output,
+        main_out_path: &main_out_path,
         verbose: args.verbose,
+        main_module: "./main.js",
     };
     this::transform(opts)
 }
