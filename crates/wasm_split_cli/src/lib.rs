@@ -30,6 +30,9 @@ pub struct Options<'a> {
 
 pub struct SplitWasm {
     pub split_modules: Vec<PathBuf>,
+    /// split -> dependency filestem
+    /// i.e. { "foo": ["chunk_0", "foo"] }
+    pub prefetch_map: HashMap<String, Vec<String>>,
 }
 
 pub fn transform(opts: Options) -> Result<SplitWasm> {
@@ -50,6 +53,8 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
     }
 
     let mut split_modules = vec![];
+    let mut prefetch_map = HashMap::<String, Vec<String>>::new();
+
     let emit_fn = |output_module_index: usize, data: &[u8]| -> Result<()> {
         let identifier = &split_program_info.output_modules[output_module_index].0;
         let output_path = match identifier {
@@ -83,19 +88,23 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
         };
         let file_name = name.filename(module_index);
         let var_name = format!("__chunk_{module_index}");
+        let splits_dbg = splits.join(", ");
+        javascript.push_str(
+            format!(
+                "/* {splits_dbg} */\nconst {var_name} = makeLoad(new URL(\"./{file_name}.wasm\", import.meta.url), []);\n",
+            )
+            .as_str(),
+        );
         for split in splits {
             split_deps
                 .entry(split.clone())
                 .or_default()
                 .push(var_name.clone());
+            prefetch_map
+                .entry(split.clone())
+                .or_default()
+                .push(file_name.clone());
         }
-        let splits = splits.join(", ");
-        javascript.push_str(
-            format!(
-                "/* {splits} */\nconst {var_name} = makeLoad(new URL(\"./{file_name}.wasm\", import.meta.url), []);\n",
-            )
-            .as_str(),
-        )
     }
     for (module_index, (identifier, _)) in
         split_program_info.output_modules.iter().enumerate().rev()
@@ -110,9 +119,16 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
         let deps = deps.join(", ");
         javascript.push_str(format!(
             "export const {loader_name} = wrapAsyncCb(makeLoad(new URL(\"./{file_name}.wasm\", import.meta.url), [{deps}]));\n",
-        ).as_str())
+        ).as_str());
+        prefetch_map
+            .entry(split.clone())
+            .or_default()
+            .push(file_name);
     }
 
     std::fs::write(opts.output_dir.join("__wasm_split.js"), javascript)?;
-    Ok(SplitWasm { split_modules })
+    Ok(SplitWasm {
+        split_modules,
+        prefetch_map,
+    })
 }
