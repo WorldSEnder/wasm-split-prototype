@@ -2,12 +2,49 @@ use proc_macro::{Span, TokenStream};
 
 use quote::{format_ident, quote, quote_spanned};
 use sha2::Digest;
-use syn::spanned::Spanned;
-use syn::{parse_macro_input, Ident, ItemFn, Signature};
+use syn::ext::IdentExt;
+use syn::parse::{Parse, ParseStream};
+use syn::{parse_macro_input, spanned::Spanned, Ident, ItemFn, LitStr, Signature, Token};
+
+struct Args {
+    module_ident: Ident,
+    link_name: LitStr,
+}
+
+impl Parse for Args {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let module_ident = input.call(Ident::parse_any)?;
+        let mut link_name: Option<LitStr> = None;
+        if !input.is_empty() {
+            let _: Token![,] = input.parse()?;
+            let option = input.call(Ident::parse_any)?;
+            match () {
+                _ if option == "wasm_import_module" => {
+                    let _: Token![=] = input.parse()?;
+                    link_name = Some(input.parse()?);
+                }
+                _ => {
+                    return Err(syn::Error::new(
+                        option.span(),
+                        "No such option for the `split` macro.",
+                    ))
+                }
+            }
+        }
+        Ok(Self {
+            module_ident,
+            link_name: link_name
+                .unwrap_or(LitStr::new("./__wasm_split.js", Span::call_site().into())),
+        })
+    }
+}
 
 #[proc_macro_attribute]
 pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
-    let module_ident = parse_macro_input!(args as Ident);
+    let Args {
+        module_ident,
+        link_name,
+    } = parse_macro_input!(args as Args);
     let mut item_fn = parse_macro_input!(input as ItemFn);
     let mut declared_abi = item_fn.sig.abi.take();
     declared_abi.get_or_insert(syn::Abi {
@@ -82,12 +119,12 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     quote! {
         #wrapper_sig {
 
-            #[link(wasm_import_module = "./__wasm_split.js")]
+            #[link(wasm_import_module = #link_name)]
             unsafe extern "C" {
                 #[unsafe(no_mangle)]
                 fn #load_module_ident (callback: ::wasm_split::LoadCallbackFn, data: *const ::std::ffi::c_void) -> ();
             }
-            #[link(wasm_import_module = "./__wasm_split.js")]
+            #[link(wasm_import_module = #link_name)]
             unsafe #declared_abi {
                 // We rewrite calls to this function instead of actually calling it. We just need to link to it. The name is unique by hashing.
                 #[unsafe(no_mangle)]

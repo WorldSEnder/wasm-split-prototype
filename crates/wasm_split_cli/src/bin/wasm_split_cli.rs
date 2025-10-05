@@ -28,6 +28,7 @@ fn main() -> Result<()> {
         main_out_path: &main_out_path,
         verbose: args.verbose,
         main_module: "./main.js",
+        link_name: Path::new("__wasm_split.js"),
     };
     let _ = this::transform(opts)?;
     Ok(())

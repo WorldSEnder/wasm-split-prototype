@@ -24,6 +24,9 @@ pub struct Options<'a> {
     pub main_out_path: &'a Path,
     /// From where will `initSync` be imported from?
     pub main_module: &'a str,
+    /// (Relative) path of the created link file.
+    /// This must match the name used in the macro.
+    pub link_name: &'a Path,
     /// Verbosely output additional information about processing
     pub verbose: bool,
 }
@@ -126,7 +129,8 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
             .push(file_name);
     }
 
-    std::fs::write(opts.output_dir.join("__wasm_split.js"), javascript)?;
+    let link_path = opts.output_dir.join(opts.link_name);
+    std::fs::write(link_path, javascript)?;
     Ok(SplitWasm {
         split_modules,
         prefetch_map,
