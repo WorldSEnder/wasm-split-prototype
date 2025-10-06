@@ -3,12 +3,13 @@ use std::{
     ops::Range,
 };
 
+use crate::wasmparser_shim::{Linking, LinkingSectionReader};
 use eyre::{anyhow, bail, Result};
 use tracing::trace;
 use wasmparser::{
-    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind,
-    LinkingSectionReader, Payload, RelocAddendKind, RelocSectionReader, RelocationEntry,
-    RelocationType, Segment, SymbolFlags, SymbolInfo,
+    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Payload,
+    RelocAddendKind, RelocSectionReader, RelocationEntry, RelocationType, Segment, SymbolFlags,
+    SymbolInfo,
 };
 
 use crate::{
@@ -34,16 +35,22 @@ impl<'a> RelocInfoParser<'a> {
         if custom.name() == "linking" {
             let reader =
                 LinkingSectionReader::new(BinaryReader::new(custom.data(), custom.data_offset()))?;
-            for subsection in reader.subsections() {
+            let reader = reader.subsections();
+            for subsection in reader {
                 let subsection = subsection?;
-                if let wasmparser::Linking::SegmentInfo(segments) = subsection {
+                if let Linking::SegmentInfo(segments) = subsection {
                     assert!(self.info.segments.is_empty(), "duplicate segments info");
                     self.info.segments = segments.into_iter().collect::<Result<_, _>>()?;
                     continue;
                 }
-                if let wasmparser::Linking::SymbolTable(map) = subsection {
+                if let Linking::SymbolTable(map) = subsection {
                     assert!(self.info.symbols.is_empty(), "duplicate symbol table");
-                    self.info.symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
+                    self.info.symbols = map
+                        .into_iter()
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .map(|i| i.into_inner())
+                        .collect();
                     for sym in &self.info.symbols {
                         match *sym {
                             SymbolInfo::Table {
