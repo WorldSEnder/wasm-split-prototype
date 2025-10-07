@@ -5,7 +5,7 @@ use crate::read::{ExportId, ImportId, InputFuncId, InputModule};
 use eyre::{anyhow, bail, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
-use tracing::trace;
+use tracing::{trace, warn};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SplitPoint {
@@ -80,9 +80,11 @@ pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
         })
         .collect::<Result<Vec<SplitPoint>>>()?;
 
-    #[allow(clippy::never_loop)]
-    for (key, _) in export_map.iter() {
-        bail!("No corresponding import for split export {key:?}");
+    if !export_map.is_empty() {
+        warn!(
+            "No corresponding imports for split export(s) {:?}",
+            export_map.keys().collect::<Vec<_>>()
+        );
     }
 
     Ok(split_points)
