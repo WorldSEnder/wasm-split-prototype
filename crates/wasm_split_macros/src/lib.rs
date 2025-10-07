@@ -4,13 +4,20 @@ use quote::{format_ident, quote, quote_spanned};
 use sha2::Digest;
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
+use syn::{parenthesized, parse_quote, Block, Pat, Path, ReturnType};
 use syn::{parse_macro_input, spanned::Spanned, Ident, ItemFn, LitStr, Signature, Token};
-use syn::{parse_quote, Path};
+
+struct ReturnWrapper {
+    pattern: Pat,
+    output: ReturnType,
+    postlude: Block,
+}
 
 struct Args {
     module_ident: Ident,
     link_name: LitStr,
     wasm_split_path: Path,
+    return_wrapper: Option<ReturnWrapper>,
 }
 
 impl Parse for Args {
@@ -18,6 +25,7 @@ impl Parse for Args {
         let module_ident = input.call(Ident::parse_any)?;
         let mut link_name: Option<LitStr> = None;
         let mut wasm_split_path: Option<Path> = None;
+        let mut return_wrapper: Option<ReturnWrapper> = None;
         while !input.is_empty() {
             let _: Token![,] = input.parse()?;
             if input.is_empty() {
@@ -33,6 +41,20 @@ impl Parse for Args {
                     let _: Token![=] = input.parse()?;
                     wasm_split_path = Some(input.parse()?);
                 }
+                _ if option == "return_wrapper" => {
+                    let wrap_spec;
+                    let _parens = parenthesized!(wrap_spec in input);
+                    let _: Token![let] = wrap_spec.parse()?;
+                    let pattern = Pat::parse_multi_with_leading_vert(&wrap_spec)?;
+                    let _: Token![=] = wrap_spec.parse()?;
+                    let _: Token![_] = wrap_spec.parse()?;
+                    let _: Token![;] = wrap_spec.parse()?;
+                    return_wrapper = Some(ReturnWrapper {
+                        pattern,
+                        postlude: wrap_spec.parse()?,
+                        output: wrap_spec.parse()?,
+                    });
+                }
                 _ => {
                     return Err(syn::Error::new(
                         option.span(),
@@ -46,6 +68,7 @@ impl Parse for Args {
             link_name: link_name
                 .unwrap_or(LitStr::new("./__wasm_split.js", Span::call_site().into())),
             wasm_split_path: wasm_split_path.unwrap_or(parse_quote!(::wasm_split)),
+            return_wrapper,
         })
     }
 }
@@ -56,8 +79,9 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         module_ident,
         link_name,
         wasm_split_path,
+        return_wrapper,
     } = parse_macro_input!(args as Args);
-    let mut item_fn = parse_macro_input!(input as ItemFn);
+    let mut item_fn: ItemFn = parse_macro_input!(input as ItemFn);
     let mut declared_abi = item_fn.sig.abi.take();
     declared_abi.get_or_insert(syn::Abi {
         extern_token: Default::default(),
@@ -128,6 +152,24 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     let attrs = item_fn.attrs;
     let stmts = &item_fn.block.stmts;
 
+    let mut call_input_fn = quote! {
+        #impl_import_ident( #(#args),* )
+    };
+
+    if let Some(ReturnWrapper {
+        output,
+        pattern: output_pat,
+        postlude,
+    }) = return_wrapper
+    {
+        wrapper_sig.output = output;
+        let postlude = postlude.stmts;
+        call_input_fn = quote! {{
+            let #output_pat = #call_input_fn;
+            #( #postlude )*
+        }};
+    }
+
     quote! {
         #[doc(hidden)]
         mod #name {
@@ -161,7 +203,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             }
 
             #name :: #preload_name ().await;
-            #impl_import_ident( #(#args),* )
+            #call_input_fn
         }
     }
     .into()
