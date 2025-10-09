@@ -152,7 +152,7 @@ fn get_indirect_functions(
         input_indirect_funcs.extend(funcs.into_iter().map(|f| f as usize));
     }
 
-    let mut visible_indirects = HashSet::new();
+    let mut visible_functions = HashSet::new();
     for symbol in &this.symbols {
         let SymbolInfo::Func { index, flags, .. } = *symbol else {
             continue;
@@ -165,10 +165,10 @@ fn get_indirect_functions(
         if !keep {
             continue;
         }
-        visible_indirects.insert(index as InputFuncId);
+        visible_functions.insert(index as InputFuncId);
     }
 
-    let mut referenced_indirects = visible_indirects.clone();
+    let mut referenced_indirects = visible_functions.clone();
     for relocation in this.relocs.iter().flat_map(|(_, relocs)| relocs.iter()) {
         use RelocationType::*;
         if !matches!(
@@ -189,7 +189,7 @@ fn get_indirect_functions(
         referenced_indirects.insert(index as InputFuncId);
     }
 
-    this.visible_indirects = visible_indirects;
+    this.visible_indirects = visible_functions;
     this.referenced_indirects = referenced_indirects;
     Ok(())
 }

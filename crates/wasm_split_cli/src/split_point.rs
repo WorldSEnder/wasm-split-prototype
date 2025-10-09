@@ -93,20 +93,18 @@ pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
 #[derive(Debug, Default)]
 pub struct ReachabilityGraph {
     pub reachable: HashSet<DepNode>,
-    pub parents: HashMap<DepNode, DepNode>,
 }
 
 #[derive(Debug, Default)]
 pub struct OutputModuleInfo {
     pub included_symbols: HashSet<DepNode>,
-    pub parents: HashMap<DepNode, DepNode>, // for debug only
     pub split_points: Vec<SplitPoint>,
     pub used_shared_deps: HashSet<DepNode>,
 }
 
 impl OutputModuleInfo {
     pub fn print(&self, module_name: &str, module: &InputModule) {
-        print_deps(module_name, module, &self.included_symbols, &self.parents);
+        print_deps(module_name, module, &self.included_symbols);
     }
 }
 
@@ -114,18 +112,12 @@ impl From<ReachabilityGraph> for OutputModuleInfo {
     fn from(reachability: ReachabilityGraph) -> Self {
         Self {
             included_symbols: reachability.reachable,
-            parents: reachability.parents,
             ..Default::default()
         }
     }
 }
 
-fn print_deps(
-    module_name: &str,
-    module: &InputModule,
-    reachable: &HashSet<DepNode>,
-    parents: &HashMap<DepNode, DepNode>,
-) {
+fn print_deps(module_name: &str, module: &InputModule, reachable: &HashSet<DepNode>) {
     let format_dep = |dep: &DepNode| match dep {
         DepNode::Function(index) => {
             let name = module.names.functions.get(index);
@@ -162,40 +154,45 @@ fn print_deps(
         } else {
             trace!("   {}", format_dep(dep));
         }
-        let mut node = dep;
-        while let Some(parent) = parents.get(node) {
-            trace!("      <== {}", format_dep(parent));
-            node = parent;
-        }
     }
     trace!("SPLIT: ============== {module_name}  : total size: {total_size}");
 }
 
-pub fn find_reachable_deps(
-    deps: &DepGraph,
+struct ModuleGraph<'a> {
+    dep_graph: &'a DepGraph,
+    wbg_describe_cast: Option<InputFuncId>,
+}
+
+fn find_reachable_deps(
+    deps: &ModuleGraph,
     roots: &HashSet<DepNode>,
-    exclude: &HashSet<DepNode>,
+    main_deps: &HashSet<DepNode>,
+    // there are some DepNodes which we want to ensure to put into the main module
+    additional_for_main: &mut HashSet<DepNode>,
 ) -> ReachabilityGraph {
     let mut queue: VecDeque<DepNode> = roots.iter().copied().collect();
     let mut seen = HashSet::<DepNode>::new();
-    let mut parents = HashMap::<DepNode, DepNode>::new();
     while let Some(node) = queue.pop_front() {
         seen.insert(node);
-        let Some(children) = deps.get(&node) else {
+        let Some(children) = deps.dep_graph.get(&node) else {
             continue;
         };
+        if let Some(wbg_describe_cast) = deps.wbg_describe_cast {
+            if children.contains(&DepNode::Function(wbg_describe_cast)) {
+                if !main_deps.contains(&node) {
+                    additional_for_main.insert(node);
+                    continue;
+                }
+            }
+        }
         for child in children {
-            if seen.contains(child) || exclude.contains(child) {
+            if seen.contains(child) || main_deps.contains(child) {
                 continue;
             }
-            parents.entry(*child).or_insert(node);
             queue.push_back(*child);
         }
     }
-    ReachabilityGraph {
-        reachable: seen,
-        parents,
-    }
+    ReachabilityGraph { reachable: seen }
 }
 
 fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> HashSet<DepNode> {
@@ -234,11 +231,29 @@ fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> H
     for &func_id in &module.reloc_info.visible_indirects {
         roots.insert(DepNode::Function(func_id));
     }
+
+    // finally, remove all splits points they belong in their own module
     for split_point in split_points.iter() {
         roots.remove(&DepNode::Function(split_point.export_func));
         roots.remove(&DepNode::Function(split_point.import_func));
     }
     roots
+}
+
+fn get_wbg_describe_cast(module: &InputModule) -> Option<InputFuncId> {
+    // wasm_bindgen specific hack: we root all functions calling `__wbindgen_describe_cast`.
+    // this is explained best with reference to the implementation in
+    // https://github.com/wasm-bindgen/wasm-bindgen/blob/8ea6a42f2491ecb53ca08c44399df6ad59caf871/src/rt/mod.rs#L30
+    // a non-inline function describes the incoming and outgoing types.
+    // since it is generic (to allow later monomorphization), this function can not be exported.
+    // calls to this function are then later rewritten by wasm-bindgen to the inserted import.
+    let (wbg_describe_cast_import, _) = module.imports.iter().enumerate().find(|(_, import)| {
+        import.module == "__wbindgen_placeholder__" && import.name == "__wbindgen_describe_cast"
+    })?;
+    module
+        .imported_func_map
+        .get(&wbg_describe_cast_import)
+        .cloned()
 }
 
 fn get_split_roots(splits_in_module: &[&SplitPoint]) -> HashSet<DepNode> {
@@ -302,7 +317,13 @@ pub fn compute_split_modules(
     dep_graph: &DepGraph,
     split_points: &[SplitPoint],
 ) -> Result<SplitProgramInfo> {
+    let wbg_describe_cast = get_wbg_describe_cast(module);
     let split_points_by_module = get_split_points_by_module(split_points);
+
+    let dep_graph = ModuleGraph {
+        dep_graph,
+        wbg_describe_cast,
+    };
 
     trace!("split_points={split_points:?}");
 
@@ -311,17 +332,37 @@ pub fn compute_split_modules(
         .map(|split_point| (split_point.import_func, split_point.export_func))
         .collect();
 
-    let find_reachable_non_ignored_deps = |roots: &HashSet<DepNode>, exclude: &HashSet<DepNode>| {
-        let mut deps = find_reachable_deps(dep_graph, roots, exclude);
-        for split_point in split_points.iter() {
-            deps.reachable
-                .remove(&DepNode::Function(split_point.import_func));
-        }
-        deps
-    };
+    let find_reachable_non_ignored_deps =
+        |roots: &HashSet<DepNode>, main_deps: &mut ReachabilityGraph| {
+            let mut additional_mains = HashSet::new();
+            let mut deps = find_reachable_deps(
+                &dep_graph,
+                roots,
+                &main_deps.reachable,
+                &mut additional_mains,
+            );
+            while !additional_mains.is_empty() {
+                let added_just_now = std::mem::take(&mut additional_mains);
+                let reachable = find_reachable_deps(
+                    &dep_graph,
+                    &added_just_now,
+                    &main_deps.reachable,
+                    &mut additional_mains,
+                );
+                additional_mains.extend(reachable.reachable.difference(&added_just_now));
+                main_deps.reachable.extend(reachable.reachable);
+            }
+            for split_point in split_points.iter() {
+                deps.reachable
+                    .remove(&DepNode::Function(split_point.import_func));
+            }
+            deps
+        };
 
     let main_roots = get_main_module_roots(module, split_points);
-    let main_deps = find_reachable_non_ignored_deps(&main_roots, &HashSet::new());
+    let mut additional_mains = ReachabilityGraph::default();
+    let mut main_deps = find_reachable_non_ignored_deps(&main_roots, &mut additional_mains);
+    main_deps.reachable.extend(additional_mains.reachable);
 
     // Determine reachable symbols (excluding main module symbols) for each
     // split module. Symbols may be reachable from more than one split module;
@@ -330,7 +371,7 @@ pub fn compute_split_modules(
         .iter()
         .map(|(module_name, entry_points)| {
             let roots = get_split_roots(&entry_points);
-            let split_deps = find_reachable_non_ignored_deps(&roots, &main_deps.reachable);
+            let split_deps = find_reachable_non_ignored_deps(&roots, &mut main_deps);
             (module_name.clone(), split_deps)
         })
         .collect();
@@ -371,7 +412,7 @@ pub fn compute_split_modules(
     let mut program_info = SplitProgramInfo::default();
     for module in split_module_contents.values_mut() {
         for symbol in module.included_symbols.iter() {
-            let Some(deps) = dep_graph.get(symbol) else {
+            let Some(deps) = dep_graph.dep_graph.get(symbol) else {
                 continue;
             };
             for &(mut dep_to_check) in deps {

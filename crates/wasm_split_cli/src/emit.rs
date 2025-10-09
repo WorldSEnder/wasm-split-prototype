@@ -161,7 +161,17 @@ struct IndirectFunctionEmitInfo {
 
 impl IndirectFunctionEmitInfo {
     fn new(module: &InputModule, program_info: &SplitProgramInfo) -> Result<Self> {
-        let mut indirect_functions = module.reloc_info.referenced_indirects.clone();
+        let mut indirect_functions = module
+            .reloc_info
+            .referenced_indirects
+            .iter()
+            .filter(|&&func| {
+                program_info
+                    .symbol_output_module
+                    .contains_key(&DepNode::Function(func))
+            })
+            .cloned()
+            .collect::<HashSet<_>>();
         indirect_functions.extend(program_info.shared_deps.iter().filter_map(|dep| match dep {
             DepNode::Function(f) => Some(f),
             _ => None,
@@ -180,7 +190,7 @@ impl IndirectFunctionEmitInfo {
             *program_info
                 .symbol_output_module
                 .get(&DepNode::Function(func_id))
-                .expect("No module for indirect function")
+                .unwrap_or_else(|| panic!("No module for indirect function {func_id}"))
         };
 
         let mut table_entries: Vec<_> = indirect_functions.into_iter().collect();
@@ -962,7 +972,15 @@ impl<'a> ModuleEmitState<'a> {
                 OutputFunctionKind::Defined => {
                     let input_func = &self.input_module.defined_funcs
                         [output_func.input_func_id - self.input_module.imported_funcs.len()];
-                    section.raw(&self.get_relocated_data(input_func.body.range())?);
+                    let relocated_def = self
+                        .get_relocated_data(input_func.body.range())
+                        .with_context(|| {
+                            format!(
+                                "when emitted definition of func[{}] in module {}",
+                                output_func.input_func_id, self.output_module_index,
+                            )
+                        })?;
+                    section.raw(&relocated_def);
                 }
                 OutputFunctionKind::IndirectStub => {
                     let indirect_index = self
