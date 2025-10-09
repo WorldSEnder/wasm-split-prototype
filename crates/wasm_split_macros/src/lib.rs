@@ -4,7 +4,7 @@ use quote::{format_ident, quote, quote_spanned};
 use sha2::Digest;
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
-use syn::{parenthesized, parse_quote, Block, Pat, Path, ReturnType};
+use syn::{parenthesized, parse_quote, Attribute, Block, Pat, Path, ReturnType};
 use syn::{parse_macro_input, spanned::Spanned, Ident, ItemFn, LitStr, Signature, Token};
 
 struct ReturnWrapper {
@@ -13,11 +13,17 @@ struct ReturnWrapper {
     postlude: Block,
 }
 
+struct PreloadDefinition {
+    attrs: Vec<Attribute>,
+    name: Ident,
+}
+
 struct Args {
     module_ident: Ident,
     link_name: LitStr,
     wasm_split_path: Path,
     return_wrapper: Option<ReturnWrapper>,
+    preload_def: Option<PreloadDefinition>,
 }
 
 impl Parse for Args {
@@ -26,6 +32,7 @@ impl Parse for Args {
         let mut link_name: Option<LitStr> = None;
         let mut wasm_split_path: Option<Path> = None;
         let mut return_wrapper: Option<ReturnWrapper> = None;
+        let mut preload_def: Option<PreloadDefinition> = None;
         while !input.is_empty() {
             let _: Token![,] = input.parse()?;
             if input.is_empty() {
@@ -55,6 +62,13 @@ impl Parse for Args {
                         output: wrap_spec.parse()?,
                     });
                 }
+                _ if option == "preload" => {
+                    let wrap_spec;
+                    let _parens = parenthesized!(wrap_spec in input);
+                    let attrs = wrap_spec.call(Attribute::parse_outer)?;
+                    let name = wrap_spec.parse()?;
+                    preload_def = Some(PreloadDefinition { attrs, name });
+                }
                 _ => {
                     return Err(syn::Error::new(
                         option.span(),
@@ -69,6 +83,7 @@ impl Parse for Args {
                 .unwrap_or(LitStr::new("./__wasm_split.js", Span::call_site().into())),
             wasm_split_path: wasm_split_path.unwrap_or(parse_quote!(::wasm_split)),
             return_wrapper,
+            preload_def,
         })
     }
 }
@@ -80,7 +95,9 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         link_name,
         wasm_split_path,
         return_wrapper,
+        preload_def,
     } = parse_macro_input!(args as Args);
+
     let mut item_fn: ItemFn = parse_macro_input!(input as ItemFn);
     let mut declared_abi = item_fn.sig.abi.take();
     declared_abi.get_or_insert(syn::Abi {
@@ -106,7 +123,17 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 
     let name = &item_fn.sig.ident;
-    let preload_name = Ident::new("preload", name.span());
+    let PreloadDefinition {
+        attrs: preload_attrs,
+        name: preload_name,
+    } = preload_def.unwrap_or_else(|| PreloadDefinition {
+        attrs: vec![
+            parse_quote!(#[automatically_derived]),
+            parse_quote!(#[doc(hidden)]),
+        ],
+        name: format_ident!("__wasm_split_preload_{name}"),
+    });
+    let vis = item_fn.vis;
 
     let unique_identifier = base16::encode_lower(
         &sha2::Sha256::digest(format!("{name} {span:?}", span = name.span()))[..16],
@@ -171,24 +198,21 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 
     quote! {
-        #[doc(hidden)]
-        mod #name {
+        // This could have weak linkage to unify all mentions of the same module
+        #( #preload_attrs )*
+        #vis async fn #preload_name () {
             #[link(wasm_import_module = #link_name)]
             unsafe extern "C" {
                 #[unsafe(no_mangle)]
                 fn #load_module_ident (callback: #wasm_split_path ::LoadCallbackFn, data: *const ::std::ffi::c_void) -> ();
             }
-
-            // This could have weak linkage to unify all mentions of the same module
-            pub async fn #preload_name () {
-                #wasm_split_path::ensure_loaded(::core::pin::Pin::static_ref({
-                    // SAFETY: the imported c function correctly implements the callback
-                    static LOADER: #wasm_split_path::LazySplitLoader = unsafe { #wasm_split_path::LazySplitLoader::new(#load_module_ident) };
-                    &LOADER
-                })).await;
-            }
+            #wasm_split_path::ensure_loaded(::core::pin::Pin::static_ref({
+                // SAFETY: the imported c function correctly implements the callback
+                static LOADER: #wasm_split_path::LazySplitLoader = unsafe { #wasm_split_path::LazySplitLoader::new(#load_module_ident) };
+                &LOADER
+            })).await;
         }
-        #wrapper_sig {
+        #vis #wrapper_sig {
             #[link(wasm_import_module = #link_name)]
             unsafe #declared_abi {
                 // We rewrite calls to this function instead of actually calling it. We just need to link to it. The name is unique by hashing.
@@ -202,7 +226,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
                 #(#stmts)*
             }
 
-            #name :: #preload_name ().await;
+            #preload_name ().await;
             #call_input_fn
         }
     }
