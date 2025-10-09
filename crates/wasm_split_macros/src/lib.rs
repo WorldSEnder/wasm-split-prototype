@@ -212,6 +212,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
                 &LOADER
             })).await;
         }
+        #(#attrs)*
         #vis #wrapper_sig {
             #[link(wasm_import_module = #link_name)]
             unsafe #declared_abi {
