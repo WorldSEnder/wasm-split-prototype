@@ -1171,9 +1171,10 @@ impl<'a> ModuleEmitState<'a> {
                 // Another wasm-bindgen hack: To make sure reference-types is not detected, replace the feature string :)
                 let mut data: Vec<u8> = custom.data.into();
                 if self.is_main() {
-                    let needle = b"+reference-types";
+                    // 0x0f is the length of the following string
+                    let needle = b"+\x0freference-types";
                     if let Some(pos) = data.windows(needle.len()).position(|feat| feat == needle) {
-                        data[pos..pos + needle.len()].copy_from_slice(b"+REFERENCE-TYPES");
+                        data[pos..pos + needle.len()].copy_from_slice(b"+\x0fREFERENCE-TYPES");
                     }
                 }
 
