@@ -3,13 +3,12 @@ use std::{
     ops::Range,
 };
 
-use crate::wasmparser_shim::{Linking, LinkingSectionReader};
 use eyre::{anyhow, bail, Result};
 use tracing::trace;
 use wasmparser::{
-    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Payload,
-    RelocAddendKind, RelocSectionReader, RelocationEntry, RelocationType, Segment, SymbolFlags,
-    SymbolInfo,
+    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Linking,
+    LinkingSectionReader, Payload, RelocAddendKind, RelocSectionReader, RelocationEntry,
+    RelocationType, Segment, SymbolFlags, SymbolInfo,
 };
 
 use crate::{
@@ -45,12 +44,7 @@ impl<'a> RelocInfoParser<'a> {
                 }
                 if let Linking::SymbolTable(map) = subsection {
                     assert!(self.info.symbols.is_empty(), "duplicate symbol table");
-                    self.info.symbols = map
-                        .into_iter()
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into_iter()
-                        .map(|i| i.into_inner())
-                        .collect();
+                    self.info.symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
                     for sym in &self.info.symbols {
                         match *sym {
                             SymbolInfo::Table {

@@ -13,7 +13,6 @@ mod read;
 mod reloc;
 mod split_point;
 mod util;
-mod wasmparser_shim;
 
 pub struct Options<'a> {
     /// The input wasm to split
