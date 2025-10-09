@@ -6,6 +6,7 @@ use eyre::{anyhow, bail, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
 use tracing::{trace, warn};
+use wasmparser::TypeRef;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SplitPoint {
@@ -160,7 +161,7 @@ fn print_deps(module_name: &str, module: &InputModule, reachable: &HashSet<DepNo
 
 struct ModuleGraph<'a> {
     dep_graph: &'a DepGraph,
-    wbg_describe_cast: Option<InputFuncId>,
+    wbg_rooting_funs: HashSet<DepNode>,
 }
 
 fn find_reachable_deps(
@@ -168,23 +169,22 @@ fn find_reachable_deps(
     roots: &HashSet<DepNode>,
     main_deps: &HashSet<DepNode>,
     // there are some DepNodes which we want to ensure to put into the main module
-    additional_for_main: &mut HashSet<DepNode>,
+    mut additional_for_main: Option<&mut HashSet<DepNode>>,
 ) -> ReachabilityGraph {
     let mut queue: VecDeque<DepNode> = roots.iter().copied().collect();
     let mut seen = HashSet::<DepNode>::new();
     while let Some(node) = queue.pop_front() {
-        seen.insert(node);
         let Some(children) = deps.dep_graph.get(&node) else {
+            seen.insert(node);
             continue;
         };
-        if let Some(wbg_describe_cast) = deps.wbg_describe_cast {
-            if children.contains(&DepNode::Function(wbg_describe_cast)) {
-                if !main_deps.contains(&node) {
-                    additional_for_main.insert(node);
-                    continue;
-                }
+        if let Some(additional_for_main) = &mut additional_for_main {
+            if !deps.wbg_rooting_funs.is_disjoint(&children) {
+                additional_for_main.insert(node);
+                continue;
             }
         }
+        seen.insert(node);
         for child in children {
             if seen.contains(child) || main_deps.contains(child) {
                 continue;
@@ -240,20 +240,45 @@ fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> H
     roots
 }
 
-fn get_wbg_describe_cast(module: &InputModule) -> Option<InputFuncId> {
+fn wbg_rooting_funs(_dep_graph: &DepGraph, module: &InputModule) -> HashSet<DepNode> {
     // wasm_bindgen specific hack: we root all functions calling `__wbindgen_describe_cast`.
     // this is explained best with reference to the implementation in
     // https://github.com/wasm-bindgen/wasm-bindgen/blob/8ea6a42f2491ecb53ca08c44399df6ad59caf871/src/rt/mod.rs#L30
     // a non-inline function describes the incoming and outgoing types.
     // since it is generic (to allow later monomorphization), this function can not be exported.
     // calls to this function are then later rewritten by wasm-bindgen to the inserted import.
-    let (wbg_describe_cast_import, _) = module.imports.iter().enumerate().find(|(_, import)| {
-        import.module == "__wbindgen_placeholder__" && import.name == "__wbindgen_describe_cast"
-    })?;
-    module
-        .imported_func_map
-        .get(&wbg_describe_cast_import)
-        .cloned()
+    let mut users_must_be_in_main = HashSet::new();
+    let mut _wbg_describe_cast = None;
+    for (import_id, import) in module.imports.iter().enumerate() {
+        if import.module != "__wbindgen_placeholder__" || !matches!(import.ty, TypeRef::Func(_)) {
+            continue;
+        }
+        if import.name == "__wbindgen_describe_cast" {
+            let func_id = module.imported_func_map.get(&import_id).cloned().unwrap();
+            _wbg_describe_cast = Some(func_id);
+            users_must_be_in_main.insert(DepNode::Function(func_id));
+        }
+    }
+
+    // Second part of the hack is left out, which would be needed for externref: we root all functions calling wasm_bindgen imports.
+    // these are all in danger of getting rewritten during the "externref" pass.
+    // wasm-bindgen currently replaces instructions, converting i32 to externref when calling an "adapter"
+    // these must end up in the main module.
+
+    // Note: callers to `__wbindgen_describe_cast` will also get replaced with imports and are then
+    // subject to further processing via the described externref pass.
+
+    // TODO: iterating the whole dep graph seems excessive
+    // Unfortunately, due to inlining in release mode, this means that large functions end up
+    // being forced into main.
+    // if let Some(wbg_describe_cast) = wbg_describe_cast {
+    //     for (dep, children) in dep_graph {
+    //         if children.contains(&DepNode::Function(wbg_describe_cast)) {
+    //             //users_must_be_in_main.insert(*dep);
+    //         }
+    //     }
+    // }
+    users_must_be_in_main
 }
 
 fn get_split_roots(splits_in_module: &[&SplitPoint]) -> HashSet<DepNode> {
@@ -317,12 +342,11 @@ pub fn compute_split_modules(
     dep_graph: &DepGraph,
     split_points: &[SplitPoint],
 ) -> Result<SplitProgramInfo> {
-    let wbg_describe_cast = get_wbg_describe_cast(module);
     let split_points_by_module = get_split_points_by_module(split_points);
 
     let dep_graph = ModuleGraph {
         dep_graph,
-        wbg_describe_cast,
+        wbg_rooting_funs: wbg_rooting_funs(dep_graph, module),
     };
 
     trace!("split_points={split_points:?}");
@@ -339,17 +363,11 @@ pub fn compute_split_modules(
                 &dep_graph,
                 roots,
                 &main_deps.reachable,
-                &mut additional_mains,
+                Some(&mut additional_mains),
             );
-            while !additional_mains.is_empty() {
-                let added_just_now = std::mem::take(&mut additional_mains);
-                let reachable = find_reachable_deps(
-                    &dep_graph,
-                    &added_just_now,
-                    &main_deps.reachable,
-                    &mut additional_mains,
-                );
-                additional_mains.extend(reachable.reachable.difference(&added_just_now));
+            if !additional_mains.is_empty() {
+                let reachable: ReachabilityGraph =
+                    find_reachable_deps(&dep_graph, &additional_mains, &main_deps.reachable, None);
                 main_deps.reachable.extend(reachable.reachable);
             }
             for split_point in split_points.iter() {

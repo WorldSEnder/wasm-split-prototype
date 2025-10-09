@@ -734,6 +734,13 @@ impl<'a> ModuleEmitState<'a> {
                 DepNode::DataSymbol(_) => {}
             }
         }
+        // share the indirect function table always
+        if defines_ift
+            && !exported_dont_share.contains(&ift_dep)
+            && !program_info.shared_deps.contains(&ift_dep)
+        {
+            exports.push(emit_state.shared_export_for(&ift_dep));
+        }
 
         Self {
             input_module: emit_state.input_module,
@@ -1161,9 +1168,18 @@ impl<'a> ModuleEmitState<'a> {
     fn generate_target_features_section(&mut self) {
         for custom in self.input_module.custom_sections.iter() {
             if custom.name == "target_features" {
+                // Another wasm-bindgen hack: To make sure reference-types is not detected, replace the feature string :)
+                let mut data: Vec<u8> = custom.data.into();
+                if self.is_main() {
+                    let needle = b"+reference-types";
+                    if let Some(pos) = data.windows(needle.len()).position(|feat| feat == needle) {
+                        data[pos..pos + needle.len()].copy_from_slice(b"+REFERENCE-TYPES");
+                    }
+                }
+
                 self.output_module.section(&wasm_encoder::CustomSection {
                     name: custom.name.into(),
-                    data: custom.data.into(),
+                    data: data.into(),
                 });
             }
         }
