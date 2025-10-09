@@ -198,10 +198,7 @@ pub fn find_reachable_deps(
     }
 }
 
-pub fn get_main_module_roots(
-    module: &InputModule,
-    split_points: &[SplitPoint],
-) -> HashSet<DepNode> {
+fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> HashSet<DepNode> {
     let mut roots: HashSet<DepNode> = HashSet::new();
     if let Some(id) = module.start {
         roots.insert(DepNode::Function(id));
@@ -241,6 +238,16 @@ pub fn get_main_module_roots(
         roots.remove(&DepNode::Function(split_point.export_func));
         roots.remove(&DepNode::Function(split_point.import_func));
     }
+    roots
+}
+
+fn get_split_roots(splits_in_module: &[&SplitPoint]) -> HashSet<DepNode> {
+    let mut roots = HashSet::<DepNode>::new();
+    for entry_point in splits_in_module {
+        roots.insert(DepNode::Function(entry_point.export_func));
+    }
+    // TODO: handle memories by rooting memory 0 since there are no relocations to help
+    //  do this during dependency analysis.
     roots
 }
 
@@ -322,10 +329,7 @@ pub fn compute_split_modules(
     let mut split_module_candidates: HashMap<String, ReachabilityGraph> = split_points_by_module
         .iter()
         .map(|(module_name, entry_points)| {
-            let mut roots = HashSet::<DepNode>::new();
-            for entry_point in entry_points.iter() {
-                roots.insert(DepNode::Function(entry_point.export_func));
-            }
+            let roots = get_split_roots(&entry_points);
             let split_deps = find_reachable_non_ignored_deps(&roots, &main_deps.reachable);
             (module_name.clone(), split_deps)
         })
