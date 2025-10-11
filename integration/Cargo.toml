@@ -1,0 +1,18 @@
+# This is a separate workspace to facilitate better integration testing.
+# One workspace would force unification of crate features (and versions)
+# with the dependencies of the splitting tool itself.
+[workspace]
+members = [
+    "simple",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+wasm-bindgen =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
+wasm_split = { path = "../crates/wasm_split" }
+wasm-bindgen-test =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }

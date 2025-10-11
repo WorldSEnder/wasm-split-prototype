@@ -1,0 +1,4 @@
+[toolchain]
+# nightly is required for the test runner since it has binary dependencies
+channel = "nightly"
+profile = "minimal"

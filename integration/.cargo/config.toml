@@ -1,0 +1,3 @@
+[target.wasm32-unknown-unknown]
+runner = "./runner.sh"
+rustflags = ['-Clink-args=--emit-relocs']
