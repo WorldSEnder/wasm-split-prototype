@@ -14,7 +14,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-wasm_split = { path = "../crates/wasm_split" }
+wasm_split = { path = "../crates/wasm_split", package = "wasm_split_helpers" }
 wasm-bindgen =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
 wasm-bindgen-futures =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
 wasm-bindgen-test =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }

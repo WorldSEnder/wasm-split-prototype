@@ -2,11 +2,13 @@
 # One workspace would force unification of crate features (and versions)
 # with the dependencies of the splitting tool itself.
 [workspace]
-members = ["./*"]
+members = [
+    "example"
+]
 resolver = "2"
 
 [workspace.dependencies]
-wasm_split = { path = "../crates/wasm_split" }
+wasm_split = { path = "../crates/wasm_split", package = "wasm_split_helpers" }
 
 [profile.release]
 opt-level = "s"

@@ -1,8 +1,8 @@
 [package]
-name = "wasm_split"
-version = "0.1.0"
+name = "wasm_split_helpers"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
 async-once-cell = "0.5.3"
-wasm_split_macros = { version = "0.1.0", path = "../wasm_split_macros" }
+wasm_split_macros = { version = "0.2.0", path = "../wasm_split_macros" }
