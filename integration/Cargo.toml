@@ -4,6 +4,7 @@
 [workspace]
 members = [
     "simple",
+    "callback-in-split",
 ]
 resolver = "2"
 
@@ -13,6 +14,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-wasm-bindgen =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
 wasm_split = { path = "../crates/wasm_split" }
+wasm-bindgen =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
+wasm-bindgen-futures =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
 wasm-bindgen-test =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
