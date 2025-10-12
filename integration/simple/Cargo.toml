@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wasm-bindgen.workspace = true
-wasm_split.workspace = true
+wasm_split_helpers.workspace = true
 
 [dev-dependencies]
 wasm-bindgen-test.workspace = true

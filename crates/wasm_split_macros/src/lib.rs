@@ -81,7 +81,7 @@ impl Parse for Args {
             module_ident,
             link_name: link_name
                 .unwrap_or(LitStr::new("./__wasm_split.js", Span::call_site().into())),
-            wasm_split_path: wasm_split_path.unwrap_or(parse_quote!(::wasm_split)),
+            wasm_split_path: wasm_split_path.unwrap_or(parse_quote!(::wasm_split_helpers)),
             return_wrapper,
             preload_def,
         })

@@ -1,4 +1,4 @@
-use wasm_split::wasm_split;
+use wasm_split_helpers::wasm_split;
 
 #[wasm_split(split)]
 fn lazy() -> u32 {
