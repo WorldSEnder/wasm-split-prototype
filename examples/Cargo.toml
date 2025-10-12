@@ -14,3 +14,8 @@ wasm_split = { path = "../crates/wasm_split", package = "wasm_split_helpers" }
 opt-level = "s"
 lto = true
 
+[patch.crates-io]
+wasm-bindgen =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
+wasm-bindgen-futures =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
+js-sys =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
+web-sys =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }

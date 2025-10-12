@@ -10,7 +10,11 @@ publish = false
 
 [dependencies]
 # this MUST be the same bindgen version as used on the tested artifact
-wasm-bindgen-cli = { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports", version = "=0.2.104", artifact = ["bin:wasm-bindgen-test-runner"] }
+wasm-bindgen-cli = { version = "=0.2.104", artifact = ["bin:wasm-bindgen-test-runner"] }
 wasm_split_cli_support = { path = "../crates/wasm_split_cli" }
 eyre = "0.6.12"
 tempfile = "3.23.0"
+tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
+
+[patch.crates-io]
+wasm-bindgen-cli = { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }

@@ -19,6 +19,8 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
     let args = Cli::parse();
     let input_wasm = std::fs::read(args.input)?;
     let main_out_path = args.output.join("main.wasm");

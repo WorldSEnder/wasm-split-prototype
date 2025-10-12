@@ -6,11 +6,27 @@ use wasm_bindgen::prelude::*;
 #[cfg(feature = "split")]
 use wasm_split::wasm_split;
 
+#[cfg(any(feature = "gzip", feature = "brotli"))]
+#[cfg(feature = "split")]
+macro_rules! await_split {
+    ($e:expr) => {
+        $e.await
+    };
+}
+
+#[cfg(any(feature = "gzip", feature = "brotli"))]
+#[cfg(not(feature = "split"))]
+macro_rules! await_split {
+    ($e:expr) => {
+        $e
+    };
+}
+
 use wasm_streams::ReadableStream;
 
 #[cfg(feature = "gzip")]
 #[cfg_attr(feature = "split", wasm_split::wasm_split(gzip))]
-async fn get_gzip_decoder(
+fn get_gzip_decoder(
     encoded_reader: Pin<Box<dyn futures::io::AsyncBufRead>>,
 ) -> Pin<Box<dyn futures::io::AsyncRead>> {
     gloo_console::log!("getting gzip decoder");
@@ -21,7 +37,7 @@ async fn get_gzip_decoder(
 
 #[cfg(feature = "brotli")]
 #[cfg_attr(feature = "split", wasm_split(brotli))]
-async fn get_brotli_decoder(
+fn get_brotli_decoder(
     encoded_reader: Pin<Box<dyn futures::io::AsyncBufRead>>,
 ) -> Pin<Box<dyn futures::io::AsyncRead>> {
     gloo_console::log!("getting brotli decoder");
@@ -49,12 +65,16 @@ pub async fn decode(url: &str) -> Result<String, JsError> {
 
     #[cfg(feature = "gzip")]
     if url.ends_with(".gz") {
-        decoded = get_gzip_decoder(Box::pin(futures::io::BufReader::new(decoded))).await
+        decoded = await_split!(get_gzip_decoder(Box::pin(futures::io::BufReader::new(
+            decoded
+        ))))
     }
 
     #[cfg(feature = "brotli")]
     if url.ends_with(".br") {
-        decoded = get_brotli_decoder(Box::pin(futures::io::BufReader::new(decoded))).await
+        decoded = await_split!(get_brotli_decoder(Box::pin(futures::io::BufReader::new(
+            decoded
+        ))))
     }
 
     let mut data = Vec::new();

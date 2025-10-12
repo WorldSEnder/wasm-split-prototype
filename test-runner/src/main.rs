@@ -28,6 +28,8 @@ fn wasm_split_cli(target: &Path, dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
     let mut args = args_os();
     let _ = args.next().expect("args[0] to be the name of this runner");
     let target = args.next().expect("args[1] to be a wasm program to test");

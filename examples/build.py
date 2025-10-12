@@ -30,7 +30,7 @@ subprocess.run(
         "build",
     ]
     + build_options,
-    cwd=os.path.join(root_dir, "crates", "example"),
+    cwd=os.path.join(root_dir, "example"),
     check=True,
 )
 
@@ -42,7 +42,7 @@ json_results = subprocess.run(
         "--message-format=json",
     ],
     stdout=subprocess.PIPE,
-    cwd=os.path.join(root_dir, "crates", "example"),
+    cwd=os.path.join(root_dir, "example"),
     check=True,
 ).stdout.splitlines()
 
@@ -84,13 +84,15 @@ else:
         [
             "cargo",
             "run",
-            "-p",
+            "--bin",
             "wasm_split_cli",
+            "--features",
+            "build-binary",
             "--",
             target_path,
             split_temp_dir,
         ],
-        cwd=root_dir,
+        cwd=os.path.join(root_dir, ".."),
         check=True,
     )
 

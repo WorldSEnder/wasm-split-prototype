@@ -254,6 +254,10 @@ pub struct RelocInfo<'a> {
 impl RelocInfo<'_> {
     pub fn print_relocs(&self) {
         use wasmparser::RelocAddendKind;
+        if !tracing::event_enabled!(tracing::Level::TRACE) {
+            return;
+        }
+
         trace!("Symbols >>>>>>>>>>>>>>>>>>>>>>>>");
         for symbol in &self.symbols {
             trace!("{symbol:?}");
@@ -262,7 +266,17 @@ impl RelocInfo<'_> {
         for (section, relocs) in &self.relocs {
             trace!("Relocs in {section} >>>>>>>>>>>>>>>>>>>>>>>>");
             for reloc in relocs {
-                let symbol = &self.symbols[reloc.index as usize];
+                struct InvalidRelocIndex; // TODO: replace with std::fmt::from_fn
+                impl std::fmt::Debug for InvalidRelocIndex {
+                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(f, "<invalid reloc index>")
+                    }
+                }
+                let symbol = self
+                    .symbols
+                    .get(reloc.index as usize)
+                    .map(|r| r as &dyn std::fmt::Debug)
+                    .unwrap_or(&InvalidRelocIndex);
                 let mut symbol_info = format!("  [{}] = {:?}({symbol:?})", reloc.offset, reloc.ty);
                 if matches!(
                     reloc.ty.addend_kind(),

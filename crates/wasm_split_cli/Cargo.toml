@@ -12,6 +12,7 @@ wasm-encoder = { version = "0.240.0", features = ["wasmparser"] }
 wasmparser = "0.240.0"
 # bin-only depdencies
 clap = { version = "4.5.4", features = ["derive"], optional = true }
+tracing-subscriber = { version = "0.3.20", features = ["fmt"], optional = true }
 
 [lib]
 name = "wasm_split_cli_support"
@@ -21,4 +22,4 @@ name = "wasm_split_cli"
 required-features = ["build-binary"]
 
 [features]
-build-binary = ["dep:clap"]
+build-binary = ["dep:clap", "dep:tracing-subscriber"]

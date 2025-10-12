@@ -141,6 +141,9 @@ fn print_deps(module_name: &str, module: &InputModule, reachable: &HashSet<DepNo
             format!("memory[{index}]")
         }
     };
+    if !tracing::event_enabled!(tracing::Level::TRACE) {
+        return;
+    }
 
     trace!("SPLIT: ============== {module_name}");
     let mut total_size: usize = 0;
