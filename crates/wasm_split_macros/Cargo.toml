@@ -1,7 +1,11 @@
 [package]
 name = "wasm_split_macros"
 version = "0.2.0"
-edition = "2021"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+# because we emit unsafe extern blocks/safe extern items
+rust-version = "1.84"
 
 [dependencies]
 base16 = "0.2.1"

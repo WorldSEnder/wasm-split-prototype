@@ -2,6 +2,19 @@
 members = ["crates/*"]
 resolver = "2"
 
+[workspace.package]
+authors = [
+    "Greg Johnston <greg.johnston@gmail.com>", # a leptos developer
+    # author of the initial prototype, no longer actively maintaining
+    "Jeremy Maitin-Shepard <jbms@google.com>",
+    "Martin Molzer <worldsbegin@gmx.de>", # a yew developer
+]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+wasm_split_macros = { version = "0.2.0", path = "crates/wasm_split_macros" }
+
 [profile.release]
 opt-level = "s"
 lto = true

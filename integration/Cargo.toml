@@ -14,7 +14,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-wasm_split = { path = "../crates/wasm_split", package = "wasm_split_helpers" }
+wasm_split = { path = "../crates/wasm_split", version = "0.2.0", package = "wasm_split_helpers" }
 wasm-bindgen = "0.2.104"
 wasm-bindgen-futures = "0.4.54"
 wasm-bindgen-test = "0.3.54"

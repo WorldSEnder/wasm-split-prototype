@@ -1,7 +1,9 @@
 [package]
 name = "wasm_split_cli_support"
 version = "0.2.0"
-edition = "2021"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
 eyre = { version = "0.6.12" }
