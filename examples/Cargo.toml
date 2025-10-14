@@ -15,7 +15,7 @@ opt-level = "s"
 lto = true
 
 [patch.crates-io]
-wasm-bindgen =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
-wasm-bindgen-futures =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
-js-sys =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
-web-sys =  { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
+wasm-bindgen =  { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
+wasm-bindgen-futures =  { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
+js-sys =  { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
+web-sys =  { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }

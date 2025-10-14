@@ -17,4 +17,4 @@ tempfile = "3.23.0"
 tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
 
 [patch.crates-io]
-wasm-bindgen-cli = { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
+wasm-bindgen-cli = { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }

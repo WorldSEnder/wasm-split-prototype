@@ -1479,7 +1479,7 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-cli"
 version = "0.2.104"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "anyhow",
  "clap",
@@ -1499,7 +1499,7 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-cli-support"
 version = "0.2.104"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1516,7 +1516,7 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-shared"
 version = "0.2.104"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "unicode-ident",
 ]

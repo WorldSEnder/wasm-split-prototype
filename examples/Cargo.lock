@@ -361,7 +361,7 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 [[package]]
 name = "js-sys"
 version = "0.3.81"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
@@ -548,7 +548,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "wasm-bindgen"
 version = "0.2.104"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -560,7 +560,7 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-futures"
 version = "0.4.54"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "cfg-if",
  "js-sys",
@@ -572,7 +572,7 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-macro"
 version = "0.2.104"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -581,7 +581,7 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-macro-support"
 version = "0.2.104"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -593,7 +593,7 @@ dependencies = [
 [[package]]
 name = "wasm-bindgen-shared"
 version = "0.2.104"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "unicode-ident",
 ]
@@ -632,7 +632,7 @@ dependencies = [
 [[package]]
 name = "web-sys"
 version = "0.3.81"
-source = "git+https://github.com/WorldSEnder/wasm-bindgen.git?branch=test-keep-lld-exports#9c4f5bf4729af0b2f391ce54a4657c85926aac78"
+source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

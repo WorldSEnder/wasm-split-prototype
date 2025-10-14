@@ -20,6 +20,6 @@ wasm-bindgen-futures = "0.4.54"
 wasm-bindgen-test = "0.3.54"
 
 [patch.crates-io]
-wasm-bindgen = { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
-wasm-bindgen-futures = { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
-wasm-bindgen-test = { git = "https://github.com/WorldSEnder/wasm-bindgen.git", branch = "test-keep-lld-exports" }
+wasm-bindgen = { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
+wasm-bindgen-futures = { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
+wasm-bindgen-test = { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
