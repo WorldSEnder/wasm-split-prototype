@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-wasm_split = { path = "../crates/wasm_split", package = "wasm_split_helpers" }
+wasm_split_helpers = { path = "../crates/wasm_split" }
 
 [profile.release]
 opt-level = "s"

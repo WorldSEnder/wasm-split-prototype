@@ -4,7 +4,7 @@ use futures::io::AsyncReadExt;
 use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "split")]
-use wasm_split::wasm_split;
+use wasm_split_helpers::wasm_split;
 
 #[cfg(any(feature = "gzip", feature = "brotli"))]
 #[cfg(feature = "split")]
@@ -25,7 +25,7 @@ macro_rules! await_split {
 use wasm_streams::ReadableStream;
 
 #[cfg(feature = "gzip")]
-#[cfg_attr(feature = "split", wasm_split::wasm_split(gzip))]
+#[cfg_attr(feature = "split", wasm_split(gzip))]
 fn get_gzip_decoder(
     encoded_reader: Pin<Box<dyn futures::io::AsyncBufRead>>,
 ) -> Pin<Box<dyn futures::io::AsyncRead>> {
