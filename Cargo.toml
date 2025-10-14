@@ -12,6 +12,8 @@ authors = [
 description = "Split a WASM module into lazily loadable chunks"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/WorldSEnder/wasm-split-prototype"
+categories = ["wasm", "web-programming"]
 
 [workspace.dependencies]
 wasm_split_macros = { version = "0.2.0-rc.0", path = "crates/wasm_split_macros" }

@@ -2,9 +2,11 @@
 name = "wasm_split_cli_support"
 version = "0.2.0-rc.0"
 authors.workspace = true
+categories.workspace = true
 edition.workspace = true
 description.workspace = true
 license.workspace = true
+repository.workspace = true
 readme = "README.md"
 
 [dependencies]
