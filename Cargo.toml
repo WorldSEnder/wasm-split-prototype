@@ -9,6 +9,7 @@ authors = [
     "Jeremy Maitin-Shepard <jbms@google.com>",
     "Martin Molzer <worldsbegin@gmx.de>", # a yew developer
 ]
+description = "Split a WASM module into lazily loadable chunks"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 

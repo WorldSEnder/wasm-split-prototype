@@ -20,7 +20,7 @@ pub struct Options<'a> {
     /// Where to put javascript wrappers, split wasm modules
     pub output_dir: &'a Path,
     /// Where to put the main module that has to be post-processed by wasm-bindgen.
-    /// usually a path in `output_dir`
+    /// Usually a path in `output_dir`
     pub main_out_path: &'a Path,
     /// From where will `initSync` be imported from?
     pub main_module: &'a str,
@@ -34,7 +34,7 @@ pub struct Options<'a> {
 pub struct SplitWasm {
     pub split_modules: Vec<PathBuf>,
     /// split -> dependency filestem
-    /// i.e. { "foo": ["chunk_0", "foo"] }
+    /// e.g. `{ "foo": ["chunk_0", "foo"] }`
     pub prefetch_map: HashMap<String, Vec<String>>,
 }
 

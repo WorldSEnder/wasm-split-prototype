@@ -3,7 +3,9 @@ name = "wasm_split_macros"
 version = "0.2.0-rc.0"
 authors.workspace = true
 edition.workspace = true
+description.workspace = true
 license.workspace = true
+readme = "README.md"
 # because we emit unsafe extern blocks/safe extern items
 rust-version = "1.84"
 

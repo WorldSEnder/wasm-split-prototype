@@ -88,6 +88,40 @@ impl Parse for Args {
     }
 }
 
+/// Indicate a function as a split point.
+///
+/// Calls to this function will load the module to which this function was split into on-demand. On non-`wasm` targets,
+/// the function will be called directly without any split support.
+///
+/// The annotated function must fulfill the requirements a typical `extern` declared function must fufill:
+/// - It can not be `async`. If you want to support this, you must `Box` or otherwise wrap the `Future` into a `dyn` object.
+///   Also see the `return_wrapper` option for some further hints.
+/// - It can not be `const`.
+/// - It can not make use of a receiver argument, generics or an `impl` return type.
+/// - By default, `"Rust"` is assumed as the ABI, but you can change this by declaring the function as `extern "ABI"`.
+///
+/// ## Syntax
+///
+/// ```text
+/// wasm_split($module:ident (, $option ),* ) => { ... };
+/// ```
+///
+/// The following options are supported:
+/// - `wasm_import_module = $mod:string_literal` changes the javascript module from which the loading will be imported.
+///    Should be the same path that will be indicated to the CLI later. Default: `"./__wasm_split.js"`.
+/// - `wasm_split_path = $this:path` changes the path at which the runtime support crate is expected.
+///    As a framework, you might want to reexport this from some hidden module path.
+///    Default: `::wasm_split_helpers`.
+/// - `return_wrapper( let $bindings:pat = _ ; $compute:block -> $ret:ty )`. A rather low-level option to support
+///    rewriting the result of the wrapped function. The generated wrapper will, rather than directly return the result
+///    from the user-given function, bind this to `$bindings` and emit the statements in `$compute` to generate the
+///    return value of the wrapper with the return type indicated by `$ret`.
+///
+///    Example use case: `return_wrapper( let future = _ ; { future.await } -> Output)` to `await` a future directly in
+///    the wrapper.
+/// - `preload( $( #[$attr] )* $preload_name:ident )` generates an additional preload function `$preload_name` with the
+///    signature `async fn()` which can be used to fetch the module in which the wrapped function is contained before
+///    calling it directly.
 #[proc_macro_attribute]
 pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     let Args {
