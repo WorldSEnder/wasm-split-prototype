@@ -219,11 +219,12 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     let attrs = item_fn.attrs;
     let stmts = &item_fn.block.stmts;
 
-    let mut call_input_fn = quote! {
-        #impl_import_ident( #(#args),* )
-    };
-    let call_export_fn = quote! {
-        #impl_export_ident( #(#args),* )
+    let mut compute_result = quote! {
+        #[cfg(target_family = "wasm")]
+        use #impl_import_ident as callee;
+        #[cfg(not(target_family = "wasm"))]
+        use #impl_export_ident as callee;
+        callee( #(#args),* )
     };
 
     if let Some(ReturnWrapper {
@@ -234,8 +235,8 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     {
         wrapper_sig.output = output;
         let postlude = postlude.stmts;
-        call_input_fn = quote! {{
-            let #output_pat = #call_input_fn;
+        compute_result = quote! {{
+            let #output_pat = { #compute_result };
             #( #postlude )*
         }};
     }
@@ -276,14 +277,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             }
 
             #preload_name ().await;
-            #[cfg(not(target_family = "wasm"))]
-            {
-                #call_export_fn
-            }
-            #[cfg(target_family = "wasm")]
-            {
-                #call_input_fn
-            }
+            #compute_result
         }
     }
     .into()

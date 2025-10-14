@@ -1,3 +1,4 @@
+use std::pin::Pin;
 use wasm_split_helpers::wasm_split;
 
 #[wasm_split(split)]
@@ -8,6 +9,14 @@ fn lazy() -> u32 {
 #[wasm_split(split)]
 fn args_test((a, b): (u32, u32), _: &str) -> u32 {
     a + b
+}
+
+#[wasm_split(
+    split,
+    return_wrapper(let future = _ ; { future.await } -> u32)
+)]
+fn async_fn() -> Pin<Box<dyn Future<Output = u32>>> {
+    Box::pin(async move { 42 })
 }
 
 #[cfg(test)]
