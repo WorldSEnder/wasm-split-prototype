@@ -100,10 +100,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let mut item_fn: ItemFn = parse_macro_input!(input as ItemFn);
     let mut declared_abi = item_fn.sig.abi.take();
-    declared_abi.get_or_insert(syn::Abi {
-        extern_token: Default::default(),
-        name: Some(syn::LitStr::new("Rust", Span::mixed_site().into())),
-    });
+    declared_abi.get_or_insert(parse_quote!( extern "Rust" ));
     let declared_async = item_fn.sig.asyncness.take();
 
     let mut wrapper_sig = Signature {
@@ -145,11 +142,6 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     let impl_export_ident =
         format_ident!("__wasm_split_00{module_ident}00_export_{unique_identifier}_{name}");
 
-    let import_sig = Signature {
-        //abi: declared_abi.clone(), // already in an extern block
-        ident: impl_import_ident.clone(),
-        ..item_fn.sig.clone()
-    };
     let export_sig = Signature {
         abi: declared_abi.clone(),
         ident: impl_export_ident.clone(),
@@ -170,17 +162,34 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
                     subpat: None,
                 }));
             }
+            // receiver arguments can not used in `extern` functions (and we can't name the `Self` type in the arguments to work arount that)
             syn::FnArg::Receiver(_) => {
-                args.push(format_ident!("self"));
+                return quote_spanned! {param.span()=>
+                    ::core::compile_error!("Split functions can not have a receiver argument");
+
+                    #wrapper_sig {
+                        ::core::todo!()
+                    }
+                }
+                .into();
             }
         }
     }
+    let import_sig = Signature {
+        //abi: declared_abi.clone(), // already in an extern block
+        asyncness: None,
+        ident: impl_import_ident.clone(),
+        ..wrapper_sig.clone()
+    };
 
     let attrs = item_fn.attrs;
     let stmts = &item_fn.block.stmts;
 
     let mut call_input_fn = quote! {
         #impl_import_ident( #(#args),* )
+    };
+    let call_export_fn = quote! {
+        #impl_export_ident( #(#args),* )
     };
 
     if let Some(ReturnWrapper {
@@ -201,20 +210,25 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         // This could have weak linkage to unify all mentions of the same module
         #( #preload_attrs )*
         #vis async fn #preload_name () {
+            #[cfg(target_family = "wasm")]
             #[link(wasm_import_module = #link_name)]
             unsafe extern "C" {
                 #[unsafe(no_mangle)]
                 fn #load_module_ident (callback: #wasm_split_path ::LoadCallbackFn, data: *const ::std::ffi::c_void) -> ();
             }
-            #wasm_split_path::ensure_loaded(::core::pin::Pin::static_ref({
-                // SAFETY: the imported c function correctly implements the callback
-                static LOADER: #wasm_split_path::LazySplitLoader = unsafe { #wasm_split_path::LazySplitLoader::new(#load_module_ident) };
-                &LOADER
-            })).await;
+            #[cfg(target_family = "wasm")]
+            {
+                #wasm_split_path::ensure_loaded(::core::pin::Pin::static_ref({
+                    // SAFETY: the imported c function correctly implements the callback
+                    static LOADER: #wasm_split_path::LazySplitLoader = unsafe { #wasm_split_path::LazySplitLoader::new(#load_module_ident) };
+                    &LOADER
+                })).await;
+            }
         }
         #(#attrs)*
         #vis #wrapper_sig {
-            #[link(wasm_import_module = #link_name)]
+            #[cfg(target_family = "wasm")]
+            #[link(wasm_import_module = "__wasm_split_placeholder__")]
             unsafe #declared_abi {
                 // We rewrite calls to this function instead of actually calling it. We just need to link to it. The name is unique by hashing.
                 #[unsafe(no_mangle)]
@@ -222,13 +236,20 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             }
 
             #(#attrs)*
-            #[no_mangle]
+            #[cfg_attr(target_family = "wasm", unsafe(no_mangle))]
             #export_sig {
                 #(#stmts)*
             }
 
             #preload_name ().await;
-            #call_input_fn
+            #[cfg(not(target_family = "wasm"))]
+            {
+                #call_export_fn
+            }
+            #[cfg(target_family = "wasm")]
+            {
+                #call_input_fn
+            }
         }
     }
     .into()

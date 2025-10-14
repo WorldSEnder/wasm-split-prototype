@@ -5,6 +5,11 @@ fn lazy() -> u32 {
     42
 }
 
+#[wasm_split(split)]
+fn args_test((a, b): (u32, u32), _: &str) -> u32 {
+    a + b
+}
+
 #[cfg(test)]
 mod tests {
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -15,6 +20,15 @@ mod tests {
             crate::lazy().await,
             42,
             "should have successfully loaded and executed"
+        );
+    }
+
+    #[test]
+    pub async fn it_pattern_matches() {
+        assert_eq!(
+            crate::args_test((20, 10), "ignored").await,
+            30,
+            "should pattern match and sum arguments"
         );
     }
 }
