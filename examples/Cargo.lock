@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "wasm_split_helpers"
-version = "0.2.0-rc.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "async-once-cell",
  "wasm_split_macros",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "wasm_split_macros"
-version = "0.2.0-rc.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "base16",
  "quote",

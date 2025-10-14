@@ -16,7 +16,7 @@ repository = "https://github.com/WorldSEnder/wasm-split-prototype"
 categories = ["wasm", "web-programming"]
 
 [workspace.dependencies]
-wasm_split_macros = { version = "0.2.0-rc.0", path = "crates/wasm_split_macros" }
+wasm_split_macros = { version = "0.2.0-rc.1", path = "crates/wasm_split_macros" }
 
 [profile.release]
 opt-level = "s"
