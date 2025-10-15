@@ -1,0 +1,18 @@
+[package]
+name = "many_shares"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen.workspace = true
+wasm_split_helpers.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test.workspace = true
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tokio.workspace = true
+

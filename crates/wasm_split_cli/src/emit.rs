@@ -251,8 +251,10 @@ enum DataSegmentEmitInfo {
         per_output_offset: HashMap<usize, usize>,
         // the output segment is formed by concatenating all these segment
         ranges: Vec<LateDataRange>,
-        // (offset_in_segment) -> (index in 'ranges')
-        range_lookup: HashMap<usize, usize>,
+        // symbol index -> (index in 'ranges', offset in range)
+        range_lookup: HashMap<usize, (usize, usize)>,
+        // we re-order ranges to put data with larger alignment up front (this saves padding bytes).
+        // since indices are stored in the range_lookup map, we can't do this in-place and maintain a separate order here.
         range_emit_order: Vec<usize>,
     },
 }
@@ -268,10 +270,8 @@ impl DataEmitInfo {
             FromInputOnlyIn(usize),
             Ranges {
                 ranges: Vec<LateDataRange>,
-                // TODO: llvm will overlap (deduplicate) symbol ranges.
-                // We should keep track of this and deduplicate too.
-                // symbol -> index in ranges
-                range_lookup: HashMap<usize, usize>,
+                // symbol -> (index in ranges, offset in range)
+                range_lookup: HashMap<usize, (usize, usize)>,
                 base_address: usize,
             },
         }
@@ -306,30 +306,47 @@ impl DataEmitInfo {
 
         // Now go through all data symbols
         for (module_index, (_, module)) in program_info.output_modules.iter().enumerate() {
-            for symbol in &module.included_symbols {
-                let DepNode::DataSymbol(symbol_index) = *symbol else {
-                    continue;
-                };
-                let SymbolInfo::Data {
-                    symbol: Some(defined_data),
-                    ..
-                } = input_module.reloc_info.symbols[symbol_index]
-                else {
-                    // Not sure how to emit an *undefined* data symbol
-                    bail!("Expected data symbol dep node to ref to defined data symbol");
-                };
-                let segment_index = defined_data.index as usize;
+            let mut included_symbols = module
+                .included_symbols
+                .iter()
+                .filter_map(|symbol| {
+                    let DepNode::DataSymbol(symbol_index) = *symbol else {
+                        return None;
+                    };
+                    let SymbolInfo::Data {
+                        symbol: Some(def_data),
+                        ..
+                    } = input_module.reloc_info.symbols[symbol_index]
+                    else {
+                        // Not sure how to emit an *undefined* data symbol
+                        return Some(Err(anyhow!(
+                            "Expected data symbol dep node to ref to defined data symbol"
+                        )));
+                    };
+                    let segment_index = def_data.index as usize;
+                    let DataSegmentAnalysis::Ranges { .. } = &per_segment[segment_index] else {
+                        // Only relocate if in active range
+                        return None;
+                    };
+                    Some(Ok((symbol_index, def_data)))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            included_symbols.sort_by_key(|(_, def_data)| (def_data.index, def_data.offset));
+            for (symbol_index, def_data) in included_symbols {
+                let segment_index = def_data.index as usize;
                 let DataSegmentAnalysis::Ranges {
                     ranges,
                     range_lookup,
                     ..
                 } = &mut per_segment[segment_index]
                 else {
-                    // Only relocate if in active range
-                    continue;
+                    // filtered above. All passive ranges are put into the main module
+                    unreachable!(
+                        "data symbol in passive range should not have gotted included in this pass"
+                    );
                 };
-                let data_len = defined_data.size as usize;
-                let data_offset = defined_data.offset as usize;
+                let data_len = def_data.size as usize;
+                let data_offset = def_data.offset as usize;
                 let data_range = data_offset..data_offset + data_len;
                 let segment_align =
                     1usize << input_module.reloc_info.segments[segment_index].alignment;
@@ -343,14 +360,35 @@ impl DataEmitInfo {
                     data_align = data_align.min(1usize << data_len.trailing_zeros());
                 }
 
+                let mut has_merged = false;
                 let range_idx = ranges.len();
-                ranges.push(LateDataRange {
-                    input_range: data_range,
-                    in_module: module_index,
-                    data_align,
-                    in_module_offset: usize::MAX, // filled in later
-                });
-                range_lookup.insert(symbol_index, range_idx);
+                if let Some(back) = ranges.last_mut() {
+                    let has_overlap =
+                        back.in_module == module_index && data_offset < back.input_range.end;
+                    if has_overlap {
+                        // we sorted before ingesting, hence the existing range starts earlier
+                        debug_assert!(
+                            back.input_range.start <= data_offset,
+                            "overlapping range goes backwards"
+                        );
+                        let range_offset = data_offset - back.input_range.start;
+                        let range_idx = range_idx - 1; // back of ranges
+
+                        has_merged = true;
+                        // about alignment: we use the fact that llvm merged these symbols as proof that we too, do not have to worry about alignment
+                        back.input_range.end = back.input_range.end.max(data_range.end);
+                        range_lookup.insert(symbol_index, (range_idx, range_offset));
+                    }
+                }
+                if !has_merged {
+                    ranges.push(LateDataRange {
+                        input_range: data_range,
+                        in_module: module_index,
+                        data_align,
+                        in_module_offset: usize::MAX, // filled in later
+                    });
+                    range_lookup.insert(symbol_index, (range_idx, 0));
+                }
             }
         }
         // finally transform them into output form
@@ -446,13 +484,14 @@ impl DataEmitInfo {
             // If just copied, then its not relocated
             return None;
         };
-        let range_index = range_lookup
+        let &(range_index, offset_in_range) = range_lookup
             .get(&symbol_index)
             .expect("to find a data relocation index");
-        let range = &ranges[*range_index];
+        let range = &ranges[range_index];
         let mut address = *base_address;
         address += per_output_offset[&range.in_module];
         address += range.in_module_offset;
+        address += offset_in_range;
         Some(address)
     }
 }
