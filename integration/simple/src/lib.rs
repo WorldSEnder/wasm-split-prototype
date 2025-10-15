@@ -19,6 +19,24 @@ fn async_fn() -> Pin<Box<dyn Future<Output = u32>>> {
     Box::pin(async move { 42 })
 }
 
+mod smoke {
+    use ::wasm_split_helpers as wsplit_alias;
+    mod wasm_split_helpers {}
+
+    #[wsplit_alias::wasm_split(
+        split,
+        wasm_split_path = wsplit_alias
+    )]
+    pub fn uses_crate_reexport() -> u32 {
+        42
+    }
+}
+
+#[wasm_split(preloadable_split, preload(preload_it))]
+fn preloadable() -> u32 {
+    42
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(target_family = "wasm"))]
@@ -50,6 +68,25 @@ mod tests {
             crate::async_fn().await,
             42,
             "should load and await the future"
+        );
+    }
+
+    #[test]
+    pub async fn it_can_handle_wasm_split_path() {
+        assert_eq!(
+            crate::smoke::uses_crate_reexport().await,
+            42,
+            "should refer to the crate by the alias"
+        );
+    }
+
+    #[test]
+    pub async fn it_can_preload_a_split() {
+        crate::preload_it().await;
+        assert_eq!(
+            crate::preloadable().await,
+            42,
+            "should execute the preloadable function correctly"
         );
     }
 }
