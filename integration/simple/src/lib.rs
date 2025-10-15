@@ -21,6 +21,9 @@ fn async_fn() -> Pin<Box<dyn Future<Output = u32>>> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_family = "wasm"))]
+    use tokio::test;
+    #[cfg(target_family = "wasm")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
     #[test]
@@ -38,6 +41,15 @@ mod tests {
             crate::args_test((20, 10), "ignored").await,
             30,
             "should pattern match and sum arguments"
+        );
+    }
+
+    #[test]
+    pub async fn it_runs_async_fns() {
+        assert_eq!(
+            crate::async_fn().await,
+            42,
+            "should load and await the future"
         );
     }
 }

@@ -13,3 +13,6 @@ wasm_split_helpers.workspace = true
 
 [dev-dependencies]
 wasm-bindgen-test.workspace = true
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+tokio.workspace = true
+
