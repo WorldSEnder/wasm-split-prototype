@@ -6,8 +6,8 @@ use std::{
 
 use crate::{
     dep_graph::DepNode,
-    read::{GlobalId, InputFuncId, InputModule, InputOffset, TableId, TagId},
-    reloc::{self, RelocInfo, RelocVisitor},
+    read::{InputFuncId, InputModule, InputOffset},
+    reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::SplitProgramInfo,
 };
 use eyre::{anyhow, bail, Context, Result};
@@ -497,88 +497,78 @@ struct ModuleEmitState<'a> {
     dep_to_local_index: HashMap<DepNode, usize>,
 }
 
-impl RelocVisitor for &'_ ModuleEmitState<'_> {
-    type Result = Result<Option<usize>>;
-
-    fn visit_type_index(self, _symbol_index: usize, _symbol: &SymbolInfo<'_>) -> Self::Result {
-        // We don't relocate types, we just copy them over
-        Ok(None)
-    }
-    fn visit_memory_addr(self, details: reloc::DataDetails<'_>) -> Result<Option<usize>> {
-        // [relocate data segments]
-        let Some(symbol) = details.definition else {
-            return Ok(None);
-        };
-        Ok(self
-            .emit_state
-            .data_relocations
-            .find_relocated_address(details.symbol_index, symbol))
-    }
-    fn visit_function_index(
-        self,
-        details: reloc::SymbolDetails<'_, InputFuncId>,
-    ) -> Result<Option<usize>> {
-        let input_func_id = details.index;
-        let Some(&output_func_id) = self
-            .dep_to_local_index
-            .get(&DepNode::Function(input_func_id))
-        else {
-            bail!(
-                "Dependency analysis error: \
-                     No output function for input function {input_func_id} \
-                     referenced by relocation."
-            );
-        };
-        Ok(Some(output_func_id))
-    }
-    fn visit_table_index(
-        self,
-        details: reloc::SymbolDetails<'_, InputFuncId>,
-    ) -> Result<Option<usize>> {
-        let input_func_id = details.index;
-        let index = self
-            .emit_state
-            .indirect_functions
-            .function_table_index
-            .get(&input_func_id)
-            .ok_or_else(|| {
-                anyhow!(
-                    "Dependency analysis error: \
-                     No indirect function table index \
-                     for input function {input_func_id} \
-                     referenced by relocation."
-                )
-            })?;
-        Ok(Some(*index))
-    }
-    fn visit_rel_table_index(self, _: reloc::SymbolDetails<'_, InputFuncId>) -> Self::Result {
-        bail!("Unsupported relocation type: relative table index")
-    }
-    fn visit_global_index(
-        self,
-        details: reloc::SymbolDetails<'_, GlobalId>,
-    ) -> Result<Option<usize>> {
-        if !self.is_main() && details.index != self.input_module.reloc_info.stack_pointer {
-            bail!("Relocation of globals not supported in split modules.")
+impl RelocTarget for ModuleEmitState<'_> {
+    fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>> {
+        match reloc {
+            RelocDetails::TypeIndex { .. } => {
+                // We don't relocate types, we just copy them over
+                Ok(None)
+            }
+            RelocDetails::MemoryAddr(details) => {
+                // [relocate data segments]
+                let Some(symbol) = details.definition else {
+                    return Ok(None);
+                };
+                Ok(self
+                    .emit_state
+                    .data_relocations
+                    .find_relocated_address(details.symbol_index, symbol))
+            }
+            RelocDetails::TableIndex(details) => {
+                let input_func_id = details.index;
+                let index = self
+                    .emit_state
+                    .indirect_functions
+                    .function_table_index
+                    .get(&input_func_id)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Dependency analysis error: \
+                             No indirect function table index \
+                             for input function {input_func_id} \
+                             referenced by relocation."
+                        )
+                    })?;
+                Ok(Some(*index))
+            }
+            RelocDetails::RelTableIndex(_details) => {
+                bail!("Unsupported relocation type: relative table index")
+            }
+            RelocDetails::FunctionIndex(details) => {
+                let input_func_id = details.index;
+                let Some(&output_func_id) = self
+                    .dep_to_local_index
+                    .get(&DepNode::Function(input_func_id))
+                else {
+                    bail!(
+                        "Dependency analysis error: \
+                             No output function for input function {input_func_id} \
+                             referenced by relocation."
+                    );
+                };
+                Ok(Some(output_func_id))
+            }
+            RelocDetails::TableNumber(details) => {
+                if !self.is_main() && details.index != self.input_module.reloc_info.indirect_table {
+                    bail!("Relocation of globals not supported in split modules.")
+                }
+                // TODO: check that table indices do not get confused by the generate logic below
+                Ok(Some(0))
+            }
+            RelocDetails::GlobalIndex(details) => {
+                if !self.is_main() && details.index != self.input_module.reloc_info.stack_pointer {
+                    bail!("Relocation of globals not supported in split modules.")
+                }
+                // TODO: check that global indices do not get confused by the generate logic below
+                Ok(Some(0))
+            }
+            RelocDetails::TagIndex(_details) => {
+                if !self.is_main() {
+                    bail!("Exception handling in split modules not supported yet")
+                }
+                Ok(None)
+            }
         }
-        // TODO: check that global indices do not get confused by the generate logic below
-        Ok(Some(0))
-    }
-    fn visit_table_number(
-        self,
-        details: reloc::SymbolDetails<'_, TableId>,
-    ) -> Result<Option<usize>> {
-        if !self.is_main() && details.index != self.input_module.reloc_info.indirect_table {
-            bail!("Relocation of globals not supported in split modules.")
-        }
-        // TODO: check that table indices do not get confused by the generate logic below
-        Ok(Some(0))
-    }
-    fn visit_tag_index(self, _: reloc::SymbolDetails<'_, TagId>) -> Self::Result {
-        if !self.is_main() {
-            bail!("Exception handling in split modules not supported yet")
-        }
-        Ok(None)
     }
 }
 

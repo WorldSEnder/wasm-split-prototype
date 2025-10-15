@@ -9,7 +9,7 @@ use wasmparser::RelocationEntry;
 
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, MemoryId, SymbolIndex, TableId, TagId},
-    reloc::{DataDetails, RelocVisitor, SymbolDetails},
+    reloc::RelocDetails,
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Copy, PartialOrd, Ord, Clone)]
@@ -24,36 +24,6 @@ pub enum DepNode {
 
 pub type DepGraph = HashMap<DepNode, HashSet<DepNode>>;
 
-struct DepRelocVisitor;
-impl RelocVisitor for DepRelocVisitor {
-    type Result = Result<Option<DepNode>>;
-    fn visit_type_index(self, _: usize, _: &wasmparser::SymbolInfo<'_>) -> Self::Result {
-        Ok(None)
-    }
-    fn visit_memory_addr(self, details: DataDetails<'_>) -> Self::Result {
-        Ok(Some(DepNode::DataSymbol(details.symbol_index)))
-    }
-    fn visit_table_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result {
-        // If an instruction takes the "address" of a function, that function needs to be loaded too.
-        Ok(Some(DepNode::Function(details.index)))
-    }
-    fn visit_rel_table_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result {
-        Ok(Some(DepNode::Function(details.index)))
-    }
-    fn visit_function_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result {
-        Ok(Some(DepNode::Function(details.index)))
-    }
-    fn visit_table_number(self, details: SymbolDetails<'_, TableId>) -> Self::Result {
-        Ok(Some(DepNode::Table(details.index)))
-    }
-    fn visit_global_index(self, details: SymbolDetails<'_, GlobalId>) -> Self::Result {
-        Ok(Some(DepNode::Global(details.index)))
-    }
-    fn visit_tag_index(self, details: SymbolDetails<'_, TagId>) -> Self::Result {
-        Ok(Some(DepNode::Tag(details.index)))
-    }
-}
-
 fn shift_range(range: Range<usize>, offset: usize) -> Range<usize> {
     (range.start + offset)..(range.end + offset)
 }
@@ -61,9 +31,16 @@ fn shift_range(range: Range<usize>, offset: usize) -> Range<usize> {
 pub fn get_dependencies(module: &InputModule) -> Result<DepGraph> {
     let mut deps = DepGraph::new();
     let mut add_dep = |a: DepNode, relocation: &RelocationEntry| -> Result<()> {
-        let target = module
-            .reloc_info
-            .visit_relocation(relocation, DepRelocVisitor)?;
+        let target = match module.reloc_info.expand_relocation(relocation)? {
+            RelocDetails::TypeIndex { .. } => None,
+            RelocDetails::MemoryAddr(details) => Some(DepNode::DataSymbol(details.symbol_index)),
+            RelocDetails::TableIndex(details) => Some(DepNode::Function(details.index)),
+            RelocDetails::RelTableIndex(details) => Some(DepNode::Function(details.index)),
+            RelocDetails::FunctionIndex(details) => Some(DepNode::Function(details.index)),
+            RelocDetails::TableNumber(details) => Some(DepNode::Table(details.index)),
+            RelocDetails::GlobalIndex(details) => Some(DepNode::Global(details.index)),
+            RelocDetails::TagIndex(details) => Some(DepNode::Tag(details.index)),
+        };
         if let Some(target) = target {
             deps.entry(a).or_default().insert(target);
         };

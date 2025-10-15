@@ -340,6 +340,7 @@ impl RelocInfo<'_> {
 
         (section_range.start, section_relocs[reloc_range].iter())
     }
+
     pub fn get_relocated_data(
         module: &InputModule,
         range: Range<InputOffset>,
@@ -353,11 +354,8 @@ impl RelocInfo<'_> {
         }
         Ok(data)
     }
-    pub fn visit_relocation<T, V: RelocVisitor<Result = Result<T>>>(
-        &self,
-        relocation: &RelocationEntry,
-        visitor: V,
-    ) -> V::Result {
+
+    pub fn expand_relocation(&self, relocation: &RelocationEntry) -> Result<RelocDetails<'_>> {
         use wasmparser::RelocationType::*;
         let symbol_index = relocation.index as usize;
         let symbol = &self.symbols[symbol_index];
@@ -369,96 +367,90 @@ impl RelocInfo<'_> {
                 let wasmparser::SymbolInfo::Data {
                     flags,
                     name,
-                    symbol: symbol_def,
+                    symbol: ref symbol_def,
                 } = *symbol
                 else {
                     bail!("Expected a data symbol as target of a MEMORY_ADDR relocation, got {symbol:?}");
                 };
-                let details = DataDetails {
+                Ok(RelocDetails::MemoryAddr(DataDetails {
                     symbol_index,
                     _flags: flags,
                     _name: name,
                     definition: symbol_def.as_ref(),
-                };
-                visitor.visit_memory_addr(details)
+                }))
             }
             TableIndexSleb | TableIndexSleb64 | TableIndexI32 | TableIndexI64 => {
                 let wasmparser::SymbolInfo::Func { flags, index, name } = *symbol else {
                     bail!("Expected a func symbol as target of a TABLE_INDEX relocation, got {symbol:?}");
                 };
-                let details = SymbolDetails {
+                Ok(RelocDetails::TableIndex(SymbolDetails {
                     _symbol_index: symbol_index,
                     _flags: flags,
                     index: index as InputFuncId,
                     _name: name,
-                };
-                visitor.visit_table_index(details)
+                }))
             }
             TableIndexRelSleb | TableIndexRelSleb64 => {
                 let wasmparser::SymbolInfo::Func { flags, index, name } = *symbol else {
                     bail!("Expected a func symbol as target of a TABLE_INDEX relocation, got {symbol:?}");
                 };
-                let details = SymbolDetails {
+                Ok(RelocDetails::RelTableIndex(SymbolDetails {
                     _symbol_index: symbol_index,
                     _flags: flags,
                     index: index as InputFuncId,
                     _name: name,
-                };
-                visitor.visit_rel_table_index(details)
+                }))
             }
             wasmparser::RelocationType::FunctionIndexLeb
             | wasmparser::RelocationType::FunctionIndexI32 => {
                 let wasmparser::SymbolInfo::Func { flags, index, name } = *symbol else {
                     bail!("Expected a func symbol as target of a FUNCTION_INDEX relocation, got {symbol:?}");
                 };
-                let details = SymbolDetails {
+                Ok(RelocDetails::FunctionIndex(SymbolDetails {
                     _symbol_index: symbol_index,
                     _flags: flags,
                     index: index as InputFuncId,
                     _name: name,
-                };
-                visitor.visit_function_index(details)
+                }))
             }
             wasmparser::RelocationType::TableNumberLeb => {
                 let wasmparser::SymbolInfo::Table { flags, index, name } = *symbol else {
                     bail!("Expected a table symbol as target of a TABLE_NUMBER relocation, got {symbol:?}");
                 };
-                let details = SymbolDetails {
+                Ok(RelocDetails::TableNumber(SymbolDetails {
                     _symbol_index: symbol_index,
                     _flags: flags,
                     index: index as TableId,
                     _name: name,
-                };
-                visitor.visit_table_number(details)
+                }))
             }
             wasmparser::RelocationType::GlobalIndexI32
             | wasmparser::RelocationType::GlobalIndexLeb => {
                 let wasmparser::SymbolInfo::Global { flags, index, name } = *symbol else {
                     bail!("Expected a global symbol as target of a GLOBAL_INDEX relocation, got {symbol:?}");
                 };
-                let details = SymbolDetails {
+                Ok(RelocDetails::GlobalIndex(SymbolDetails {
                     _symbol_index: symbol_index,
                     _flags: flags,
                     index: index as GlobalId,
                     _name: name,
-                };
-                visitor.visit_global_index(details)
+                }))
             }
             wasmparser::RelocationType::EventIndexLeb => {
                 let wasmparser::SymbolInfo::Event { flags, index, name } = *symbol else {
                     bail!("Expected a global symbol as target of a EVENT_INDEX relocation, got {symbol:?}");
                 };
-                let details = SymbolDetails {
+                Ok(RelocDetails::TagIndex(SymbolDetails {
                     _symbol_index: symbol_index,
                     _flags: flags,
                     index: index as TagId,
                     _name: name,
-                };
-                visitor.visit_tag_index(details)
+                }))
             }
-            wasmparser::RelocationType::TypeIndexLeb => {
-                visitor.visit_type_index(symbol_index, symbol)
-            }
+            wasmparser::RelocationType::TypeIndexLeb => Ok(RelocDetails::TypeIndex {
+                _symbol_idx: symbol_index,
+                _symbol: *symbol,
+            }),
             wasmparser::RelocationType::SectionOffsetI32
             | wasmparser::RelocationType::FunctionOffsetI32
             | wasmparser::RelocationType::FunctionOffsetI64 => {
@@ -485,7 +477,7 @@ impl RelocInfo<'_> {
         let target = &mut data[(reloc_base + relocation_range.start - data_offset)
             ..(reloc_base + relocation_range.end - data_offset)];
         let ty = relocation.ty;
-        let relocated = self.visit_relocation(relocation, reloc_target.visitor())?;
+        let relocated = reloc_target.reloc_value(self.expand_relocation(relocation)?)?;
         let Some(value) = relocated else {
             return Ok(());
         };
@@ -502,13 +494,13 @@ impl RelocInfo<'_> {
     }
 }
 
-// return None from these to signal "same as input, no relocation required"
 pub struct SymbolDetails<'a, Idx> {
     pub _symbol_index: usize,
     pub index: Idx,
     pub _flags: SymbolFlags,
     pub _name: Option<&'a str>,
 }
+
 pub struct DataDetails<'a> {
     pub symbol_index: usize,
     pub _flags: SymbolFlags,
@@ -516,28 +508,22 @@ pub struct DataDetails<'a> {
     pub definition: Option<&'a DefinedDataSymbol>,
 }
 
-pub trait RelocVisitor {
-    type Result;
-    fn visit_type_index(self, symbol_idx: usize, symbol: &SymbolInfo<'_>) -> Self::Result;
-    fn visit_memory_addr(self, details: DataDetails<'_>) -> Self::Result;
-    fn visit_table_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result;
-    fn visit_rel_table_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result;
-    fn visit_function_index(self, details: SymbolDetails<'_, InputFuncId>) -> Self::Result;
-    fn visit_table_number(self, details: SymbolDetails<'_, TableId>) -> Self::Result;
-    fn visit_global_index(self, details: SymbolDetails<'_, GlobalId>) -> Self::Result;
-    fn visit_tag_index(self, details: SymbolDetails<'_, TagId>) -> Self::Result;
+pub enum RelocDetails<'a> {
+    TypeIndex {
+        _symbol_idx: usize,
+        _symbol: SymbolInfo<'a>,
+    },
+    MemoryAddr(DataDetails<'a>),
+    TableIndex(SymbolDetails<'a, InputFuncId>),
+    RelTableIndex(SymbolDetails<'a, InputFuncId>),
+    FunctionIndex(SymbolDetails<'a, InputFuncId>),
+    TableNumber(SymbolDetails<'a, TableId>),
+    GlobalIndex(SymbolDetails<'a, GlobalId>),
+    TagIndex(SymbolDetails<'a, TagId>),
 }
 
 pub trait RelocTarget {
-    fn visitor(&self) -> impl '_ + RelocVisitor<Result = Result<Option<usize>>>;
-}
-impl<U> RelocTarget for U
-where
-    for<'a> &'a U: RelocVisitor<Result = Result<Option<usize>>>,
-{
-    fn visitor(&self) -> impl '_ + RelocVisitor<Result = Result<Option<usize>>> {
-        self
-    }
+    fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>>;
 }
 
 fn encode_leb128_u32_5byte(mut value: u32, buf: &mut [u8; 5]) {
