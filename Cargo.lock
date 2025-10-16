@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "wasm_split_cli_support"
-version = "0.2.0-rc.2"
+version = "0.2.0-rc.3"
 dependencies = [
  "clap",
  "eyre",

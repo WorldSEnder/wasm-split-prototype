@@ -24,12 +24,12 @@ fn main() -> Result<()> {
     let args = Cli::parse();
     let input_wasm = std::fs::read(args.input)?;
     let main_out_path = args.output.join("main.wasm");
-    let opts = this::Options {
-        verbose: args.verbose,
-        output_dir: &args.output,
-        main_out_path: &main_out_path,
-        ..this::Options::new(&input_wasm)
-    };
-    let _ = this::transform(opts)?;
+    let _ = this::transform({
+        let mut opts = this::Options::new(&input_wasm);
+        opts.verbose = args.verbose;
+        opts.output_dir = &args.output;
+        opts.main_out_path = &main_out_path;
+        opts
+    })?;
     Ok(())
 }

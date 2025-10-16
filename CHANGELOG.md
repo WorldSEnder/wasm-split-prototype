@@ -1,3 +1,7 @@
+## wasm_split_cli v0.2.0-rc.2, wasm_split_helpers v0.2.0-rc.2
+
+- Fix some semver hazards before the release
+
 ## wasm_split_cli v0.2.0-rc.1
 
 - Data symbols will now get merged if they overlap in the input.
