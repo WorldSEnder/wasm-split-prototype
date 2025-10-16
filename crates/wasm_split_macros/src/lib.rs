@@ -249,13 +249,13 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             #[link(wasm_import_module = #link_name)]
             unsafe extern "C" {
                 #[unsafe(no_mangle)]
-                fn #load_module_ident (callback: #wasm_split_path ::LoadCallbackFn, data: *const ::std::ffi::c_void) -> ();
+                fn #load_module_ident (callback: #wasm_split_path::rt::LoadCallbackFn, data: *const ::std::ffi::c_void) -> ();
             }
             #[cfg(target_family = "wasm")]
             {
-                #wasm_split_path::ensure_loaded(::core::pin::Pin::static_ref({
+                #wasm_split_path::rt::ensure_loaded(::core::pin::Pin::static_ref({
                     // SAFETY: the imported c function correctly implements the callback
-                    static LOADER: #wasm_split_path::LazySplitLoader = unsafe { #wasm_split_path::LazySplitLoader::new(#load_module_ident) };
+                    static LOADER: #wasm_split_path::rt::LazySplitLoader = unsafe { #wasm_split_path::rt::LazySplitLoader::new(#load_module_ident) };
                     &LOADER
                 })).await;
             }

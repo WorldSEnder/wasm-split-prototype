@@ -16,7 +16,16 @@ repository = "https://github.com/WorldSEnder/wasm-split-prototype"
 categories = ["wasm", "web-programming"]
 
 [workspace.dependencies]
-wasm_split_macros = { version = "0.2.0-rc.1", path = "crates/wasm_split_macros" }
+# The version of the macro is pinned to a specific minor version (even after 1.0).
+# This is a slight break from the usual semver semantics, but okay because only `wasm_split_helpers`
+# should directly depend on `wasm_split_macros`.
+# This reason is semver stability: The macro assumes certain structure to the (hidden)
+# `rt` module in `wasm_split_helpers`.
+# Upgrade paths:
+# - when changing internals of `rt`, release a new minor version of the macro and bump the
+#   version requirement here.
+# - when adjusting the macro without touching `rt`, release a new patch version of the macro.
+wasm_split_macros = { version = ">= 0.2.0-rc.2, < 0.3", path = "crates/wasm_split_macros" }
 
 [profile.release]
 opt-level = "s"
