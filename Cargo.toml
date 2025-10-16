@@ -26,7 +26,3 @@ categories = ["wasm", "web-programming"]
 #   version requirement here.
 # - when adjusting the macro without touching `rt`, release a new patch version of the macro.
 wasm_split_macros = { version = ">= 0.2.0-rc.2, < 0.3", path = "crates/wasm_split_macros" }
-
-[profile.release]
-opt-level = "s"
-lto = true
