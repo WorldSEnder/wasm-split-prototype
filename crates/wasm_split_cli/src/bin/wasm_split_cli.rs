@@ -25,12 +25,10 @@ fn main() -> Result<()> {
     let input_wasm = std::fs::read(args.input)?;
     let main_out_path = args.output.join("main.wasm");
     let opts = this::Options {
-        input_wasm: &input_wasm,
+        verbose: args.verbose,
         output_dir: &args.output,
         main_out_path: &main_out_path,
-        verbose: args.verbose,
-        main_module: "./main.js",
-        link_name: Path::new("__wasm_split.js"),
+        ..this::Options::new(&input_wasm)
     };
     let _ = this::transform(opts)?;
     Ok(())

@@ -16,13 +16,13 @@ fn wasm_split_cli(target: &Path, dir: &Path) -> Result<PathBuf> {
     let main_file = dir.join("main.wasm");
     let input = std::fs::read(target)?;
 
-    let _split = wasm_split_cli_support::transform(wasm_split_cli_support::Options {
-        input_wasm: &input,
-        output_dir: dir,
-        main_out_path: &main_file,
-        verbose: true,
-        main_module: "./wasm-bindgen-test",
-        link_name: Path::new("__wasm_split.js"),
+    let _split = wasm_split_cli_support::transform({
+        let mut split_opts = wasm_split_cli_support::Options::new(&input);
+        split_opts.output_dir = dir;
+        split_opts.main_out_path = &main_file;
+        split_opts.main_module = "./wasm-bindgen-test";
+        split_opts.verbose = true;
+        split_opts
     })?;
     Ok(main_file)
 }

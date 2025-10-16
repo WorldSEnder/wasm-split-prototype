@@ -14,23 +14,49 @@ mod reloc;
 mod split_point;
 mod util;
 
+#[non_exhaustive]
 pub struct Options<'a> {
     /// The input wasm to split
     pub input_wasm: &'a [u8],
-    /// Where to put javascript wrappers, split wasm modules
+    /// Where to put javascript wrappers, split wasm modules.
+    ///
+    /// Default: `Path::new("wasm_split")`
     pub output_dir: &'a Path,
     /// Where to put the main module that has to be post-processed by wasm-bindgen.
-    /// Usually a path in `output_dir`
+    /// Usually a path in `output_dir`.
+    ///
+    /// Default: `Path::new("wasm_split/main.wasm")`
     pub main_out_path: &'a Path,
-    /// From where will `initSync` be imported from?
-    pub main_module: &'a str,
-    /// (Relative) path of the created link file.
-    /// This must match the name used in the macro.
+    /// Path of the created link file, relative to the output dir.
+    /// The wasm will use this path to import the loader functions for the split chunks.
+    /// This must match the `link_name` used in the macro.
+    ///
+    /// Default: `Path::new("./__wasm_split.js")`
     pub link_name: &'a Path,
-    /// Verbosely output additional information about processing
+    /// From where will `initSync` be imported from?
+    ///
+    /// Default: `"./main.js"`
+    pub main_module: &'a str,
+    /// Verbosely output additional information about processing.
+    ///
+    /// Default: false
     pub verbose: bool,
 }
 
+impl<'wasm> Options<'wasm> {
+    pub fn new(input_wasm: &'wasm [u8]) -> Self {
+        Self {
+            input_wasm,
+            output_dir: Path::new("wasm_split"),
+            main_out_path: Path::new("wasm_split/main.wasm"),
+            link_name: Path::new("./__wasm_split.js"),
+            main_module: "./main.js",
+            verbose: false,
+        }
+    }
+}
+
+#[non_exhaustive]
 pub struct SplitWasm {
     pub split_modules: Vec<PathBuf>,
     /// split -> dependency filestem
