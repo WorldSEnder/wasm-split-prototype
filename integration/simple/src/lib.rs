@@ -1,4 +1,4 @@
-use std::pin::Pin;
+use std::{future::Future, pin::Pin};
 use wasm_split_helpers::wasm_split;
 
 #[wasm_split(split)]
