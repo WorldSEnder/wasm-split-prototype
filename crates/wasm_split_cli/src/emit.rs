@@ -213,7 +213,7 @@ impl IndirectFunctionEmitInfo {
                     .map(|(i, _)| i + 1)
                     .unwrap_or(end_table_index);
                 while func_it
-                    .next_if(|(_, &f)| output_module_index == module_for_func(f))
+                    .next_if(|&(_, &f)| output_module_index == module_for_func(f))
                     .is_some()
                 {}
                 let mod_end = func_it
@@ -1133,9 +1133,9 @@ impl<'a> ModuleEmitState<'a> {
 
         fn convert_name_hash_map(map: &HashMap<usize, &str>) -> wasm_encoder::NameMap {
             let mut encoder_map = wasm_encoder::NameMap::new();
-            let mut names = map.iter().collect::<Vec<_>>();
+            let mut names = map.iter().map(|(i, name)| (*i, *name)).collect::<Vec<_>>();
             names.sort();
-            for (&i, &name) in names.iter() {
+            for (i, name) in names {
                 encoder_map.append(i as u32, name);
             }
             encoder_map
