@@ -12,9 +12,10 @@ use crate::{
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
-use wasm_encoder::EntityType;
+use wasm_encoder::{EntityType, ProducersField, ProducersSection};
 use wasmparser::{
-    Data, DataKind, DefinedDataSymbol, ExternalKind, SegmentFlags, SymbolInfo, TypeRef,
+    BinaryReader, Data, DataKind, DefinedDataSymbol, ExternalKind, ProducersSectionReader,
+    SegmentFlags, SymbolInfo, TypeRef,
 };
 
 struct EmitState<'a> {
@@ -808,6 +809,7 @@ impl<'a> ModuleEmitState<'a> {
         self.generate_wasm_bindgen_sections();
         self.generate_name_section()?;
         self.generate_target_features_section();
+        self.generate_producers_section()?;
         Ok(())
     }
 
@@ -1213,6 +1215,45 @@ impl<'a> ModuleEmitState<'a> {
                 });
             }
         }
+    }
+
+    fn generate_producers_section(&mut self) -> Result<()> {
+        let mut producers = ProducersSection::new();
+        let mut produced_by = ProducersField::new();
+        const PRODUCERS_NAME: &str = "producers";
+        const PROCESSED_BY_FIELD_NAME: &str = "processed-by";
+
+        if self.is_main() {
+            // copy the section from input wasm, but insert ourselves
+            if let Some(input_producers) = self
+                .input_module
+                .custom_sections
+                .iter()
+                .find(|section| section.name == PRODUCERS_NAME)
+            {
+                let fields = ProducersSectionReader::new(BinaryReader::new(
+                    input_producers.data,
+                    input_producers.data_offset,
+                ))?;
+                for input_field in fields.into_iter() {
+                    let input_field = input_field?;
+                    let mut field = ProducersField::new();
+                    for entry in input_field.values.into_iter() {
+                        let entry = entry?;
+                        field.value(entry.name, entry.version);
+                    }
+                    if input_field.name == PROCESSED_BY_FIELD_NAME {
+                        produced_by = field;
+                    } else {
+                        producers.field(input_field.name, &field);
+                    }
+                }
+            }
+        }
+        produced_by.value("wasm_split_cli_support", env!("CARGO_PKG_VERSION"));
+        producers.field(PROCESSED_BY_FIELD_NAME, &produced_by);
+        self.output_module.section(&producers);
+        Ok(())
     }
 }
 
