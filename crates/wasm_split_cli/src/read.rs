@@ -1,11 +1,14 @@
 use eyre::{bail, Result};
 use std::collections::HashMap;
-use wasmparser::{BinaryReader, NameSectionReader, Payload, TypeRef};
+use wasmparser::{BinaryReader, NameSectionReader, Payload, Subsection, Subsections, TypeRef};
 pub use wasmparser::{
     Data, Element, Export, FuncType, FunctionBody, Global, Import, MemoryType, Table, TagType,
 };
 
-use crate::reloc::{RelocInfo, RelocInfoParser};
+use crate::{
+    magic_constants::{SubsectionTag as WsSubsectionTag, Version as WsVersion},
+    reloc::{RelocInfo, RelocInfoParser},
+};
 
 pub struct CustomSection<'a> {
     pub name: &'a str,
@@ -242,6 +245,10 @@ impl<'a> InputModule<'a> {
             if section.name == "name" {
                 module.names = Names::new(section.data, section.data_offset)?;
             }
+            if section.name == crate::magic_constants::LINK_SECTION {
+                let rdr = BinaryReader::new(section.data, section.data_offset);
+                let _ = read_wasm_split_section(rdr)?;
+            }
         }
         module.reloc_info = reloc_info.finish(&module)?;
 
@@ -272,4 +279,54 @@ impl<'a> InputModule<'a> {
             self.defined_funcs[func_id - self.imported_funcs.len()].type_id
         }
     }
+}
+
+enum WsReadVersion {
+    Known(WsVersion),
+    Unknown,
+}
+enum WasmSplitSubsection<'a> {
+    Version(WsReadVersion),
+    Unknown(BinaryReader<'a>),
+}
+fn read_version(reader: &mut BinaryReader<'_>) -> wasmparser::Result<WsReadVersion> {
+    let version = reader.read_u8()?;
+    // TODO: for future version, read an uleb
+    Ok(match version {
+        vers if vers == (WsVersion::Version1 as u8) => WsReadVersion::Known(WsVersion::Version1),
+        _ => WsReadVersion::Unknown,
+    })
+}
+
+impl<'a> Subsection<'a> for WasmSplitSubsection<'a> {
+    fn from_reader(id: u8, mut reader: BinaryReader<'a>) -> wasmparser::Result<Self> {
+        match id {
+            id if id == WsSubsectionTag::Version as u8 => {
+                let version = read_version(&mut reader)?;
+                Ok(Self::Version(version))
+            }
+            _ => Ok(Self::Unknown(reader)),
+        }
+    }
+}
+
+fn read_wasm_split_section(rdr: BinaryReader<'_>) -> Result<()> {
+    let subsections = Subsections::<WasmSplitSubsection>::new(rdr);
+    for subsection in subsections {
+        match subsection? {
+            WasmSplitSubsection::Version(WsReadVersion::Unknown) => bail!(
+                r#"Input file was linked with a `wasm_split_helpers` version that is not recognized by this tool.
+    Please upgrade your `wasm_split_cli` version and ensure you have the latest version of the relevant
+    build tools installed."#
+            ),
+            WasmSplitSubsection::Version(WsReadVersion::Known(WsVersion::Version1)) => {
+                // No additional information at the moment
+            }
+            WasmSplitSubsection::Unknown(reader) => {
+                let _ = reader;
+                // Ignore all subsections that are unrecognized for upwards compatibility
+            }
+        }
+    }
+    Ok(())
 }

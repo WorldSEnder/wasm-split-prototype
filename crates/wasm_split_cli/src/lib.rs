@@ -9,6 +9,7 @@ use split_point::SplitModuleIdentifier;
 mod dep_graph;
 mod emit;
 //mod range_map;
+mod magic_constants;
 mod read;
 mod reloc;
 mod split_point;
