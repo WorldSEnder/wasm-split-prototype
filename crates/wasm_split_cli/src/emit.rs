@@ -6,6 +6,7 @@ use std::{
 
 use crate::{
     dep_graph::DepNode,
+    magic_constants,
     read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::SplitProgramInfo,
@@ -20,6 +21,7 @@ use wasmparser::{
 
 struct EmitState<'a> {
     input_module: &'a InputModule<'a>,
+    link_module: &'a str,
     // info about shared usage
     indirect_functions: IndirectFunctionEmitInfo,
     data_relocations: DataEmitInfo,
@@ -27,7 +29,11 @@ struct EmitState<'a> {
 }
 
 impl<'a> EmitState<'a> {
-    fn new(module: &'a InputModule<'a>, program_info: &SplitProgramInfo) -> Result<Self> {
+    fn new(
+        module: &'a InputModule<'a>,
+        program_info: &SplitProgramInfo,
+        link_module: &'a str,
+    ) -> Result<Self> {
         let indirect_functions = IndirectFunctionEmitInfo::new(module, program_info)?;
         let data_relocations = DataEmitInfo::new(module, program_info)?;
 
@@ -66,6 +72,7 @@ impl<'a> EmitState<'a> {
 
         Ok(EmitState {
             input_module: module,
+            link_module,
             indirect_functions,
             data_relocations,
             shared_names,
@@ -831,11 +838,12 @@ impl<'a> ModuleEmitState<'a> {
     fn generate_import_section(&mut self) {
         let mut section = wasm_encoder::ImportSection::new();
         for imp in &self.imports {
-            section.import(
-                &imp.module,
-                &imp.name,
-                EntityType::try_from(imp.ty).unwrap(),
-            );
+            let module = if imp.module == magic_constants::PLACEHOLDER_IMPORT_MODULE {
+                self.emit_state.link_module
+            } else {
+                &imp.module
+            };
+            section.import(module, &imp.name, EntityType::try_from(imp.ty).unwrap());
         }
         self.output_module.section(&section);
     }
@@ -1260,9 +1268,10 @@ impl<'a> ModuleEmitState<'a> {
 pub fn emit_modules(
     module: &InputModule,
     program_info: &SplitProgramInfo,
+    link_module: &str,
     mut emit_fn: impl FnMut(usize, &[u8]) -> Result<()>,
 ) -> Result<()> {
-    let emit_state = EmitState::new(module, program_info)?;
+    let emit_state = EmitState::new(module, program_info, link_module)?;
 
     for output_module_index in 0..program_info.output_modules.len() {
         let mut emit_state = ModuleEmitState::new(&emit_state, output_module_index, program_info);

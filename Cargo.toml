@@ -25,4 +25,4 @@ categories = ["wasm", "web-programming"]
 # - when changing internals of `rt`, release a new minor version of the macro and bump the
 #   version requirement here.
 # - when adjusting the macro without touching `rt`, release a new patch version of the macro.
-wasm_split_macros = { version = ">= 0.2.0-rc.2, < 0.3", path = "crates/wasm_split_macros" }
+wasm_split_macros = { version = ">= 0.2.0-rc.3, < 0.3", path = "crates/wasm_split_macros" }

@@ -1,3 +1,10 @@
+## Unreleased
+
+- Add a custom section to track which version of the runtime/macro was used to produce the binary before transforming
+  in the CLI. This can prevent runtime/CLI mismatch.
+
+- The link module is now entirely handled by the CLI, the macro merely emits a placeholder.
+
 ## wasm_split_cli v0.2.0-rc.2, wasm_split_helpers v0.2.0-rc.2
 
 - Fix some semver hazards before the release

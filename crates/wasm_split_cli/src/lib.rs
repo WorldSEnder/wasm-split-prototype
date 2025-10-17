@@ -30,10 +30,9 @@ pub struct Options<'a> {
     pub main_out_path: &'a Path,
     /// Path of the created link file, relative to the output dir.
     /// The wasm will use this path to import the loader functions for the split chunks.
-    /// This must match the `link_name` used in the macro.
     ///
-    /// Default: `Path::new("./__wasm_split.js")`
-    pub link_name: &'a Path,
+    /// Default: `"./__wasm_split.js"`
+    pub link_name: &'a str,
     /// From where will `initSync` be imported from?
     ///
     /// Default: `"./main.js"`
@@ -50,7 +49,7 @@ impl<'wasm> Options<'wasm> {
             input_wasm,
             output_dir: Path::new("wasm_split"),
             main_out_path: Path::new("wasm_split/main.wasm"),
-            link_name: Path::new("./__wasm_split.js"),
+            link_name: "./__wasm_split.js",
             main_module: "./main.js",
             verbose: false,
         }
@@ -100,7 +99,8 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
         Ok(())
     };
     std::fs::create_dir_all(opts.output_dir)?;
-    crate::emit::emit_modules(&module, &split_program_info, emit_fn)?;
+    let link_module = opts.link_name;
+    crate::emit::emit_modules(&module, &split_program_info, link_module, emit_fn)?;
 
     use std::fmt::Write;
     let mut javascript = String::new();
@@ -156,7 +156,7 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
             .push(file_name);
     }
 
-    let link_path = opts.output_dir.join(opts.link_name);
+    let link_path = opts.output_dir.join(Path::new(link_module));
     std::fs::write(link_path, javascript)?;
     Ok(SplitWasm {
         split_modules,

@@ -7,6 +7,9 @@ use syn::parse::{Parse, ParseStream};
 use syn::{parenthesized, parse_quote, Attribute, Block, Pat, Path, ReturnType};
 use syn::{parse_macro_input, spanned::Spanned, Ident, ItemFn, LitStr, Signature, Token};
 
+mod magic_constants;
+use magic_constants::PLACEHOLDER_IMPORT_MODULE;
+
 struct ReturnWrapper {
     pattern: Pat,
     output: ReturnType,
@@ -20,8 +23,8 @@ struct PreloadDefinition {
 
 struct Args {
     module_ident: Ident,
-    link_name: LitStr,
-    wasm_split_path: Path,
+    link_name: Option<(Ident, LitStr)>,
+    wasm_split_path: Option<Path>,
     return_wrapper: Option<ReturnWrapper>,
     preload_def: Option<PreloadDefinition>,
 }
@@ -29,10 +32,10 @@ struct Args {
 impl Parse for Args {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let module_ident = input.call(Ident::parse_any)?;
-        let mut link_name: Option<LitStr> = None;
-        let mut wasm_split_path: Option<Path> = None;
-        let mut return_wrapper: Option<ReturnWrapper> = None;
-        let mut preload_def: Option<PreloadDefinition> = None;
+        let mut link_name = None;
+        let mut wasm_split_path = None;
+        let mut return_wrapper = None;
+        let mut preload_def = None;
         while !input.is_empty() {
             let _: Token![,] = input.parse()?;
             if input.is_empty() {
@@ -42,7 +45,7 @@ impl Parse for Args {
             match () {
                 _ if option == "wasm_import_module" => {
                     let _: Token![=] = input.parse()?;
-                    link_name = Some(input.parse()?);
+                    link_name = Some((option, input.parse()?));
                 }
                 _ if option == "wasm_split_path" => {
                     let _: Token![=] = input.parse()?;
@@ -79,9 +82,8 @@ impl Parse for Args {
         }
         Ok(Self {
             module_ident,
-            link_name: link_name
-                .unwrap_or(LitStr::new("./__wasm_split.js", Span::call_site().into())),
-            wasm_split_path: wasm_split_path.unwrap_or(parse_quote!(::wasm_split_helpers)),
+            link_name,
+            wasm_split_path,
             return_wrapper,
             preload_def,
         })
@@ -107,8 +109,6 @@ impl Parse for Args {
 /// ```
 ///
 /// The following options are supported:
-/// - `wasm_import_module = $mod:string_literal` changes the javascript module from which the loading will be imported.
-///    Should be the same path that will be indicated to the CLI later. Default: `"./__wasm_split.js"`.
 /// - `wasm_split_path = $this:path` changes the path at which the runtime support crate is expected.
 ///    As a framework, you might want to reexport this from some hidden module path.
 ///    Default: `::wasm_split_helpers`.
@@ -131,6 +131,15 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         return_wrapper,
         preload_def,
     } = parse_macro_input!(args as Args);
+    let (deprecated_link_opt, link_name) = if let Some((option, link_name)) = link_name {
+        (Some(option), link_name)
+    } else {
+        (
+            None,
+            LitStr::new(PLACEHOLDER_IMPORT_MODULE, Span::call_site().into()),
+        )
+    };
+    let wasm_split_path = wasm_split_path.unwrap_or(parse_quote!(::wasm_split_helpers));
 
     let mut item_fn: ItemFn = parse_macro_input!(input as ItemFn);
     let mut declared_abi = item_fn.sig.abi.take();
@@ -241,6 +250,19 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         }};
     }
 
+    let mut extra_code = quote! {};
+    if let Some(deprecated_opt) = deprecated_link_opt {
+        let deprecation_note = format!("The `{deprecated_opt}` option should not be used, since the wasm_split_cli fixes the import path with improved target knowledge.");
+        extra_code.extend(quote! {
+            const _: () = {
+                #[allow(nonstandard_style)]
+                #[deprecated(note = #deprecation_note)]
+                const #deprecated_opt: () = ();
+                let _ = #deprecated_opt;
+            };
+        });
+    }
+
     quote! {
         // This could have weak linkage to unify all mentions of the same module
         #( #preload_attrs )*
@@ -263,7 +285,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         #(#attrs)*
         #vis #wrapper_sig {
             #[cfg(target_family = "wasm")]
-            #[link(wasm_import_module = "__wasm_split_placeholder__")]
+            #[link(wasm_import_module = #link_name)]
             unsafe #declared_abi {
                 // We rewrite calls to this function instead of actually calling it. We just need to link to it. The name is unique by hashing.
                 #[unsafe(no_mangle)]
@@ -279,6 +301,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             #preload_name ().await;
             #compute_result
         }
+        #extra_code
     }
     .into()
 }

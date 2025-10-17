@@ -19,7 +19,7 @@ A single input wasm module is then split into multiple modules that are fetched 
 
 ## What this is not
 
-This is not a dynamic linker for wasm! Runtime loading expects to receive _exactly_ the modules that have been produced by splitting before.
+This is not a dynamic linker for wasm! Runtime loading expects to receive _exactly_ the modules that have been produced by splitting earlier.
 Selectively updating only specific files after recompiling is not supported. On the technical side, this is because a reachability analysis
 is run on the whole artifact which might migrate code from one module to another due to unrelated changes.
 

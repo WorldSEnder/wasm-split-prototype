@@ -22,3 +22,5 @@ pub const LINK_SECTION: &str = link_section!();
 pub enum Version {
     Version1 = 1,
 }
+
+pub const PLACEHOLDER_IMPORT_MODULE: &str = "__wasm_split_placeholder__";
