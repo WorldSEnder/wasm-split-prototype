@@ -32,3 +32,6 @@ in the workspace `Cargo.toml` for some of the subtleties.
 
 [`cargo-semver-checks`]: https://crates.io/crates/cargo-semver-checks
 
+## I don't know what to hack on
+
+Look for tracking issues with the <span style="vertical-align: middle;"><img src="https://img.shields.io/badge/future--version-85ec07?style=flat"></span> tag.
