@@ -56,7 +56,7 @@ for json_result in json_results:
 print(target_path)
 assert target_path is not None
 
-pkg_dir = os.path.join(root_dir, "pkg")
+pkg_dir = os.path.join(root_dir, "example", "dist", "pkg")
 
 shutil.rmtree(pkg_dir, ignore_errors=True)
 
@@ -77,7 +77,7 @@ if args.no_split:
         check=True,
     )
 else:
-    split_temp_dir = os.path.join(root_dir, "split_tmp")
+    split_temp_dir = os.path.join(root_dir, "example", "dist", "split_tmp")
     shutil.rmtree(split_temp_dir, ignore_errors=True)
 
     subprocess.run(
