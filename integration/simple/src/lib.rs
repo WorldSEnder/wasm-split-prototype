@@ -1,4 +1,8 @@
-use std::{future::Future, pin::Pin};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicU32, Ordering},
+};
 use wasm_split_helpers::wasm_split;
 
 #[wasm_split(split)]
@@ -35,6 +39,16 @@ mod smoke {
 #[wasm_split(preloadable_split, preload(preload_it))]
 fn preloadable() -> u32 {
     42
+}
+
+pub static SHARED_MUT: AtomicU32 = AtomicU32::new(0xdead);
+
+#[wasm_split(shared_mut)]
+fn read_shared_mut() -> bool {
+    // The test will first write a value, then load this module to execute it.
+    SHARED_MUT
+        .compare_exchange(0xbeaf, 42, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -87,6 +101,20 @@ mod tests {
             crate::preloadable().await,
             42,
             "should execute the preloadable function correctly"
+        );
+    }
+
+    #[test]
+    pub async fn it_supports_atomic_statics() {
+        crate::SHARED_MUT.store(0xbeaf, super::Ordering::SeqCst);
+        assert!(
+            crate::read_shared_mut().await,
+            "Didn't read the value we stored"
+        );
+        assert_eq!(
+            crate::SHARED_MUT.load(super::Ordering::SeqCst),
+            42,
+            "should have successfully stored its value"
         );
     }
 }
