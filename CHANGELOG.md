@@ -1,4 +1,4 @@
-## Unreleased
+## wasm_split_cli v0.2.0, wasm_split_helpers v0.2.0
 
 - Add a custom section to track which version of the runtime/macro was used to produce the binary before transforming
   in the CLI. This can prevent runtime/CLI mismatch.
