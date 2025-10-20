@@ -28,7 +28,7 @@ pub struct Options<'a> {
     ///
     /// Default: `Path::new("wasm_split/main.wasm")`
     pub main_out_path: &'a Path,
-    /// Path of the created link file, relative to the output dir.
+    /// Module path of the created link file, relative to the output dir.
     /// The wasm will use this path to import the loader functions for the split chunks.
     ///
     /// Default: `"./__wasm_split.js"`
