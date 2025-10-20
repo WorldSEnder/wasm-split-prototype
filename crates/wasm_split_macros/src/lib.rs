@@ -92,8 +92,9 @@ impl Parse for Args {
 
 /// Indicate a function as a split point.
 ///
-/// Calls to this function will load the module to which this function was split into on-demand. On non-`wasm` targets,
-/// the function will be called directly without any split support.
+/// The macro emits a function with the same signature, except that it is `async`. Calls to this function will first load
+/// the module into which the input function was split into before forwarding the arguments and the result. On non-`wasm`
+/// targets, the function will be called directly.
 ///
 /// The annotated function must fulfill the requirements a typical `extern` declared function must fufill:
 /// - It can not be `async`. If you want to support this, you must `Box` or otherwise wrap the `Future` into a `dyn` object.
@@ -108,6 +109,8 @@ impl Parse for Args {
 /// wasm_split($module:ident (, $option ),* ) => { ... };
 /// ```
 ///
+/// All functions with the same specified `$module` end up in one split off WASM chunk.
+///
 /// The following options are supported:
 /// - `wasm_split_path = $this:path` changes the path at which the runtime support crate is expected.
 ///    As a framework, you might want to reexport this from some hidden module path.
@@ -120,8 +123,8 @@ impl Parse for Args {
 ///    Example use case: `return_wrapper( let future = _ ; { future.await } -> Output)` to `await` a future directly in
 ///    the wrapper.
 /// - `preload( $( #[$attr] )* $preload_name:ident )` generates an additional preload function `$preload_name` with the
-///    signature `async fn()` which can be used to fetch the module in which the wrapped function is contained before
-///    calling it directly.
+///    signature `async fn()` which can be used to fetch the module in which the wrapped function is contained without
+///    calling it.
 #[proc_macro_attribute]
 pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     let Args {
