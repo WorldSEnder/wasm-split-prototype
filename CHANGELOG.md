@@ -1,3 +1,8 @@
+## wasm_split_helpers v0.2.1
+
+- Improved resilience against multiple versions of the lib being included, mainly working around akward usage of `#[link_section]`
+  on wasm targets. See also [rust-lang/rust#56639](https://github.com/rust-lang/rust/issues/56639).
+
 ## wasm_split_cli v0.2.1
 
 - Improved error messages.

@@ -89,6 +89,10 @@ const WASM_SPLIT_VERSION: [u8; VERSION_SUBSECTION_LEN] = {
 };
 
 // #[no_mangle] is needed so the linker doesn't remove the section. Might be replaced by #[used(linker)] in the future.
-#[unsafe(no_mangle)]
-#[unsafe(link_section = link_section!())]
-static _WASM_SPLIT_VERSION: [u8; VERSION_SUBSECTION_LEN] = WASM_SPLIT_VERSION;
+// See also: https://github.com/rust-lang/rust/issues/56639
+#[unsafe(export_name = wasm_split_macros::version_stamp!())]
+static _MARKER: () = {
+    #[used]
+    #[unsafe(link_section = link_section!())]
+    static _WASM_SPLIT_VERSION: [u8; VERSION_SUBSECTION_LEN] = WASM_SPLIT_VERSION;
+};
