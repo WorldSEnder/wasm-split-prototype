@@ -9,6 +9,7 @@ use split_point::SplitModuleIdentifier;
 mod dep_graph;
 mod emit;
 //mod range_map;
+mod js;
 mod magic_constants;
 mod read;
 mod reloc;
@@ -91,7 +92,6 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
     }
 
     let mut split_modules = vec![];
-    let mut prefetch_map = HashMap::<String, Vec<String>>::new();
 
     let emit_fn = |output_module_index: usize, data: &[u8]| -> Result<()> {
         let identifier = &split_program_info.output_modules[output_module_index].0;
@@ -111,62 +111,8 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
     let link_module = opts.link_name;
     crate::emit::emit_modules(&module, &split_program_info, link_module, emit_fn)?;
 
-    use std::fmt::Write;
-    let mut javascript = String::new();
-    let _ = write!(
-        javascript,
-        r#"import {{ initSync }} from "{}";
-        "#,
-        opts.main_module
-    );
-    javascript.push_str(include_str!("./split_wasm.js"));
-    let mut split_deps = HashMap::<String, Vec<String>>::new();
-    for (module_index, (name, _)) in split_program_info.output_modules.iter().enumerate() {
-        let SplitModuleIdentifier::Chunk(splits) = name else {
-            continue;
-        };
-        let file_name = name.filename(module_index);
-        let var_name = format!("__chunk_{module_index}");
-        let splits_dbg = splits.join(", ");
-        javascript.push_str(
-            format!(
-                "/* {splits_dbg} */\nconst {var_name} = makeLoad(new URL(\"./{file_name}.wasm\", import.meta.url), []);\n",
-            )
-            .as_str(),
-        );
-        for split in splits {
-            split_deps
-                .entry(split.clone())
-                .or_default()
-                .push(var_name.clone());
-            prefetch_map
-                .entry(split.clone())
-                .or_default()
-                .push(file_name.clone());
-        }
-    }
-    for (module_index, (identifier, _)) in
-        split_program_info.output_modules.iter().enumerate().rev()
-    {
-        let split = match &identifier {
-            SplitModuleIdentifier::Main | SplitModuleIdentifier::Chunk(_) => continue,
-            SplitModuleIdentifier::Split(split) => split,
-        };
-        let file_name = identifier.filename(module_index);
-        let loader_name = identifier.loader_name();
-        let deps = split_deps.remove(split).unwrap_or_default();
-        let deps = deps.join(", ");
-        javascript.push_str(format!(
-            "export const {loader_name} = wrapAsyncCb(makeLoad(new URL(\"./{file_name}.wasm\", import.meta.url), [{deps}]));\n",
-        ).as_str());
-        prefetch_map
-            .entry(split.clone())
-            .or_default()
-            .push(file_name);
-    }
-
-    let link_path = opts.output_dir.join(Path::new(link_module));
-    std::fs::write(link_path, javascript)?;
+    let prefetch_map = crate::js::link_module(&opts.main_module, &split_program_info)?
+        .emit(&opts.output_dir.join(Path::new(link_module)))?;
     Ok(SplitWasm {
         split_modules,
         prefetch_map,

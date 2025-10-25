@@ -28,14 +28,13 @@ function wrapAsyncCb(callee) {
     }
 }
 function makeLoad(url, deps) {
+    const fetcher = makeFetch(url);
     const loader = async () => {
         const parallelStuff = deps.map(d => d());
-        const fetchSelf = fetch(url);
-        parallelStuff.push(fetchSelf);
+        const instantiate = fetcher();
         await Promise.all(parallelStuff);
-        const response = await fetchSelf;
         const imports = getSharedImports();
-        return await WebAssembly.instantiateStreaming(response, imports);
+        return instantiate(imports);
     };
     let loadingModule = undefined;
     return () => {
