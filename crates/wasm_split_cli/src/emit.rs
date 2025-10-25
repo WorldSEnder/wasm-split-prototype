@@ -19,7 +19,8 @@ use wasmparser::{
     SegmentFlags, SymbolInfo, TypeRef,
 };
 
-struct EmitState<'a> {
+pub(crate) struct EmitState<'a> {
+    input_options: &'a crate::Options<'a>,
     input_module: &'a InputModule<'a>,
     link_module: &'a str,
     // info about shared usage
@@ -29,7 +30,8 @@ struct EmitState<'a> {
 }
 
 impl<'a> EmitState<'a> {
-    fn new(
+    pub(crate) fn new(
+        input_options: &'a crate::Options<'a>,
         module: &'a InputModule<'a>,
         program_info: &SplitProgramInfo,
         link_module: &'a str,
@@ -71,6 +73,7 @@ impl<'a> EmitState<'a> {
         }
 
         Ok(EmitState {
+            input_options,
             input_module: module,
             link_module,
             indirect_functions,
@@ -89,7 +92,7 @@ impl<'a> EmitState<'a> {
             shared: false,
         }
     }
-    fn name_for(&self, dep: &DepNode) -> Cow<'a, str> {
+    pub(crate) fn name_for(&self, dep: &DepNode) -> Cow<'a, str> {
         match dep {
             dep @ DepNode::Global(_)
             | dep @ DepNode::Table(_)
@@ -670,9 +673,6 @@ impl<'a> ModuleEmitState<'a> {
                 _ => {}
             }
         }
-        if output_module_index != 0 {
-            imports.push(emit_state.shared_import_for(&DepNode::Memory(0)));
-        }
 
         let mut also_needs_indirect_table =
             !emit_state.indirect_functions.table_range_for_output_module[output_module_index]
@@ -704,7 +704,11 @@ impl<'a> ModuleEmitState<'a> {
         let ift_dep = DepNode::Table(emit_state.input_module.reloc_info.indirect_table);
         let defines_ift = output_module_info.included_symbols.contains(&ift_dep);
         let imports_ift = output_module_info.used_shared_deps.contains(&ift_dep);
-        if also_needs_indirect_table && !defines_ift && !imports_ift {
+        if !imports_ift && also_needs_indirect_table && !defines_ift {
+            if emit_state.input_options.strict_tests {
+                panic!("module should import indirect function table because it needs it");
+            }
+            // we shouldn't hit this, but if we accidentally do, it's easy to fix
             imports.push(emit_state.shared_import_for(&ift_dep));
         }
 
@@ -1266,13 +1270,10 @@ impl<'a> ModuleEmitState<'a> {
 }
 
 pub fn emit_modules(
-    module: &InputModule,
     program_info: &SplitProgramInfo,
-    link_module: &str,
+    emit_state: &EmitState,
     mut emit_fn: impl FnMut(usize, &[u8]) -> Result<()>,
 ) -> Result<()> {
-    let emit_state = EmitState::new(module, program_info, link_module)?;
-
     for output_module_index in 0..program_info.output_modules.len() {
         let mut emit_state = ModuleEmitState::new(&emit_state, output_module_index, program_info);
         let identifier = &program_info.output_modules[output_module_index].0;

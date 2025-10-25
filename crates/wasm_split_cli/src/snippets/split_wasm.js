@@ -1,17 +1,3 @@
-let sharedImports = undefined;
-function getSharedImports() {
-    if (sharedImports === undefined) {
-        const mainExports = initSync(undefined, undefined);
-        sharedImports = {
-            __wasm_split: {
-                __indirect_function_table: mainExports.__indirect_function_table,
-                __stack_pointer: mainExports.__stack_pointer,
-                memory: mainExports.memory,
-            },
-        };
-    }
-    return sharedImports;
-}
 function wrapAsyncCb(callee) {
     return async (callbackIndex, callbackData) => {
         let success;

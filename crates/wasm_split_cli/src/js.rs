@@ -1,7 +1,11 @@
 use eyre::Result;
 use std::{collections::HashMap, fmt::Write, path::Path};
 
-use crate::split_point::{SplitModuleIdentifier, SplitProgramInfo};
+use crate::{
+    dep_graph::DepNode,
+    emit::EmitState,
+    split_point::{OutputModuleInfo, SplitModuleIdentifier, SplitProgramInfo},
+};
 
 type PrefetchMap = HashMap<String, Vec<String>>;
 pub struct LinkModuleWriter {
@@ -22,6 +26,22 @@ impl LinkModuleWriter {
             r#"import {{ initSync }} from "{}";
 "#,
             mod_path
+        )?)
+    }
+    fn write_get_shared_imports(&mut self, main_shares: &str) -> Result<()> {
+        Ok(write!(
+            &mut self.javascript,
+            r#"let sharedImports = undefined;
+function getSharedImports() {{
+    if (sharedImports === undefined) {{
+        sharedImports = {{ __wasm_split: {{ }} }};
+        const mainExports = initSync(undefined, undefined);
+        const {{ {main_shares} }} = mainExports;
+        Object.assign(sharedImports.__wasm_split, {{ {main_shares} }});
+    }}
+    return sharedImports;
+}}
+"#
         )?)
     }
     fn write_runtime(&mut self) -> Result<()> {
@@ -89,13 +109,44 @@ impl LinkModuleWriter {
     }
 }
 
+fn reexported_shared_symbols(
+    emit_state: &EmitState,
+    program_info: &SplitProgramInfo,
+    module: &OutputModuleInfo,
+) -> Result<String> {
+    let mut shares = String::new();
+    let exported = program_info.shared_deps.iter().filter_map(|dep| {
+        if let DepNode::Function(_) | DepNode::DataSymbol(_) = dep {
+            return None;
+        }
+        if !module.included_symbols.contains(dep) {
+            return None;
+        }
+        Some(emit_state.name_for(dep))
+    });
+    for export in exported {
+        let () = write!(&mut shares, "{}, ", export.as_ref())?;
+    }
+    Ok(shares)
+}
+
 pub fn link_module(
-    main_module: &str,
-    split_program_info: &SplitProgramInfo,
+    main_module_path: &str,
+    program_info: &SplitProgramInfo,
+    emit_state: &EmitState,
 ) -> Result<LinkModuleWriter> {
     let mut link_module = LinkModuleWriter::new();
-    link_module.write_main_import(main_module)?;
+
+    let (_, main_module) = program_info
+        .output_modules
+        .iter()
+        .find(|(id, _)| matches!(id, SplitModuleIdentifier::Main))
+        .unwrap();
+    let main_shared = reexported_shared_symbols(emit_state, program_info, main_module)?;
+
+    link_module.write_main_import(main_module_path)?;
+    link_module.write_get_shared_imports(&main_shared)?;
     link_module.write_runtime()?;
-    link_module.write_loaders(split_program_info)?;
+    link_module.write_loaders(program_info)?;
     Ok(link_module)
 }
