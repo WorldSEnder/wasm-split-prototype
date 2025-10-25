@@ -600,7 +600,7 @@ impl RelocTarget for ModuleEmitState<'_> {
             }
             RelocDetails::TableNumber(details) => {
                 if !self.is_main() && details.index != self.input_module.reloc_info.indirect_table {
-                    bail!("Relocation of globals not supported in split modules.")
+                    bail!("Relocation of tables not supported in split modules.")
                 }
                 // TODO: check that table indices do not get confused by the generate logic below
                 Ok(Some(0))
