@@ -166,8 +166,13 @@ pub struct InputModule<'a> {
     pub reloc_info: RelocInfo<'a>,
 }
 
+pub enum Strictness {
+    IntegrationTesting,
+    Lenient,
+}
+
 impl<'a> InputModule<'a> {
-    pub fn parse(wasm: &'a [u8]) -> Result<Self> {
+    pub fn parse(wasm: &'a [u8], strict: Strictness) -> Result<Self> {
         let mut module = Self {
             raw: wasm,
             ..Default::default()
@@ -241,6 +246,7 @@ impl<'a> InputModule<'a> {
             }
         }
 
+        let mut num_split_sections_found = 0;
         for section in module.custom_sections.iter() {
             if section.name == "name" {
                 module.names = Names::new(section.data, section.data_offset)?;
@@ -248,7 +254,14 @@ impl<'a> InputModule<'a> {
             if section.name == crate::magic_constants::LINK_SECTION {
                 let rdr = BinaryReader::new(section.data, section.data_offset);
                 let _ = read_wasm_split_section(rdr)?;
+                num_split_sections_found += 1;
             }
+        }
+        if matches!(strict, Strictness::IntegrationTesting) && num_split_sections_found != 1 {
+            bail!(
+                "Wrong number of custom sections for wasm-split found, expected 1 got {}",
+                num_split_sections_found
+            );
         }
         module.reloc_info = reloc_info.finish(&module)?;
 

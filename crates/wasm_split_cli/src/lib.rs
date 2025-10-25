@@ -41,6 +41,9 @@ pub struct Options<'a> {
     ///
     /// Default: false
     pub verbose: bool,
+    /// Enables explicit tests for assumptions we make about the input wasm file during integration testing.
+    #[doc(hidden)]
+    pub strict_tests: bool,
 }
 
 impl<'wasm> Options<'wasm> {
@@ -52,6 +55,7 @@ impl<'wasm> Options<'wasm> {
             link_name: "./__wasm_split.js",
             main_module: "./main.js",
             verbose: false,
+            strict_tests: false,
         }
     }
 }
@@ -65,7 +69,12 @@ pub struct SplitWasm {
 }
 
 pub fn transform(opts: Options) -> Result<SplitWasm> {
-    let module = crate::read::InputModule::parse(opts.input_wasm)?;
+    let strictness = if opts.strict_tests {
+        read::Strictness::IntegrationTesting
+    } else {
+        read::Strictness::Lenient
+    };
+    let module = crate::read::InputModule::parse(opts.input_wasm, strictness)?;
     if opts.verbose {
         module.reloc_info.print_relocs();
     }

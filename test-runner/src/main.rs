@@ -1,4 +1,4 @@
-use eyre::{Result, bail};
+use eyre::{bail, Result};
 use std::{
     env::args_os,
     path::{Path, PathBuf},
@@ -22,6 +22,7 @@ fn wasm_split_cli(target: &Path, dir: &Path) -> Result<PathBuf> {
         split_opts.main_out_path = &main_file;
         split_opts.main_module = "./wasm-bindgen-test";
         split_opts.verbose = true;
+        split_opts.strict_tests = true;
         split_opts
     })?;
     Ok(main_file)
