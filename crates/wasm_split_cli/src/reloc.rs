@@ -23,6 +23,7 @@ pub type SymbolIndex = usize;
 #[derive(Default)]
 pub struct RelocInfoParser<'a> {
     info: RelocInfo<'a>,
+    has_linking_section: bool,
     // We NEED this to be present to identify the table to fix-up
     indirect_function_table: Option<TableId>,
     stack_pointer: Option<GlobalId>,
@@ -32,6 +33,7 @@ pub struct RelocInfoParser<'a> {
 impl<'a> RelocInfoParser<'a> {
     fn visit_custom(&mut self, custom: &CustomSectionReader<'a>) -> Result<()> {
         if custom.name() == "linking" {
+            self.has_linking_section = true;
             let reader =
                 LinkingSectionReader::new(BinaryReader::new(custom.data(), custom.data_offset()))?;
             let reader = reader.subsections();
@@ -108,7 +110,9 @@ impl<'a> RelocInfoParser<'a> {
     pub fn finish(self, module: &InputModule<'a>) -> Result<RelocInfo<'a>> {
         let mut info = self.info;
         info.data_symbols = get_data_symbols(&module.data_segments, &info.symbols)?;
-        // We may be able to get away with zero here, but don't!
+        if !self.has_linking_section {
+            bail!("No linking section found. Make sure that your program is compiled with `-Clink-args=--emit-relocs`.");
+        }
         let Some(indirect_function_table) = self.indirect_function_table else {
             bail!("No indirect function table found in the reloc data");
         };
@@ -455,11 +459,11 @@ impl RelocInfo<'_> {
             | wasmparser::RelocationType::FunctionOffsetI32
             | wasmparser::RelocationType::FunctionOffsetI64 => {
                 bail!(
-                    "unhandled relocation ty {:?} module relocation",
+                    "unhandled relocation ty {:?} in module relocation",
                     relocation.ty
                 );
             } // [relocate data segments]
-              // TODO: there is no relocation for data segments. As such, we'd have to parse the opcodes to find
+              // TODO: there is no relocation for data segment indices. As such, we'd have to parse the opcodes to find
               // references to passive and declarative data segments. The solution: only handling active segments
               // and don't change the index of passive ones.
         }
