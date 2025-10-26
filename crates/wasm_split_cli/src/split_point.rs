@@ -220,6 +220,7 @@ fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> H
     for tag_id in 0..module.imported_memories_num {
         roots.insert(DepNode::Memory(tag_id));
     }
+    roots.insert(DepNode::Memory(0));
     for wasmparser::Export { index, kind, .. } in module.exports.iter() {
         roots.insert(match kind {
             wasmparser::ExternalKind::Func => DepNode::Function(*index as usize),
@@ -431,30 +432,40 @@ pub fn compute_split_modules(
     );
 
     let mut program_info = SplitProgramInfo::default();
-    for module in split_module_contents.values_mut() {
-        for symbol in module.included_symbols.iter() {
-            let Some(deps) = dep_graph.dep_graph.get(symbol) else {
-                continue;
-            };
-            for &(mut dep_to_check) in deps {
-                if let DepNode::Function(called_func_id) = &mut dep_to_check {
-                    // dependencies on module-entries are converted to their exposed impl
-                    if let Some(mapped_func_id) = split_func_map.get(called_func_id) {
-                        *called_func_id = *mapped_func_id;
-                    }
+    for out_module in split_module_contents.values_mut() {
+        let needed_symbols = out_module
+            .included_symbols
+            .iter()
+            .filter_map(|dep| dep_graph.dep_graph.get(dep))
+            .flat_map(|deps_of_dep| deps_of_dep)
+            .cloned()
+            // We share two symbols always:
+            // - memory 0 since no relocations for memories exist, and this is our main memory
+            // - the indirect function table. We could track the need for this via usages of `TableIndex` relocations (and some other uses),
+            //   but this almost always will be needed, anyway, so the analysis would be expensive for little optimization gain.
+            //   Instead, we decide on imports of the indirect function table per module, but always export it (from the main module).
+            .chain([
+                DepNode::Memory(0),
+                DepNode::Table(module.reloc_info.indirect_table),
+            ]);
+        for mut dep_to_check in needed_symbols {
+            if let DepNode::Function(called_func_id) = &mut dep_to_check {
+                // dependencies on module-entries are converted to their exposed impl
+                if let Some(mapped_func_id) = split_func_map.get(called_func_id) {
+                    *called_func_id = *mapped_func_id;
                 }
-                let in_other_module = !module.included_symbols.contains(&dep_to_check);
-                if !in_other_module {
-                    continue;
-                }
-                // data symbols need no tracking for sharing, as long as they are defined
-                // when needed, as they don't need to be imported or shimmed.
-                if let DepNode::DataSymbol(_) = dep_to_check {
-                    continue;
-                }
-                module.used_shared_deps.insert(dep_to_check);
-                program_info.shared_deps.insert(dep_to_check);
             }
+            let in_other_module = !out_module.included_symbols.contains(&dep_to_check);
+            if !in_other_module {
+                continue;
+            }
+            // data symbols need no tracking for sharing, as long as they are defined
+            // when needed, as they don't need to be imported or shimmed.
+            if let DepNode::DataSymbol(_) = dep_to_check {
+                continue;
+            }
+            out_module.used_shared_deps.insert(dep_to_check);
+            program_info.shared_deps.insert(dep_to_check);
         }
     }
 
