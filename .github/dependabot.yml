@@ -6,3 +6,7 @@ updates:
     directories: ["/", "/integration", "/test-runner"]
     schedule:
       interval: "daily"
+    groups:
+       cargo-deps:
+          patterns:
+            - "*"
