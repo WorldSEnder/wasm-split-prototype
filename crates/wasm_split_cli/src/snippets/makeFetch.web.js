@@ -1,5 +1,4 @@
-function makeFetch(url) {
-    const srcUrl = new URL(url, import.meta.url);
+function makeFetch(srcUrl) {
     return () => {
         const src = fetch(srcUrl);
         return async (imports) => {

@@ -57,6 +57,18 @@ function getSharedImports() {{
             "export const {name} = {def};\n"
         )?)
     }
+    fn fetch_opts<'pth>(&self, file_path: impl 'pth + std::fmt::Display) -> String {
+        // Note: the expression returned from here should:
+        // - allow lazily fetching the wasm module (no top-level import)
+        // - allow bundlers and downstream code to recognize it as an expression to a path ("relocate" the import)
+        // TODO: try other syntax for different targets:
+        // - `import.source(<file_path>)`
+        // - `URL.resolve(<file_path)` (support is not as good as for new URL)
+        // Note: we use the form `new URL(<string literal>, import.meta.url)` which is understood by some
+        // bundlers as syntax that can get rewritten if the path from where the file gets fetched is changed
+        // (for example due to attaching a has of its contents).
+        format!("new URL({}, import.meta.url)", file_path)
+    }
     fn write_loaders(&mut self, program: &SplitProgramInfo) -> Result<()> {
         let mut split_deps = HashMap::<String, Vec<String>>::new();
         for (module_index, (name, _)) in program.output_modules.iter().enumerate() {
@@ -67,9 +79,10 @@ function getSharedImports() {{
             let var_name = format!("__chunk_{module_index}");
             let splits_dbg = splits.join(", ");
             write!(&mut self.javascript, "/* {splits_dbg} */\n")?;
+            let fetch_opts = self.fetch_opts(format_args!("\"./{file_name}.wasm\""));
             write!(
                 &mut self.javascript,
-                "const {var_name} = makeLoad(\"./{file_name}.wasm\", []);\n"
+                "const {var_name} = makeLoad({fetch_opts}, []);\n"
             )?;
             for split in splits {
                 split_deps
@@ -91,9 +104,10 @@ function getSharedImports() {{
             let loader_name = identifier.loader_name();
             let deps = split_deps.remove(split).unwrap_or_default();
             let deps = deps.join(", ");
+            let fetch_opts = self.fetch_opts(format_args!("\"./{file_name}.wasm\""));
             self.write_export_const(
                 &loader_name,
-                &format_args!("wrapAsyncCb(makeLoad(\"./{file_name}.wasm\", [{deps}]))"),
+                &format_args!("wrapAsyncCb(makeLoad({fetch_opts}, [{deps}]))"),
             )?;
             self.prefetch_map
                 .entry(split.clone())
