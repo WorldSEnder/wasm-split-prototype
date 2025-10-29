@@ -13,9 +13,3 @@ wasm_split_helpers = { path = "../crates/wasm_split" }
 [profile.release]
 opt-level = "s"
 lto = true
-
-[patch.crates-io]
-wasm-bindgen =  { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
-wasm-bindgen-futures =  { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
-js-sys =  { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }
-web-sys =  { git = "https://github.com/wasm-bindgen/wasm-bindgen.git", branch = "main" }

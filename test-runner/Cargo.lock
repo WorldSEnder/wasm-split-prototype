@@ -1425,9 +1425,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "walrus"
-version = "0.23.3"
+version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6481311b98508f4bc2d0abbfa5d42172e7a54b4b24d8f15e28b0dc650be0c59f"
+checksum = "3b5fbda74aece555fd16909d66141a934c9db314980a98800cf138a00c3e23a8"
 dependencies = [
  "anyhow",
  "gimli",
@@ -1436,15 +1436,15 @@ dependencies = [
  "log",
  "rayon",
  "walrus-macro",
- "wasm-encoder 0.214.0",
- "wasmparser 0.214.0",
+ "wasm-encoder",
+ "wasmparser 0.240.0",
 ]
 
 [[package]]
 name = "walrus-macro"
-version = "0.22.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439ad39ff894c43c9649fa724cdde9a6fc50b855d517ef071a93e5df82fe51d3"
+checksum = "0ef06db404cbaed87cb25fd2ca3a62502af485f43383c9641ffcf1479d02fffd"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1478,8 +1478,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-cli"
-version = "0.2.104"
-source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
+version = "0.2.105"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e6df6de37dde893edef52a54ef1277de313778e1fe3f1b678c15d98c93d3a50"
 dependencies = [
  "anyhow",
  "clap",
@@ -1498,8 +1499,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-cli-support"
-version = "0.2.104"
-source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
+version = "0.2.105"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d3f73cd40cc5c6adf6a090e331f24595f87e7a5bd70ccf3db46be0e1d6e0d92"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1515,19 +1517,11 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.104"
-source = "git+https://github.com/wasm-bindgen/wasm-bindgen.git?branch=main#ac51055a4c39fa0affe02f7b63fb1d4c9b3ddfaf"
+version = "0.2.105"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76f218a38c84bcb33c25ec7059b07847d465ce0e0a76b995e134a45adcb6af76"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "wasm-encoder"
-version = "0.214.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff694f02a8d7a50b6922b197ae03883fbf18cdb2ae9fbee7b6148456f5f44041"
-dependencies = [
- "leb128",
 ]
 
 [[package]]
@@ -1542,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "wasm-split-test-runner"
-version = "0.2.104"
+version = "0.2.105"
 dependencies = [
  "eyre",
  "tempfile",
@@ -1559,7 +1553,7 @@ dependencies = [
  "lazy_static",
  "regex",
  "tracing",
- "wasm-encoder 0.240.0",
+ "wasm-encoder",
  "wasmparser 0.240.0",
 ]
 
