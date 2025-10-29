@@ -9,7 +9,7 @@ use wasmparser::RelocationEntry;
 
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, MemoryId, SymbolIndex, TableId, TagId},
-    reloc::RelocDetails,
+    reloc::{DataSymbol, RelocDetails},
 };
 
 #[derive(Debug, PartialEq, Eq, Hash, Copy, PartialOrd, Ord, Clone)]
@@ -47,52 +47,16 @@ pub fn get_dependencies(module: &InputModule) -> Result<DepGraph> {
         Ok(())
     };
 
-    for entry in module.reloc_info.iter_code_relocs() {
-        let func_index = find_function_containing_range(
-            module,
-            shift_range(
-                entry.relocation_range(),
-                module.reloc_info.code_section_offset(),
-            ),
-        )
-        .with_context(|| format!("Invalid relocation entry {entry:?}"))?;
+    for dep_entry in module.iter_functions_with_relocs() {
+        let (func_index, entry) = dep_entry?;
         add_dep(DepNode::Function(func_index), entry)?;
     }
 
-    for entry in module.reloc_info.iter_data_relocs() {
-        let symbol_index = find_data_symbol_containing_range(
-            module,
-            shift_range(
-                entry.relocation_range(),
-                module.reloc_info.data_section_offset(),
-            ),
-        )
-        .with_context(|| format!("Invalid relocation entry {entry:?}"))?;
-        add_dep(DepNode::DataSymbol(symbol_index), entry)?;
+    for dep_entry in module.iter_data_symbols_with_relocs() {
+        let (data_symbol, entry) = dep_entry?;
+        add_dep(DepNode::DataSymbol(data_symbol.symbol_index), entry)?;
     }
     Ok(deps)
-}
-
-fn find_function_containing_range(
-    module: &crate::read::InputModule,
-    range: Range<usize>,
-) -> Result<usize> {
-    let func_index = find_by_range(&module.defined_funcs, &range, |defined_func| {
-        defined_func.body.range()
-    })
-    .with_context(|| format!("No match for function relocation range {range:?}"))?;
-    Ok(module.imported_funcs.len() + func_index)
-}
-
-fn find_data_symbol_containing_range(
-    module: &crate::read::InputModule,
-    range: Range<usize>,
-) -> Result<usize> {
-    let index = find_by_range(&module.reloc_info.data_symbols, &range, |data_symbol| {
-        data_symbol.range.clone()
-    })
-    .with_context(|| format!("No match for data relocation range {range:?}"))?;
-    Ok(module.reloc_info.data_symbols[index].symbol_index)
 }
 
 fn find_by_range<T: Debug, U: Debug + Ord, F: Fn(&T) -> Range<U>>(
@@ -102,7 +66,7 @@ fn find_by_range<T: Debug, U: Debug + Ord, F: Fn(&T) -> Range<U>>(
 ) -> Result<usize> {
     let matching_range = super::util::find_by_range(items, range, &get_range);
     let index = matching_range.start;
-    if matching_range.is_empty() {
+    if matching_range.len() != 1 {
         bail!(
             "Prev range is: {:?}, next range is: {:?}",
             items.get(index - 1).map(|item| (item, get_range(item))),
@@ -110,4 +74,53 @@ fn find_by_range<T: Debug, U: Debug + Ord, F: Fn(&T) -> Range<U>>(
         )
     }
     Ok(index)
+}
+
+impl<'a> InputModule<'a> {
+    fn iter_functions_with_relocs(
+        &self,
+    ) -> impl Iterator<Item = Result<(InputFuncId, &'_ RelocationEntry)>> {
+        let code_relocs = self.reloc_info.iter_code_relocs();
+        let mut function_index = 0;
+        code_relocs.map(move |entry| {
+            let reloc_file_range = shift_range(
+                entry.relocation_range(),
+                self.reloc_info.code_section_offset(),
+            );
+            // We do an exponential search for a function that containsthe relocation's target range.
+            let found_index = crate::util::exponential_partition_point(
+                &self.defined_funcs[function_index..],
+                // We need a monotone predicate: whatever the function's body ends before the relocation range.
+                // Uses the fact that `reloc_file_range` is never empty and fully contained in the funcs body.
+                |func| reloc_file_range.end > func.body.range().end,
+            );
+            function_index += found_index;
+            if function_index >= self.defined_funcs.len() {
+                bail!(
+                    "Invalid relocation entry {entry:?}, no function contains its relocation range"
+                )
+            }
+            let func_index = self.imported_funcs.len() + function_index;
+            Ok((func_index, entry))
+        })
+    }
+    fn iter_data_symbols_with_relocs(
+        &self,
+    ) -> impl Iterator<Item = Result<(&'_ DataSymbol, &'_ RelocationEntry)>> {
+        let data_relocs = self.reloc_info.iter_data_relocs();
+        data_relocs.map(move |entry| {
+            let reloc_file_range = shift_range(
+                entry.relocation_range(),
+                self.reloc_info.data_section_offset(),
+            );
+            let index = find_by_range(
+                &self.reloc_info.data_symbols,
+                &reloc_file_range,
+                |data_symbol| data_symbol.range.clone(),
+            )
+            .with_context(|| format!("No match for data relocation range {reloc_file_range:?}"))
+            .with_context(|| format!("Invalid relocation entry {entry:?}"))?;
+            Ok((&self.reloc_info.data_symbols[index], entry))
+        })
+    }
 }
