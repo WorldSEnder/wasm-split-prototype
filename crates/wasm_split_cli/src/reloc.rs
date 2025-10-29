@@ -26,8 +26,6 @@ pub struct RelocInfoParser<'a> {
     has_linking_section: bool,
     // We NEED this to be present to identify the table to fix-up
     indirect_function_table: Option<TableId>,
-    stack_pointer: Option<GlobalId>,
-    tls_base: Option<GlobalId>,
 }
 
 impl<'a> RelocInfoParser<'a> {
@@ -56,21 +54,6 @@ impl<'a> RelocInfoParser<'a> {
                             } => {
                                 self.indirect_function_table = Some(index as TableId);
                             }
-                            SymbolInfo::Global {
-                                name: Some("__stack_pointer"),
-                                index,
-                                ..
-                            } => {
-                                self.stack_pointer = Some(index as GlobalId);
-                            }
-                            SymbolInfo::Global {
-                                name: Some("__tls_base"),
-                                index,
-                                ..
-                            } => {
-                                self.tls_base = Some(index as GlobalId);
-                            }
-
                             _ => {}
                         }
                     }
@@ -116,11 +99,7 @@ impl<'a> RelocInfoParser<'a> {
         let Some(indirect_function_table) = self.indirect_function_table else {
             bail!("No indirect function table found in the reloc data");
         };
-        let Some(stack_pointer) = self.stack_pointer else {
-            bail!("No stack pointer found in the reloc data");
-        };
         info.indirect_table = indirect_function_table;
-        info.stack_pointer = stack_pointer;
         get_indirect_functions(&mut info, indirect_function_table, module)?;
         Ok(info)
     }

@@ -220,7 +220,7 @@ fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> H
     for tag_id in 0..module.imported_memories_num {
         roots.insert(DepNode::Memory(tag_id));
     }
-    roots.insert(DepNode::Memory(0));
+    roots.insert(module.main_memory());
     for wasmparser::Export { index, kind, .. } in module.exports.iter() {
         roots.insert(match kind {
             wasmparser::ExternalKind::Func => DepNode::Function(*index as usize),
@@ -444,10 +444,7 @@ pub fn compute_split_modules(
             // - the indirect function table. We could track the need for this via usages of `TableIndex` relocations (and some other uses),
             //   but this almost always will be needed, anyway, so the analysis would be expensive for little optimization gain.
             //   Instead, we decide on imports of the indirect function table per module, but always export it (from the main module).
-            .chain([
-                DepNode::Memory(0),
-                DepNode::Table(module.reloc_info.indirect_table),
-            ]);
+            .chain([module.main_memory(), module.indirect_function_table()]);
         for mut dep_to_check in needed_symbols {
             if let DepNode::Function(called_func_id) = &mut dep_to_check {
                 // dependencies on module-entries are converted to their exposed impl

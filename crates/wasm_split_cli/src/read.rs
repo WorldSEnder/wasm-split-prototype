@@ -6,6 +6,7 @@ pub use wasmparser::{
 };
 
 use crate::{
+    dep_graph::DepNode,
     magic_constants::{SubsectionTag as WsSubsectionTag, Version as WsVersion},
     reloc::{RelocInfo, RelocInfoParser},
 };
@@ -291,6 +292,14 @@ impl<'a> InputModule<'a> {
         } else {
             self.defined_funcs[func_id - self.imported_funcs.len()].type_id
         }
+    }
+
+    pub fn main_memory(&self) -> DepNode {
+        DepNode::Memory(0)
+    }
+
+    pub fn indirect_function_table(&self) -> DepNode {
+        DepNode::Table(self.reloc_info.indirect_table)
     }
 }
 

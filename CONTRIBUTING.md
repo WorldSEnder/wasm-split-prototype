@@ -16,7 +16,9 @@ Finally, run the commands below where `toolchain` is all of `1.84` (MSRV), `stab
 cd integration
 # tests should work for both wasm and non-wasm targets for stable cargo
 cargo "+$toolchain" test --workspace
-cargo "+$toolchain" test --target wasm32-unknown-unknown  --workspace
+cargo "+$toolchain" test --target wasm32-unknown-unknown --workspace
+# enabling optimizations puts additional pressure on the cli to split correctly
+cargo "+$toolchain" test --target wasm32-unknown-unknown --config profile.test.opt-level=3 --workspace
 ```
 
 ## Releasing
