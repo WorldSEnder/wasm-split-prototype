@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   integration-tests:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         toolchain: [stable]
@@ -31,6 +31,5 @@ jobs:
         with:
           install-chromedriver: true
 
-      - uses: valeriangalliat/action-sshd-cloudflared@v4
       - name: Run integration tests
         run: just test-integrations
