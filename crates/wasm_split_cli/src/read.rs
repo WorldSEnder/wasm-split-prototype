@@ -254,7 +254,7 @@ impl<'a> InputModule<'a> {
             }
             if section.name == crate::magic_constants::LINK_SECTION {
                 let rdr = BinaryReader::new(section.data, section.data_offset);
-                let _ = read_wasm_split_section(rdr)?;
+                let () = read_wasm_split_section(rdr)?;
                 num_split_sections_found += 1;
             }
         }

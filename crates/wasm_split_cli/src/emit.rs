@@ -1280,7 +1280,7 @@ pub fn emit_modules(
     mut emit_fn: impl FnMut(usize, &[u8]) -> Result<()>,
 ) -> Result<()> {
     for output_module_index in 0..program_info.output_modules.len() {
-        let mut emit_state = ModuleEmitState::new(&emit_state, output_module_index, program_info);
+        let mut emit_state = ModuleEmitState::new(emit_state, output_module_index, program_info);
         let identifier = &program_info.output_modules[output_module_index].0;
 
         emit_state

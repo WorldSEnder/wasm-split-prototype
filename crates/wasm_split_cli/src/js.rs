@@ -21,10 +21,9 @@ impl LinkModuleWriter {
         }
     }
     fn write_main_import(&mut self, mod_path: &str) -> Result<()> {
-        Ok(write!(
+        Ok(writeln!(
             &mut self.javascript,
-            r#"import {{ initSync }} from "{}";
-"#,
+            r#"import {{ initSync }} from "{}";"#,
             mod_path
         )?)
     }
@@ -52,9 +51,9 @@ function getSharedImports() {{
         Ok(())
     }
     fn write_export_const(&mut self, name: &str, def: &impl std::fmt::Display) -> Result<()> {
-        Ok(write!(
+        Ok(writeln!(
             &mut self.javascript,
-            "export const {name} = {def};\n"
+            "export const {name} = {def};"
         )?)
     }
     fn fetch_opts<'pth>(&self, file_path: impl 'pth + std::fmt::Display) -> String {
@@ -78,11 +77,11 @@ function getSharedImports() {{
             let file_name = name.filename(module_index);
             let var_name = format!("__chunk_{module_index}");
             let splits_dbg = splits.join(", ");
-            write!(&mut self.javascript, "/* {splits_dbg} */\n")?;
+            writeln!(&mut self.javascript, "/* {splits_dbg} */")?;
             let fetch_opts = self.fetch_opts(format_args!("\"./{file_name}.wasm\""));
-            write!(
+            writeln!(
                 &mut self.javascript,
-                "const {var_name} = makeLoad({fetch_opts}, []);\n"
+                "const {var_name} = makeLoad({fetch_opts}, []);"
             )?;
             for split in splits {
                 split_deps

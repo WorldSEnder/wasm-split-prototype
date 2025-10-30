@@ -113,18 +113,18 @@ impl Parse for Args {
 ///
 /// The following options are supported:
 /// - `wasm_split_path = $this:path` changes the path at which the runtime support crate is expected.
-///    As a framework, you might want to reexport this from some hidden module path.
-///    Default: `::wasm_split_helpers`.
+///   As a framework, you might want to reexport this from some hidden module path.
+///   Default: `::wasm_split_helpers`.
 /// - `return_wrapper( let $bindings:pat = _ ; $compute:block -> $ret:ty )`. A rather low-level option to support
-///    rewriting the result of the wrapped function. The generated wrapper will, rather than directly return the result
-///    from the user-given function, bind this to `$bindings` and emit the statements in `$compute` to generate the
-///    return value of the wrapper with the return type indicated by `$ret`.
+///   rewriting the result of the wrapped function. The generated wrapper will, rather than directly return the result
+///   from the user-given function, bind this to `$bindings` and emit the statements in `$compute` to generate the
+///   return value of the wrapper with the return type indicated by `$ret`.
 ///
-///    Example use case: `return_wrapper( let future = _ ; { future.await } -> Output)` to `await` a future directly in
-///    the wrapper.
+///   Example use case: `return_wrapper( let future = _ ; { future.await } -> Output)` to `await` a future directly in
+///   the wrapper.
 /// - `preload( $( #[$attr] )* $preload_name:ident )` generates an additional preload function `$preload_name` with the
-///    signature `async fn()` which can be used to fetch the module in which the wrapped function is contained without
-///    calling it.
+///   signature `async fn()` which can be used to fetch the module in which the wrapped function is contained without
+///   calling it.
 #[proc_macro_attribute]
 pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     let Args {

@@ -19,7 +19,7 @@ fn print_debug_sizes(main_file: &Path, split: &wasm_split_cli_support::SplitWasm
         .map(|p| p.as_ref())
         .chain([main_file])
     {
-        let file_size = std::fs::File::open(&module)?.metadata()?.len();
+        let file_size = std::fs::File::open(module)?.metadata()?.len();
         eprintln!("{}\t{file_size}", module.display());
     }
     Ok(())

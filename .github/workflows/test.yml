@@ -13,6 +13,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt
+      - uses: cargo-bins/cargo-binstall@v1.15.9
+      - run: cargo binstall just
+
+      - run: just fmt-check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: clippy
+      - uses: cargo-bins/cargo-binstall@v1.15.9
+      - run: cargo binstall just
+
+      - run: just clippy
+
   integration-tests:
     runs-on: ubuntu-latest
     strategy:

@@ -46,6 +46,7 @@ impl<'a> RelocInfoParser<'a> {
                     assert!(self.info.symbols.is_empty(), "duplicate symbol table");
                     self.info.symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
                     for sym in &self.info.symbols {
+                        #[allow(clippy::single_match)] // other special cases might follow
                         match *sym {
                             SymbolInfo::Table {
                                 name: Some("__indirect_function_table"),
@@ -196,7 +197,7 @@ fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Ve
             .get(symbol.index as usize)
             .ok_or_else(|| anyhow!("Invalid data segment index in symbol: {:?}", symbol))?;
         let symbol_range = shift_range(0..symbol.size as usize, symbol.offset as usize);
-        if !(symbol_range.end <= data_segment.data.len()) {
+        if symbol_range.end > data_segment.data.len() {
             bail!(
                 "Invalid symbol {symbol:?} for data segment of size {:?}",
                 data_segment.data.len()
