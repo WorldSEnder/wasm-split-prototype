@@ -29,6 +29,7 @@ jobs:
       - uses: browser-actions/setup-chrome@v2
         id: setup-chrome
         with:
+          chrome-version: 120
           install-chromedriver: true
       # https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md
       # see also https://github.com/browser-actions/setup-chrome/issues/639
