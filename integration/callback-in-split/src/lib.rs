@@ -4,8 +4,8 @@
 //! which is getting rewritten in a different way than imports to/exports from wasm.
 //! For more details, see the bug report in https://github.com/leptos-rs/leptos/issues/4347#issuecomment-3378800158,
 //! and specifically https://github.com/leptos-rs/leptos/issues/4347#issuecomment-3383869144 for a quick run down.
+use wasm_bindgen::prelude::{wasm_bindgen, Closure};
 use wasm_bindgen::JsValue;
-use wasm_bindgen::prelude::{Closure, wasm_bindgen};
 use wasm_split_helpers::wasm_split;
 
 #[wasm_bindgen(inline_js = "export function call_closure(f, a) { return f(a) }")]

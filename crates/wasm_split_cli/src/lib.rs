@@ -112,7 +112,7 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
 
     let emit_state = emit::EmitState::new(&opts, &module, &split_program_info, link_module)?;
     emit::emit_modules(&split_program_info, &emit_state, emit_fn)?;
-    let prefetch_map = crate::js::link_module(&opts.main_module, &split_program_info, &emit_state)?
+    let prefetch_map = crate::js::link_module(opts.main_module, &split_program_info, &emit_state)?
         .emit(&opts.output_dir.join(Path::new(link_module)))?;
     Ok(SplitWasm {
         split_modules,

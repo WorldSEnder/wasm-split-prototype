@@ -1,0 +1,57 @@
+name: main tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: rustfmt
+      - uses: cargo-bins/cargo-binstall@v1.15.9
+      - run: cargo binstall just
+
+      - run: just fmt-check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: clippy
+      - uses: cargo-bins/cargo-binstall@v1.15.9
+      - run: cargo binstall just
+
+      - run: just clippy
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: [nightly, stable, "1.84"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: wasm32-unknown-unknown
+      - uses: cargo-bins/cargo-binstall@v1.15.9
+      - run: cargo binstall just
+
+      - name: Run integration tests
+        run: xvfb-run just test-integrations

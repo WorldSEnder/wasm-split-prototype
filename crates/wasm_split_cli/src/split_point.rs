@@ -182,7 +182,7 @@ fn find_reachable_deps(
             continue;
         };
         if let Some(additional_for_main) = &mut additional_for_main {
-            if !deps.wbg_rooting_funs.is_disjoint(&children) {
+            if !deps.wbg_rooting_funs.is_disjoint(children) {
                 additional_for_main.insert(node);
                 continue;
             }
@@ -392,7 +392,7 @@ pub fn compute_split_modules(
     let mut split_module_candidates: HashMap<String, ReachabilityGraph> = split_points_by_module
         .iter()
         .map(|(module_name, entry_points)| {
-            let roots = get_split_roots(&entry_points);
+            let roots = get_split_roots(entry_points);
             let split_deps = find_reachable_non_ignored_deps(&roots, &mut main_deps);
             (module_name.clone(), split_deps)
         })
@@ -437,7 +437,7 @@ pub fn compute_split_modules(
             .included_symbols
             .iter()
             .filter_map(|dep| dep_graph.dep_graph.get(dep))
-            .flat_map(|deps_of_dep| deps_of_dep)
+            .flatten()
             .cloned()
             // We share two symbols always:
             // - memory 0 since no relocations for memories exist, and this is our main memory
