@@ -40,26 +40,22 @@ impl<'a> EmitState<'a> {
         let data_relocations = DataEmitInfo::new(module, program_info)?;
 
         let mut shared_names = HashMap::new();
-        // we overwrite the mapping potentially by the order of the below, but that's okay.
-        let mut unique_id = 0;
-        for dep in &program_info.shared_deps {
-            if let DepNode::Function(_) | DepNode::DataSymbol(_) = dep {
-                continue;
-            }
+        // We potentially overwrite the mapping later on again, but that's okay.
+        // We could also check the reloc section for better names.
+        let shared_by_import = program_info
+            .shared_deps
+            .iter()
+            .filter(|dep| !matches!(dep, DepNode::Function(_) | DepNode::DataSymbol(_)));
+        for (unique_id, dep) in shared_by_import.enumerate() {
             let chosen_name = Cow::Owned(format!("__wasm_split_shared{unique_id}"));
-            unique_id += 1;
             shared_names.insert(*dep, chosen_name);
         }
 
         shared_names.insert(
-            DepNode::Global(module.reloc_info.stack_pointer),
-            Cow::Borrowed("__stack_pointer"),
-        );
-        shared_names.insert(
-            DepNode::Table(module.reloc_info.indirect_table),
+            module.indirect_function_table(),
             Cow::Borrowed("__indirect_function_table"),
         );
-        shared_names.insert(DepNode::Memory(0), Cow::Borrowed("memory"));
+        shared_names.insert(module.main_memory(), Cow::Borrowed("memory"));
 
         for export in &module.exports {
             let asdep = match export.kind {
@@ -72,6 +68,14 @@ impl<'a> EmitState<'a> {
             shared_names.insert(asdep, Cow::Borrowed(export.name));
         }
 
+        let unique_names = shared_names
+            .values()
+            .map(|name| name.as_ref())
+            .collect::<HashSet<_>>();
+        if unique_names.len() != shared_names.len() {
+            bail!("Failed to generate unique names for some exports. This is a bug in wasm-split, please report this as an issue.")
+        }
+
         Ok(EmitState {
             input_options,
             input_module: module,
@@ -81,6 +85,7 @@ impl<'a> EmitState<'a> {
             shared_names,
         })
     }
+
     fn get_indirect_function_table_type(&self) -> wasmparser::TableType {
         // + 1 due to empty entry at index 0
         let indirect_table_size = self.indirect_functions.table_entries.len() + 1;
@@ -701,7 +706,7 @@ impl<'a> ModuleEmitState<'a> {
                 DepNode::DataSymbol(_) => {}
             }
         }
-        let ift_dep = DepNode::Table(emit_state.input_module.reloc_info.indirect_table);
+        let ift_dep = emit_state.input_module.indirect_function_table();
         let defines_ift = output_module_info.included_symbols.contains(&ift_dep);
         let imports_ift = output_module_info.used_shared_deps.contains(&ift_dep);
         if !imports_ift && also_needs_indirect_table && !defines_ift {

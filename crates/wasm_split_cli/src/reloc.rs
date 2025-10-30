@@ -13,7 +13,7 @@ use wasmparser::{
 
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, InputOffset, TableId, TagId},
-    util::find_subrange,
+    util::{find_subrange, shift_range},
 };
 
 // An offset (index) into the bytes of the input module
@@ -26,8 +26,6 @@ pub struct RelocInfoParser<'a> {
     has_linking_section: bool,
     // We NEED this to be present to identify the table to fix-up
     indirect_function_table: Option<TableId>,
-    stack_pointer: Option<GlobalId>,
-    tls_base: Option<GlobalId>,
 }
 
 impl<'a> RelocInfoParser<'a> {
@@ -56,21 +54,6 @@ impl<'a> RelocInfoParser<'a> {
                             } => {
                                 self.indirect_function_table = Some(index as TableId);
                             }
-                            SymbolInfo::Global {
-                                name: Some("__stack_pointer"),
-                                index,
-                                ..
-                            } => {
-                                self.stack_pointer = Some(index as GlobalId);
-                            }
-                            SymbolInfo::Global {
-                                name: Some("__tls_base"),
-                                index,
-                                ..
-                            } => {
-                                self.tls_base = Some(index as GlobalId);
-                            }
-
                             _ => {}
                         }
                     }
@@ -116,11 +99,7 @@ impl<'a> RelocInfoParser<'a> {
         let Some(indirect_function_table) = self.indirect_function_table else {
             bail!("No indirect function table found in the reloc data");
         };
-        let Some(stack_pointer) = self.stack_pointer else {
-            bail!("No stack pointer found in the reloc data");
-        };
         info.indirect_table = indirect_function_table;
-        info.stack_pointer = stack_pointer;
         get_indirect_functions(&mut info, indirect_function_table, module)?;
         Ok(info)
     }
@@ -216,22 +195,17 @@ fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Ve
         let data_segment = data_segments
             .get(symbol.index as usize)
             .ok_or_else(|| anyhow!("Invalid data segment index in symbol: {:?}", symbol))?;
-        if symbol
-            .offset
-            .checked_add(symbol.size)
-            .ok_or_else(|| anyhow!("Invalid symbol: {symbol:?}"))? as usize
-            > data_segment.data.len()
-        {
+        let symbol_range = shift_range(0..symbol.size as usize, symbol.offset as usize);
+        if !(symbol_range.end <= data_segment.data.len()) {
             bail!(
                 "Invalid symbol {symbol:?} for data segment of size {:?}",
                 data_segment.data.len()
             );
         }
-        let offset = data_segment.range.end - data_segment.data.len() + (symbol.offset as usize);
-        let range = offset..(offset + symbol.size as usize);
+        let data_offset = data_segment.range.end - data_segment.data.len();
         data_symbols.push(DataSymbol {
             symbol_index,
-            range,
+            range: shift_range(symbol_range, data_offset),
         });
     }
     data_symbols.sort_by_key(|symbol| symbol.range.start);
@@ -268,7 +242,7 @@ impl RelocInfo<'_> {
         }
         trace!("Symbols <<<<<<<<<<<<<<<<<<<<<<<<");
         for (section, relocs) in &self.relocs {
-            trace!("Relocs in {section} >>>>>>>>>>>>>>>>>>>>>>>>");
+            trace!(%section, "Reloc section >>>>>>>>>>>>>>>>>>>>>>>>");
             for reloc in relocs {
                 struct InvalidRelocIndex; // TODO: replace with std::fmt::from_fn
                 impl std::fmt::Debug for InvalidRelocIndex {
@@ -288,9 +262,9 @@ impl RelocInfo<'_> {
                 ) {
                     symbol_info += &format!(" {:+}", reloc.addend);
                 }
-                trace!(symbol_info);
+                trace!(%symbol_info);
             }
-            trace!("Relocs in {section} <<<<<<<<<<<<<<<<<<<<<<<<");
+            trace!(%section, "Reloc section <<<<<<<<<<<<<<<<<<<<<<<<");
         }
     }
     pub fn section_offset(&self, section: SectionIndex) -> InputOffset {

@@ -1,4 +1,4 @@
-use eyre::{bail, Result};
+use eyre::{Result, bail};
 use std::{
     env::args_os,
     path::{Path, PathBuf},
@@ -12,11 +12,24 @@ fn wasm_bindgen_test_runner() -> Command {
     )
 }
 
+fn print_debug_sizes(main_file: &Path, split: &wasm_split_cli_support::SplitWasm) -> Result<()> {
+    for module in split
+        .split_modules
+        .iter()
+        .map(|p| p.as_ref())
+        .chain([main_file])
+    {
+        let file_size = std::fs::File::open(&module)?.metadata()?.len();
+        eprintln!("{}\t{file_size}", module.display());
+    }
+    Ok(())
+}
+
 fn wasm_split_cli(target: &Path, dir: &Path) -> Result<PathBuf> {
     let main_file = dir.join("main.wasm");
     let input = std::fs::read(target)?;
 
-    let _split = wasm_split_cli_support::transform({
+    let split = wasm_split_cli_support::transform({
         let mut split_opts = wasm_split_cli_support::Options::new(&input);
         split_opts.output_dir = dir;
         split_opts.main_out_path = &main_file;
@@ -25,6 +38,7 @@ fn wasm_split_cli(target: &Path, dir: &Path) -> Result<PathBuf> {
         split_opts.strict_tests = true;
         split_opts
     })?;
+    print_debug_sizes(&main_file, &split)?;
     Ok(main_file)
 }
 
@@ -38,7 +52,7 @@ pub fn main() -> Result<()> {
     let target = Path::new(&target);
     let mut tempdir = tempfile::tempdir()?;
     tempdir.disable_cleanup(true); // keep the dir for debugging
-    println!("Splitting wasm in {}", tempdir.path().display());
+    eprintln!("Splitting wasm in {}", tempdir.path().display());
 
     let split_main = wasm_split_cli(target, tempdir.path())?;
 
