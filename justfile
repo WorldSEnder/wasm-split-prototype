@@ -14,9 +14,9 @@ fmt-check:
     cd test-runner && cargo fmt --all --check
 
 clippy:
-    cargo clippy -- -Dwarnings
-    cd integration && cargo clippy -- -Dwarnings
-    cd test-runner && cargo clippy -- -Dwarnings
+    cargo +nightly clippy -- -Dwarnings
+    cd integration && cargo +nightly clippy -- -Dwarnings
+    cd test-runner && cargo +nightly clippy -- -Dwarnings
 
 semver-checks:
     cargo semver-checks

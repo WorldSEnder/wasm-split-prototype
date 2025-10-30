@@ -200,13 +200,13 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             syn::FnArg::Typed(pat_type) => {
                 let param_ident = format_ident!("__wasm_split_arg_{i}");
                 args.push(param_ident.clone());
-                pat_type.pat = Box::new(syn::Pat::Ident(syn::PatIdent {
+                *pat_type.pat = syn::Pat::Ident(syn::PatIdent {
                     attrs: vec![],
                     by_ref: None,
                     mutability: None,
                     ident: param_ident,
                     subpat: None,
-                }));
+                });
             }
             // receiver arguments can not used in `extern` functions (and we can't name the `Self` type in the arguments to work arount that)
             syn::FnArg::Receiver(_) => {
