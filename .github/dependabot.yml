@@ -3,13 +3,21 @@
 version: 2
 updates:
   - package-ecosystem: "cargo"
-    directories: ["/", "/integration", "/test-runner"]
+    directories: ["/integration", "/test-runner"]
     schedule:
       interval: "daily"
     groups:
-       cargo-deps:
-          patterns:
-            - "*"
-    # we could be stricter for /integration and /test-runner, but the main point is
-    # that dependabot should recognize this as a library!
-    versioning-strategy: "increase-if-necessary"
+      cargo-deps:
+        patterns:
+          - "*"
+  - package-ecosystem: "cargo"
+    directory: "/crates"
+    schedule:
+      interval: "daily"
+    groups:
+      cargo-deps:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
