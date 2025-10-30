@@ -44,17 +44,17 @@ pub fn exponential_partition_point<T>(slice: &[T], eventually_false: impl Fn(&T)
     skipped + to_test.partition_point(eventually_false)
 }
 
-/// Find the range of all items that completely contain the given range
-pub fn find_by_range<T, U: Ord>(
-    slice: &[T],
-    range: &Range<U>,
-    get_range: impl Fn(&T) -> Range<U>,
-) -> Range<usize> {
-    find_subrange(
-        slice,
-        |item| range.end <= get_range(item).end,
-        |item| get_range(item).start <= range.start,
-    )
+pub fn shift_range(range: Range<usize>, offset: usize) -> Range<usize> {
+    let start = range.start.min(range.end);
+    let new_end = range
+        .end
+        .checked_add(offset)
+        .expect("offset too large to shift range by");
+    debug_assert!(start.checked_add(offset).is_some());
+    // `end` (which has just been successfully shifted) didn't need wrapping,
+    // so `start` does not need to check for overflow.
+    let new_start = start + offset;
+    new_start..new_end
 }
 
 #[cfg(test)]

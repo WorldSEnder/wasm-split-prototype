@@ -13,7 +13,7 @@ use wasmparser::{
 
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, InputOffset, TableId, TagId},
-    util::find_subrange,
+    util::{find_subrange, shift_range},
 };
 
 // An offset (index) into the bytes of the input module
@@ -195,22 +195,17 @@ fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Ve
         let data_segment = data_segments
             .get(symbol.index as usize)
             .ok_or_else(|| anyhow!("Invalid data segment index in symbol: {:?}", symbol))?;
-        if symbol
-            .offset
-            .checked_add(symbol.size)
-            .ok_or_else(|| anyhow!("Invalid symbol: {symbol:?}"))? as usize
-            > data_segment.data.len()
-        {
+        let symbol_range = shift_range(0..symbol.size as usize, symbol.offset as usize);
+        if !(symbol_range.end <= data_segment.data.len()) {
             bail!(
                 "Invalid symbol {symbol:?} for data segment of size {:?}",
                 data_segment.data.len()
             );
         }
-        let offset = data_segment.range.end - data_segment.data.len() + (symbol.offset as usize);
-        let range = offset..(offset + symbol.size as usize);
+        let data_offset = data_segment.range.end - data_segment.data.len();
         data_symbols.push(DataSymbol {
             symbol_index,
-            range,
+            range: shift_range(symbol_range, data_offset),
         });
     }
     data_symbols.sort_by_key(|symbol| symbol.range.start);
@@ -247,7 +242,7 @@ impl RelocInfo<'_> {
         }
         trace!("Symbols <<<<<<<<<<<<<<<<<<<<<<<<");
         for (section, relocs) in &self.relocs {
-            trace!("Relocs in {section} >>>>>>>>>>>>>>>>>>>>>>>>");
+            trace!(%section, "Reloc section >>>>>>>>>>>>>>>>>>>>>>>>");
             for reloc in relocs {
                 struct InvalidRelocIndex; // TODO: replace with std::fmt::from_fn
                 impl std::fmt::Debug for InvalidRelocIndex {
@@ -267,10 +262,28 @@ impl RelocInfo<'_> {
                 ) {
                     symbol_info += &format!(" {:+}", reloc.addend);
                 }
-                trace!(symbol_info);
+                trace!(%symbol_info);
             }
-            trace!("Relocs in {section} <<<<<<<<<<<<<<<<<<<<<<<<");
+            trace!(%section, "Reloc section <<<<<<<<<<<<<<<<<<<<<<<<");
         }
+
+        // trace!("Data ranges >>>>>>>>>>>>>>>>>>>>>>>>");
+        // let mut next_open = 0;
+        // let mut next_to_open = 0;
+        // let mut active_lines = Vec<(String, String)>::new();
+        // let mut line_length = 0;
+
+        // let symbols = &self.data_symbols;
+        // while next_to_open < symbols.len() || !active_lines.is_empty() {
+        //     let mut should_open = next_open == next_to_open;
+        //     if next_to_open < symbols.len() && symbols[next_open].range.end <= symbols[next_to_open].range.start {
+        //         should_open = false;
+        //     }
+
+        //     let added_line_length = if should_open {}
+        // }
+
+        // trace!("Data ranges <<<<<<<<<<<<<<<<<<<<<<<<");
     }
     pub fn section_offset(&self, section: SectionIndex) -> InputOffset {
         self.section_ranges[section].start
