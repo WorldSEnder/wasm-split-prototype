@@ -18,8 +18,8 @@ clippy:
     cd integration && cargo +nightly clippy -- -Dwarnings
     cd test-runner && cargo +nightly clippy -- -Dwarnings
 
-semver-checks:
+semver-check:
     cargo semver-checks
 
-release-checks: fmt-check test-all-integrations semver-checks
-pr-checks: fmt-check test-all-integrations
+release-checks: fmt-check clippy test-all-integrations semver-check
+pr-checks: fmt-check clippy test-all-integrations

@@ -15,7 +15,7 @@ an environment variable (other browsers are also supported via the env variables
 Finally, run the command
 
 ```bash
-just test-all-integrations
+just pr-checks
 ```
 
 ## Releasing
