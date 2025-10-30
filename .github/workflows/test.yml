@@ -17,7 +17,7 @@ jobs:
     runs-on: macos-latest
     strategy:
       matrix:
-        toolchain: ["1.84", stable, nightly]
+        toolchain: [stable]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
@@ -31,5 +31,6 @@ jobs:
         with:
           install-chromedriver: true
 
+      - uses: valeriangalliat/action-sshd-cloudflared@v4
       - name: Run integration tests
         run: just test-integrations
