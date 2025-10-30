@@ -27,6 +27,7 @@ jobs:
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
       - uses: browser-actions/setup-chrome@v2
+        id: setup-chrome
         with:
           install-chromedriver: true
       # https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md
@@ -35,3 +36,5 @@ jobs:
 
       - name: Run integration tests
         run: just test-integrations
+        env:
+          CHROMEDRIVER: ${{ steps.setup-chrome.outputs.chromedriver-path }}
