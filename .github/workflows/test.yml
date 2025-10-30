@@ -26,10 +26,6 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
-      - uses: browser-actions/setup-chrome@v2
-        id: setup-chrome
-        with:
-          install-chromedriver: true
 
       - name: Run integration tests
-        run: just test-integrations
+        run: xvfb-run just test-integrations
