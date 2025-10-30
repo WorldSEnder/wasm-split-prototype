@@ -2,6 +2,8 @@
 
 Contributions are welcome! Feel free to open an issue to clarify questions that are not resolved in this guide.
 
+The repository uses [justfiles](https://github.com/casey/just) to automate some common tasks.
+
 ## Testing
 
 Integration testing requires a driver for a browser to be installed. `wasm-pack` can automatically download
@@ -10,15 +12,10 @@ the tools to a path such as `CHROMEDRIVER=~/.cache/.wasm-pack/chromedriver-<hash
 an environment variable (other browsers are also supported via the env variables like `GECKODRIVER`,
 `SAFARIDRIVER`; `wasm-bindgen-test-runner` will print a helpful advice if none is found).
 
-Finally, run the commands below where `toolchain` is all of `1.84` (MSRV), `stable` and `nightly`
+Finally, run the command
 
 ```bash
-cd integration
-# tests should work for both wasm and non-wasm targets for stable cargo
-cargo "+$toolchain" test --workspace
-cargo "+$toolchain" test --target wasm32-unknown-unknown --workspace
-# enabling optimizations puts additional pressure on the cli to split correctly
-cargo "+$toolchain" test --target wasm32-unknown-unknown --config profile.test.opt-level=3 --workspace
+just test-all-integrations
 ```
 
 ## Releasing
@@ -26,7 +23,7 @@ cargo "+$toolchain" test --target wasm32-unknown-unknown --config profile.test.o
 We use [`cargo-semver-checks`] to check for semver incompatibilities when releasing a new update. Run with
 
 ```bash
-cargo semver-checks
+just release-checks
 ```
 
 This tool does _NOT_ consider proc-macro crates hence you should take additional care here. Check the comment

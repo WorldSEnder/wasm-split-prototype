@@ -1,0 +1,37 @@
+name: main tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain: ["1.84", stable, nightly]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: wasm32-unknown-unknown
+      - uses: cargo-bins/cargo-binstall@v1.15.9
+      - run: cargo binstall just
+      - uses: browser-actions/setup-chrome@v2
+        with:
+          install-chromedriver: true
+      # https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md
+      # see also https://github.com/browser-actions/setup-chrome/issues/639
+      - run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+
+      - name: Run integration tests
+        run: just test-integrations
