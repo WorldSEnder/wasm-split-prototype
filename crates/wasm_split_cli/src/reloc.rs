@@ -266,24 +266,6 @@ impl RelocInfo<'_> {
             }
             trace!(%section, "Reloc section <<<<<<<<<<<<<<<<<<<<<<<<");
         }
-
-        // trace!("Data ranges >>>>>>>>>>>>>>>>>>>>>>>>");
-        // let mut next_open = 0;
-        // let mut next_to_open = 0;
-        // let mut active_lines = Vec<(String, String)>::new();
-        // let mut line_length = 0;
-
-        // let symbols = &self.data_symbols;
-        // while next_to_open < symbols.len() || !active_lines.is_empty() {
-        //     let mut should_open = next_open == next_to_open;
-        //     if next_to_open < symbols.len() && symbols[next_open].range.end <= symbols[next_to_open].range.start {
-        //         should_open = false;
-        //     }
-
-        //     let added_line_length = if should_open {}
-        // }
-
-        // trace!("Data ranges <<<<<<<<<<<<<<<<<<<<<<<<");
     }
     pub fn section_offset(&self, section: SectionIndex) -> InputOffset {
         self.section_ranges[section].start

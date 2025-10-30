@@ -109,7 +109,9 @@ enum DataDependency<'a> {
     // Two (or more) datasymbols are overlapping.
     // I'm not super sure this case is very common or even exists. It is the most complicated to handle.
     // We report up to four symbols. 'to' overlaps both 'from' and 'back_to'. 'back_to' also implies a dependency
-    // on 'from' through containment or other overlaps. Finally, 'outer' might contain 'to'.
+    // on 'from' through containment or overlap. Finally 'container', if any, contains 'to'.
+    // All overlapping items will imply dependencies among themselves. This is important, as otherwise
+    // memory might get initialized more than once.
     DirectedOverlap {
         from: &'a DataSymbol,
         to: &'a DataSymbol,
@@ -157,6 +159,9 @@ impl<'a> InputModule<'a> {
         let data_section_offset = self.reloc_info.data_section_offset();
         let mut data_relocs = self.reloc_info.iter_data_relocs().peekable();
         let mut data_symbols = self.reloc_info.data_symbols.iter().peekable();
+
+        // You should read the following as a generator, that yields dependencies one-by-one. "Real" generators
+        // are still unstable though.
 
         // We go through both data relocs and symbols in one pass, picking up dependencies as we go.
         // Keep in mind that `data_symbols` and `data_relocs` are both sorted by start offset.

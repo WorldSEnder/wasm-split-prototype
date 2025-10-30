@@ -10,3 +10,6 @@ updates:
        cargo-deps:
           patterns:
             - "*"
+    # we could be stricter for /integration and /test-runner, but the main point is
+    # that dependabot should recognize this as a library!
+    versioning-strategy: "increase-if-necessary"
