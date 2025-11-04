@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use split_point::SplitModuleIdentifier;
 
 mod dep_graph;
@@ -75,45 +75,52 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
     } else {
         read::Strictness::Lenient
     };
+    // (1) parse input
     let module = crate::read::InputModule::parse(opts.input_wasm, strictness)?;
     if opts.verbose {
         module.reloc_info.print_relocs();
     }
-
+    // (2) dependency analysis and decide on splits
     let dep_graph = dep_graph::get_dependencies(&module)?;
     let split_points = split_point::get_split_points(&module)?;
     let split_program_info =
         split_point::compute_split_modules(&module, &dep_graph, &split_points)?;
 
-    if opts.verbose {
+    if split_point::trace_enabled(opts.verbose) {
         for (name, split_deps) in split_program_info.output_modules.iter() {
             split_deps.print(format!("{:?}", name).as_str(), &module);
         }
     }
-
-    let mut split_modules = vec![];
-
-    let emit_fn = |output_module_index: usize, data: &[u8]| -> Result<()> {
-        let identifier = &split_program_info.output_modules[output_module_index].0;
-        let output_path = match identifier {
-            SplitModuleIdentifier::Main => opts.main_out_path.to_path_buf(),
-            _ => opts
-                .output_dir
-                .join(identifier.filename(output_module_index) + ".wasm"),
-        };
-        if !matches!(identifier, SplitModuleIdentifier::Main) {
-            split_modules.push(output_path.clone());
-        }
-        std::fs::write(output_path, data)?;
-        Ok(())
-    };
-    std::fs::create_dir_all(opts.output_dir)?;
+    // (3) compute output modules and helper javascript
     let link_module = opts.link_name;
-
     let emit_state = emit::EmitState::new(&opts, &module, &split_program_info, link_module)?;
-    emit::emit_modules(&split_program_info, &emit_state, emit_fn)?;
-    let prefetch_map = crate::js::link_module(opts.main_module, &split_program_info, &emit_state)?
-        .emit(&opts.output_dir.join(Path::new(link_module)))?;
+    let wasm_modules = emit::emit_modules(
+        &split_program_info,
+        &emit_state,
+        |output_module_index, identifier, data| {
+            let output_path = match identifier {
+                SplitModuleIdentifier::Main => opts.main_out_path.to_path_buf(),
+                _ => opts
+                    .output_dir
+                    .join(identifier.filename(output_module_index) + ".wasm"),
+            };
+            (identifier, output_path, data)
+        },
+    )?;
+    let js_link_module = js::link_module(opts.main_module, &split_program_info, &emit_state)?;
+    // (4) write the output
+    std::fs::create_dir_all(opts.output_dir)?;
+    let mut split_modules = vec![];
+    for (identifier, output_path, data) in wasm_modules {
+        // TODO: we could do this asynchronously
+        std::fs::write(&output_path, &data)
+            .with_context(|| format!("Error emitting {:?}", identifier))?;
+        if !matches!(identifier, SplitModuleIdentifier::Main) {
+            split_modules.push(output_path);
+        }
+    }
+    let prefetch_map = js_link_module.emit(&opts.output_dir.join(Path::new(link_module)))?;
+
     Ok(SplitWasm {
         split_modules,
         prefetch_map,

@@ -118,6 +118,10 @@ impl From<ReachabilityGraph> for OutputModuleInfo {
     }
 }
 
+pub fn trace_enabled(verbose: bool) -> bool {
+    verbose && tracing::event_enabled!(tracing::Level::TRACE)
+}
+
 fn print_deps(module_name: &str, module: &InputModule, reachable: &HashSet<DepNode>) {
     let format_dep = |dep: &DepNode| match dep {
         DepNode::Function(index) => {
@@ -141,9 +145,6 @@ fn print_deps(module_name: &str, module: &InputModule, reachable: &HashSet<DepNo
             format!("memory[{index}]")
         }
     };
-    if !tracing::event_enabled!(tracing::Level::TRACE) {
-        return;
-    }
 
     trace!("SPLIT: ============== {module_name}");
     let mut total_size: usize = 0;

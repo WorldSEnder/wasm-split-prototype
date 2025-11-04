@@ -9,7 +9,7 @@ use crate::{
     magic_constants,
     read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
-    split_point::SplitProgramInfo,
+    split_point::{SplitModuleIdentifier, SplitProgramInfo},
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
@@ -1274,22 +1274,26 @@ impl<'a> ModuleEmitState<'a> {
     }
 }
 
-pub fn emit_modules(
-    program_info: &SplitProgramInfo,
+pub fn emit_modules<'info, M>(
+    program_info: &'info SplitProgramInfo,
     emit_state: &EmitState,
-    mut emit_fn: impl FnMut(usize, &[u8]) -> Result<()>,
-) -> Result<()> {
-    for output_module_index in 0..program_info.output_modules.len() {
-        let mut emit_state = ModuleEmitState::new(emit_state, output_module_index, program_info);
-        let identifier = &program_info.output_modules[output_module_index].0;
+    emit_fn: impl Fn(usize, &'info SplitModuleIdentifier, Vec<u8>) -> M,
+) -> Result<Vec<M>> {
+    let modules = program_info.output_modules.iter().enumerate();
+    modules
+        .map(|(output_module_index, (identifier, _))| {
+            let mut emit_state =
+                ModuleEmitState::new(emit_state, output_module_index, program_info);
 
-        emit_state
-            .generate()
-            .with_context(|| format!("Error generating {:?}", identifier))?;
+            emit_state
+                .generate()
+                .with_context(|| format!("Error generating {:?}", identifier))?;
 
-        emit_fn(output_module_index, emit_state.output_module.as_slice())
-            .with_context(|| format!("Error emitting {:?}", identifier))?;
-    }
-
-    Ok(())
+            Ok(emit_fn(
+                output_module_index,
+                identifier,
+                emit_state.output_module.finish(),
+            ))
+        })
+        .collect()
 }
