@@ -8,6 +8,11 @@ test-integrations toolchain="":
 
 test-all-integrations: (test-integrations "+stable") (test-integrations "+nightly") (test-integrations "+1.84")
 
+test-cli:
+    cargo test -p wasm_split_cli_support --all-features
+
+all-tests: test-all-integrations test-cli
+
 fmt-check:
     cargo fmt --all --check
     cd integration && cargo fmt --all --check
@@ -21,5 +26,5 @@ clippy:
 semver-check:
     cargo semver-checks
 
-release-checks: fmt-check clippy test-all-integrations semver-check
-pr-checks: fmt-check clippy test-all-integrations
+release-checks: fmt-check clippy all-tests semver-check
+pr-checks: fmt-check clippy all-tests

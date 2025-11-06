@@ -9,7 +9,7 @@ use crate::{
     magic_constants,
     read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
-    split_point::SplitProgramInfo,
+    split_point::{SplitModuleIdentifier, SplitProgramInfo},
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
@@ -196,10 +196,8 @@ impl IndirectFunctionEmitInfo {
         // Remove all split point imports. These are placeholders. Any
         // references to these functions will be replaced by a reference to the
         // corresponding `SplitPoint::export_func`.
-        for (_, output_module) in program_info.output_modules.iter() {
-            for split_point in output_module.split_points.iter() {
-                indirect_functions.remove(&split_point.import_func);
-            }
+        for split_point in program_info.split_points.iter() {
+            indirect_functions.remove(&split_point.import_func);
         }
 
         let module_for_func = |func_id| {
@@ -718,14 +716,12 @@ impl<'a> ModuleEmitState<'a> {
         }
 
         // Map references to `import_func` to `export_func`.
-        for (_, output_module) in program_info.output_modules.iter() {
-            for split_point in output_module.split_points.iter() {
-                if let Some(&output_func_id) =
-                    dep_to_local_index.get(&DepNode::Function(split_point.export_func))
-                {
-                    dep_to_local_index
-                        .insert(DepNode::Function(split_point.import_func), output_func_id);
-                }
+        for split_point in program_info.split_points.iter() {
+            if let Some(&output_func_id) =
+                dep_to_local_index.get(&DepNode::Function(split_point.export_func))
+            {
+                dep_to_local_index
+                    .insert(DepNode::Function(split_point.import_func), output_func_id);
             }
         }
 
@@ -790,8 +786,8 @@ impl<'a> ModuleEmitState<'a> {
 
         Self {
             input_module: emit_state.input_module,
-            output_module_index,
             emit_state,
+            output_module_index,
             output_module: wasm_encoder::Module::new(),
             defined_functions,
             imports,
@@ -995,8 +991,11 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_data_count_section(&mut self) {
+        let data_section_count = self.input_module.data_segments.len();
         let section = wasm_encoder::DataCountSection {
-            count: self.input_module.data_segments.len() as u32,
+            count: data_section_count
+                .try_into()
+                .expect("unexpectedly large number of data sections"),
         };
         self.output_module.section(&section);
     }
@@ -1274,22 +1273,30 @@ impl<'a> ModuleEmitState<'a> {
     }
 }
 
-pub fn emit_modules(
-    program_info: &SplitProgramInfo,
+pub fn emit_modules<'info, M>(
+    program_info: &'info SplitProgramInfo,
     emit_state: &EmitState,
-    mut emit_fn: impl FnMut(usize, &[u8]) -> Result<()>,
-) -> Result<()> {
-    for output_module_index in 0..program_info.output_modules.len() {
-        let mut emit_state = ModuleEmitState::new(emit_state, output_module_index, program_info);
-        let identifier = &program_info.output_modules[output_module_index].0;
+    emit_fn: impl Fn(usize, &'info SplitModuleIdentifier, Vec<u8>) -> M,
+) -> Result<Vec<M>> {
+    let modules = program_info.output_modules.iter().enumerate();
+    modules
+        .map(|(output_module_index, (identifier, module))| {
+            if module.is_empty {
+                return Ok(None);
+            }
+            let mut emit_state =
+                ModuleEmitState::new(emit_state, output_module_index, program_info);
 
-        emit_state
-            .generate()
-            .with_context(|| format!("Error generating {:?}", identifier))?;
+            emit_state
+                .generate()
+                .with_context(|| format!("Error generating {:?}", identifier))?;
 
-        emit_fn(output_module_index, emit_state.output_module.as_slice())
-            .with_context(|| format!("Error emitting {:?}", identifier))?;
-    }
-
-    Ok(())
+            Ok(Some(emit_fn(
+                output_module_index,
+                identifier,
+                emit_state.output_module.finish(),
+            )))
+        })
+        .filter_map(|res| res.transpose())
+        .collect()
 }

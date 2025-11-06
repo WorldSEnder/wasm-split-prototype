@@ -1,9 +1,25 @@
 use eyre::{Result, bail};
 use std::{
+    collections::HashMap,
     env::args_os,
     path::{Path, PathBuf},
     process::Command,
+    time::{Duration, Instant},
 };
+
+#[derive(Default)]
+struct Report {
+    file_sizes: HashMap<PathBuf, u64>,
+    cli_runtime: Duration,
+}
+
+fn print_report(report: Report, _manifest_dir: &Path) -> Result<()> {
+    eprintln!("Split in {:?}", report.cli_runtime);
+    for (module, size) in report.file_sizes {
+        eprintln!("{}\t{size}", module.display());
+    }
+    Ok(())
+}
 
 fn wasm_bindgen_test_runner() -> Command {
     Command::new(
@@ -12,7 +28,11 @@ fn wasm_bindgen_test_runner() -> Command {
     )
 }
 
-fn print_debug_sizes(main_file: &Path, split: &wasm_split_cli_support::SplitWasm) -> Result<()> {
+fn collect_file_sizes(
+    report: &mut Report,
+    main_file: &Path,
+    split: &wasm_split_cli_support::SplitWasm,
+) -> Result<()> {
     for module in split
         .split_modules
         .iter()
@@ -20,14 +40,16 @@ fn print_debug_sizes(main_file: &Path, split: &wasm_split_cli_support::SplitWasm
         .chain([main_file])
     {
         let file_size = std::fs::File::open(module)?.metadata()?.len();
-        eprintln!("{}\t{file_size}", module.display());
+        report.file_sizes.insert(module.to_path_buf(), file_size);
     }
     Ok(())
 }
 
-fn wasm_split_cli(target: &Path, dir: &Path) -> Result<PathBuf> {
+fn wasm_split_cli(target: &Path, dir: &Path) -> Result<(PathBuf, Report)> {
     let main_file = dir.join("main.wasm");
     let input = std::fs::read(target)?;
+    let mut report: Report = Report::default();
+    let start_time = Instant::now();
 
     let split = wasm_split_cli_support::transform({
         let mut split_opts = wasm_split_cli_support::Options::new(&input);
@@ -38,8 +60,12 @@ fn wasm_split_cli(target: &Path, dir: &Path) -> Result<PathBuf> {
         split_opts.strict_tests = true;
         split_opts
     })?;
-    print_debug_sizes(&main_file, &split)?;
-    Ok(main_file)
+    let time_taken = Instant::now().duration_since(start_time);
+    report.cli_runtime = time_taken;
+
+    collect_file_sizes(&mut report, &main_file, &split)?;
+
+    Ok((main_file, report))
 }
 
 pub fn main() -> Result<()> {
@@ -48,13 +74,19 @@ pub fn main() -> Result<()> {
     let mut args = args_os();
     let _ = args.next().expect("args[0] to be the name of this runner");
     let target = args.next().expect("args[1] to be a wasm program to test");
+    let target_manifest_dir = std::env::var("XCARGO_MANIFEST_DIR")
+        .expect("env variable to manifest should be set by runner script");
 
     let target = Path::new(&target);
     let mut tempdir = tempfile::tempdir()?;
     tempdir.disable_cleanup(true); // keep the dir for debugging
-    eprintln!("Splitting wasm in {}", tempdir.path().display());
+    eprintln!(
+        "Splitting wasm from {target_manifest_dir} in {}",
+        tempdir.path().display()
+    );
 
-    let split_main = wasm_split_cli(target, tempdir.path())?;
+    let (split_main, report) = wasm_split_cli(target, tempdir.path())?;
+    print_report(report, Path::new(&target_manifest_dir))?;
 
     let mut wbg = wasm_bindgen_test_runner();
     // Currently, testing is ONLY supported in browser mode. For node and others, the wrapper script needs to be
