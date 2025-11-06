@@ -786,8 +786,8 @@ impl<'a> ModuleEmitState<'a> {
 
         Self {
             input_module: emit_state.input_module,
-            output_module_index,
             emit_state,
+            output_module_index,
             output_module: wasm_encoder::Module::new(),
             defined_functions,
             imports,
@@ -991,8 +991,11 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_data_count_section(&mut self) {
+        let data_section_count = self.input_module.data_segments.len();
         let section = wasm_encoder::DataCountSection {
-            count: self.input_module.data_segments.len() as u32,
+            count: data_section_count
+                .try_into()
+                .expect("unexpectedly large number of data sections"),
         };
         self.output_module.section(&section);
     }
@@ -1277,7 +1280,10 @@ pub fn emit_modules<'info, M>(
 ) -> Result<Vec<M>> {
     let modules = program_info.output_modules.iter().enumerate();
     modules
-        .map(|(output_module_index, (identifier, _))| {
+        .map(|(output_module_index, (identifier, module))| {
+            if module.is_empty {
+                return Ok(None);
+            }
             let mut emit_state =
                 ModuleEmitState::new(emit_state, output_module_index, program_info);
 
@@ -1285,11 +1291,13 @@ pub fn emit_modules<'info, M>(
                 .generate()
                 .with_context(|| format!("Error generating {:?}", identifier))?;
 
-            Ok(emit_fn(
+            Ok(Some(emit_fn(
                 output_module_index,
                 identifier,
                 emit_state.output_module.finish(),
-            ))
+            )))
         })
+        .map(|res| res.transpose())
+        .flatten()
         .collect()
 }

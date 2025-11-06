@@ -83,8 +83,7 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
     // (2) dependency analysis and decide on splits
     let dep_graph = dep_graph::get_dependencies(&module)?;
     let split_points = split_point::get_split_points(&module)?;
-    let split_program_info =
-        split_point::compute_split_modules(&module, &dep_graph, &split_points)?;
+    let split_program_info = split_point::compute_split_modules(&module, &dep_graph, split_points)?;
 
     if split_point::trace_enabled(opts.verbose) {
         for (name, split_deps) in split_program_info.output_modules.iter() {

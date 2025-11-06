@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::dep_graph::{DepGraph, DepNode};
-use crate::graph_utils::tarjan_scc::{SccEvent, TarjanSccResult};
+use crate::graph_utils::tarjan_scc::{SccEvent, SccId, TarjanSccResult};
 use crate::read::{ExportId, ImportId, InputFuncId, InputModule};
 use eyre::{anyhow, bail, Result};
 use lazy_static::lazy_static;
@@ -101,6 +101,7 @@ pub struct ReachabilityGraph {
 pub struct OutputModuleInfo {
     pub included_symbols: HashSet<DepNode>,
     pub used_shared_deps: HashSet<DepNode>,
+    pub is_empty: bool,
 }
 
 impl OutputModuleInfo {
@@ -161,11 +162,6 @@ fn print_deps(module_name: &str, module: &InputModule, reachable: &HashSet<DepNo
         }
     }
     trace!("SPLIT: ============== {module_name}  : total size: {total_size}");
-}
-
-struct ModuleGraph<'a> {
-    dep_graph: &'a DepGraph,
-    wbg_rooting_funs: HashSet<DepNode>,
 }
 
 fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> HashSet<DepNode> {
@@ -346,6 +342,19 @@ pub struct SplitProgramInfo {
     pub symbol_output_module: HashMap<DepNode, usize>,
 }
 
+struct DepGraphAnalysis<'g> {
+    dep_graph: &'g DepGraph,
+    wbg_rooting_deps: &'g HashSet<DepNode>,
+    scc_searcher: TarjanSccResult,
+    scc_root_colors: HashMap<SccId, SplitModuleIdentifier>,
+}
+
+struct DepGraphPainter<It> {
+    scc_events: It,
+    scc_colors: HashMap<SccId, SplitModuleIdentifier>,
+    color: SplitModuleIdentifier,
+}
+
 fn color_all<It, T>(
     color_map: &mut HashMap<T, SplitModuleIdentifier>,
     roots: It,
@@ -362,94 +371,108 @@ fn color_all<It, T>(
     }
 }
 
+impl<'g> DepGraphAnalysis<'g> {
+    fn new(dep_graph: &'g DepGraph, wbg_rooting_deps: &'g HashSet<DepNode>) -> Self {
+        Self {
+            dep_graph,
+            wbg_rooting_deps,
+            scc_searcher: TarjanSccResult::new(),
+            scc_root_colors: HashMap::new(),
+        }
+    }
+    fn explore(&mut self, roots: HashSet<DepNode>, color: SplitModuleIdentifier) {
+        let scc_roots = self
+            .scc_searcher
+            .explore(&roots, &self.dep_graph, self.wbg_rooting_deps);
+        color_all(&mut self.scc_root_colors, scc_roots, color);
+    }
+    fn into_painter(self) -> DepGraphPainter<impl Iterator<Item = SccEvent>> {
+        let topsort = self.scc_searcher.into_topsort();
+        DepGraphPainter {
+            scc_events: topsort.into_iter().rev(),
+            scc_colors: self.scc_root_colors,
+            color: SplitModuleIdentifier::Main,
+        }
+    }
+}
+
+impl<It: Iterator<Item = SccEvent>> DepGraphPainter<It> {
+    fn next(&mut self) -> Option<(DepNode, &SplitModuleIdentifier)> {
+        loop {
+            match self.scc_events.next()? {
+                SccEvent::Next {
+                    this,
+                    out_edges,
+                    marked_for_main,
+                } => {
+                    self.color = self.scc_colors.remove(&this).unwrap();
+                    if marked_for_main {
+                        self.color = SplitModuleIdentifier::Main;
+                    }
+                    color_all(&mut self.scc_colors, out_edges, self.color.clone());
+                }
+                SccEvent::Member { node } => {
+                    return Some((node, &self.color));
+                }
+            }
+        }
+    }
+}
+
 pub fn compute_split_modules(
     module: &InputModule,
     dep_graph: &DepGraph,
-    split_points: &[SplitPoint],
+    split_points: Vec<SplitPoint>,
 ) -> Result<SplitProgramInfo> {
-    let split_points_by_module = get_split_points_by_module(split_points);
-
-    let dep_graph = ModuleGraph {
-        dep_graph,
-        wbg_rooting_funs: wbg_rooting_funs(dep_graph, module),
-    };
+    let split_points_by_module = get_split_points_by_module(&split_points);
 
     trace!("split_points={split_points:?}");
 
-    let split_func_map: HashMap<InputFuncId, InputFuncId> = split_points
+    let split_func_map: HashMap<_, _> = split_points
         .iter()
         .map(|split_point| (split_point.import_func, split_point.export_func))
         .collect();
-    let all_imports = split_func_map
+    let all_imports: HashSet<_> = split_func_map
         .keys()
         .map(|&import| DepNode::Function(import))
-        .collect::<HashSet<_>>();
+        .collect();
 
-    let mut scc = TarjanSccResult::new();
-    let mut scc_colors = HashMap::new();
-
-    let main_roots = get_main_module_roots(module, split_points);
-    let main_scc_roots = scc.explore(
-        &main_roots,
-        &dep_graph.dep_graph,
-        &dep_graph.wbg_rooting_funs,
-    );
-    color_all(&mut scc_colors, main_scc_roots, SplitModuleIdentifier::Main);
+    let wbg_rooting_deps = wbg_rooting_funs(dep_graph, module);
+    let mut graph_analysis = DepGraphAnalysis::new(dep_graph, &wbg_rooting_deps);
 
     // Determine reachable symbols (excluding main module symbols) for each
     // split module. Symbols may be reachable from more than one split module;
     // these symbols will be moved to a separate module.
+    let main_roots = get_main_module_roots(module, &split_points);
+    graph_analysis.explore(main_roots, SplitModuleIdentifier::Main);
+
     for (module_name, entry_points) in &split_points_by_module {
         let roots = get_split_roots(entry_points);
-        let scc_roots = scc.explore(&roots, &dep_graph.dep_graph, &dep_graph.wbg_rooting_funs);
-        color_all(
-            &mut scc_colors,
-            scc_roots,
-            SplitModuleIdentifier::Split(module_name.clone()),
-        );
+        graph_analysis.explore(roots, SplitModuleIdentifier::Split(module_name.clone()));
     }
 
-    let scc_topsort = scc.into_topsort();
-    let mut module_coloring = SplitModuleIdentifier::Main;
-    let mut scc_split_module_contents = HashMap::<SplitModuleIdentifier, OutputModuleInfo>::new();
-    for event in scc_topsort.into_iter().rev() {
-        match event {
-            SccEvent::Next {
-                this,
-                out_edges,
-                marked_for_main,
-            } => {
-                module_coloring = scc_colors.remove(&this).unwrap();
-                if marked_for_main {
-                    module_coloring = SplitModuleIdentifier::Main;
-                }
-                for dep in out_edges {
-                    scc_colors
-                        .entry(dep)
-                        .and_modify(|module| module.also_in(&module_coloring))
-                        .or_insert_with(|| module_coloring.clone());
-                }
-            }
-            SccEvent::Member { node } if all_imports.contains(&node) => {
-                // drop imports
-            }
-            SccEvent::Member { node } => {
-                scc_split_module_contents
-                    .entry(module_coloring.clone())
-                    .or_default()
-                    .included_symbols
-                    .insert(node);
-            }
+    // We "paint" each dependency with the modules it must be loaded in, then put them into that module
+    // accordingly.
+    let mut painter = graph_analysis.into_painter();
+    let mut split_module_contents = HashMap::<SplitModuleIdentifier, OutputModuleInfo>::new();
+    while let Some((node, color)) = painter.next() {
+        if all_imports.contains(&node) {
+            continue;
         }
+        split_module_contents
+            .entry(color.clone())
+            .or_default()
+            .included_symbols
+            .insert(node);
     }
 
-    let mut split_module_contents = scc_split_module_contents;
+    // Now, check for each module which of its dependencies it needs to import from some other module.
     let mut program_info = SplitProgramInfo::default();
     for out_module in split_module_contents.values_mut() {
         let needed_symbols = out_module
             .included_symbols
             .iter()
-            .filter_map(|dep| dep_graph.dep_graph.get(dep))
+            .filter_map(|dep| dep_graph.get(dep))
             .flatten()
             .cloned()
             // We share two symbols always:
@@ -478,29 +501,34 @@ pub fn compute_split_modules(
             program_info.shared_deps.insert(dep_to_check);
         }
     }
+    // Then, guarantee that we have a module for each declared on in the code (so that it doesn't get lost during emit).
+    for out_module in split_points_by_module.keys() {
+        split_module_contents
+            .entry(SplitModuleIdentifier::Split(out_module.clone()))
+            .or_insert_with(|| {
+                // An optimization pass can sometimes merge multiple exported functions across split modules, when
+                // two modules end up doing "the same thing". In that case, a module might be completely empty, i.e.
+                // not have an included symbols.
+                // We still instantiate one, mainly because the loader must still exist. Often, in this case, a chunk
+                // shared by all these "merged" modules contains most of the implementation which must still be loaded.
+                // In any case, the loader is only on the javascript side.
+                let mut fake_module = OutputModuleInfo::default();
+                fake_module.is_empty = true;
+                fake_module
+            });
+    }
 
-    for split_point in split_points {
+    for split_point in &split_points {
         program_info
             .shared_deps
             .insert(DepNode::Function(split_point.export_func));
         program_info
             .split_point_exports
             .insert(split_point.export_func);
-        program_info.split_points.push(split_point.clone());
     }
-    for out_module in split_points_by_module.keys() {
-        // TODO: this could be optimized to not emit any wasm module, in some cases.
-        // An optimization pass can sometimes merge multiple exported functions across split modules, when
-        // two modules end up doing "the same thing". In that case, a module might be completely empty.
-        // We still instantiate one, mainly because the loader must still exist. Often, in this case, a chunk
-        // shared by all these "merged" modules contains most of the implementation which must still be loaded.
-        let out_module = split_module_contents
-            .entry(SplitModuleIdentifier::Split(out_module.clone()))
-            .or_default();
-        out_module.used_shared_deps.insert(module.main_memory());
-    }
+    program_info.split_points = split_points;
 
-    program_info.output_modules = split_module_contents.drain().collect();
+    program_info.output_modules = split_module_contents.into_iter().collect();
     program_info
         .output_modules
         .sort_by_key(|(identifier, _)| (*identifier).clone());
