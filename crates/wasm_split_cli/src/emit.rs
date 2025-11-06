@@ -196,10 +196,8 @@ impl IndirectFunctionEmitInfo {
         // Remove all split point imports. These are placeholders. Any
         // references to these functions will be replaced by a reference to the
         // corresponding `SplitPoint::export_func`.
-        for (_, output_module) in program_info.output_modules.iter() {
-            for split_point in output_module.split_points.iter() {
-                indirect_functions.remove(&split_point.import_func);
-            }
+        for split_point in program_info.split_points.iter() {
+            indirect_functions.remove(&split_point.import_func);
         }
 
         let module_for_func = |func_id| {
@@ -718,14 +716,12 @@ impl<'a> ModuleEmitState<'a> {
         }
 
         // Map references to `import_func` to `export_func`.
-        for (_, output_module) in program_info.output_modules.iter() {
-            for split_point in output_module.split_points.iter() {
-                if let Some(&output_func_id) =
-                    dep_to_local_index.get(&DepNode::Function(split_point.export_func))
-                {
-                    dep_to_local_index
-                        .insert(DepNode::Function(split_point.import_func), output_func_id);
-                }
+        for split_point in program_info.split_points.iter() {
+            if let Some(&output_func_id) =
+                dep_to_local_index.get(&DepNode::Function(split_point.export_func))
+            {
+                dep_to_local_index
+                    .insert(DepNode::Function(split_point.import_func), output_func_id);
             }
         }
 

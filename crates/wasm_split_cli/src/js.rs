@@ -76,7 +76,7 @@ function getSharedImports() {{
             };
             let file_name = name.filename(module_index);
             let var_name = format!("__chunk_{module_index}");
-            let splits_dbg = splits.join(", ");
+            let splits_dbg = splits.iter().cloned().collect::<Vec<_>>().join(", ");
             writeln!(&mut self.javascript, "/* {splits_dbg} */")?;
             let fetch_opts = self.fetch_opts(format_args!("\"./{file_name}.wasm\""));
             writeln!(
