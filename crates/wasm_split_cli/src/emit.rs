@@ -1297,7 +1297,6 @@ pub fn emit_modules<'info, M>(
                 emit_state.output_module.finish(),
             )))
         })
-        .map(|res| res.transpose())
-        .flatten()
+        .filter_map(|res| res.transpose())
         .collect()
 }

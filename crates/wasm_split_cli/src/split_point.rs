@@ -383,7 +383,7 @@ impl<'g> DepGraphAnalysis<'g> {
     fn explore(&mut self, roots: HashSet<DepNode>, color: SplitModuleIdentifier) {
         let scc_roots = self
             .scc_searcher
-            .explore(&roots, &self.dep_graph, self.wbg_rooting_deps);
+            .explore(&roots, self.dep_graph, self.wbg_rooting_deps);
         color_all(&mut self.scc_root_colors, scc_roots, color);
     }
     fn into_painter(self) -> DepGraphPainter<impl Iterator<Item = SccEvent>> {
@@ -512,9 +512,10 @@ pub fn compute_split_modules(
                 // We still instantiate one, mainly because the loader must still exist. Often, in this case, a chunk
                 // shared by all these "merged" modules contains most of the implementation which must still be loaded.
                 // In any case, the loader is only on the javascript side.
-                let mut fake_module = OutputModuleInfo::default();
-                fake_module.is_empty = true;
-                fake_module
+                OutputModuleInfo {
+                    is_empty: true,
+                    ..OutputModuleInfo::default()
+                }
             });
     }
 
