@@ -147,7 +147,7 @@ fn get_indirect_functions(
     }
 
     let mut referenced_indirects = visible_functions.clone();
-    for relocation in this.relocs.iter().flat_map(|(_, relocs)| relocs.iter()) {
+    for relocation in this.relocs.values().flat_map(|relocs| relocs.iter()) {
         use RelocationType::*;
         if !matches!(
             relocation.ty,
