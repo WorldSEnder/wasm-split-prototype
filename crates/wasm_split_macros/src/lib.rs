@@ -101,7 +101,11 @@ impl Parse for Args {
 ///   Also see the `return_wrapper` option for some further hints.
 /// - It can not be `const`.
 /// - It can not make use of a receiver argument, generics or an `impl` return type.
-/// - By default, `"Rust"` is assumed as the ABI, but you can change this by declaring the function as `extern "ABI"`.
+/// - The only extern linkage on wasm is `#[wasm_import_module]` which implies `extern "C"`, see [this blog post]. The macro
+///   allows you to specify a different linkage but that is only used for the generated wrapper function. The forward call
+///   will happen with `"C"` ABI.
+///   This means in particular that panicking is forbidden across the call. As of now, a panic on wasm leads to an abort, and
+///   this doc serves only as a warning.
 ///
 /// ## Syntax
 ///
@@ -125,6 +129,8 @@ impl Parse for Args {
 /// - `preload( $( #[$attr] )* $preload_name:ident )` generates an additional preload function `$preload_name` with the
 ///   signature `async fn()` which can be used to fetch the module in which the wrapped function is contained without
 ///   calling it.
+///
+/// [this blog post]: https://blog.rust-lang.org/2026/04/04/changes-to-webassembly-targets-and-handling-undefined-symbols/#what-is-going-to-break-and-how-to-fix
 #[proc_macro_attribute]
 pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     let Args {
