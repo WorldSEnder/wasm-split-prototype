@@ -194,6 +194,18 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         ..item_fn.sig.clone()
     };
 
+    // On WASM targets, we must use extern "C" for the import/export pair.
+    // #[link(wasm_import_module)] only creates proper WASM imports for
+    // non-Rust ABIs. Previously this worked because rustc passed
+    // --allow-undefined to wasm-ld by default, but rust-lang/rust#149868
+    // removed that. Using extern "C" ensures the import is a real WASM
+    // import and the export has a matching ABI for wasm-split to link.
+    let wasm_export_sig = Signature {
+        abi: parse_quote!(extern "C"),
+        ident: impl_export_ident.clone(),
+        ..item_fn.sig.clone()
+    };
+
     let mut args = Vec::new();
     for (i, param) in wrapper_sig.inputs.iter_mut().enumerate() {
         match param {
@@ -287,16 +299,29 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         }
         #(#attrs)*
         #vis #wrapper_sig {
+            // On WASM, use extern "C" so #[link(wasm_import_module)] creates
+            // a real WASM import (it is ignored on extern "Rust" blocks).
             #[cfg(target_family = "wasm")]
             #[link(wasm_import_module = #link_name)]
-            unsafe #declared_abi {
+            #[allow(improper_ctypes)]
+            unsafe extern "C" {
                 // We rewrite calls to this function instead of actually calling it. We just need to link to it. The name is unique by hashing.
                 #[unsafe(no_mangle)]
                 safe #import_sig;
             }
 
+            // On WASM, the export must use extern "C" to match the import ABI.
+            #[cfg(target_family = "wasm")]
             #(#attrs)*
-            #[cfg_attr(target_family = "wasm", unsafe(no_mangle))]
+            #[allow(improper_ctypes_definitions)]
+            #[unsafe(no_mangle)]
+            #wasm_export_sig {
+                #(#stmts)*
+            }
+
+            // On non-WASM targets, use the declared ABI (no import needed).
+            #[cfg(not(target_family = "wasm"))]
+            #(#attrs)*
             #export_sig {
                 #(#stmts)*
             }
