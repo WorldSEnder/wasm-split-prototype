@@ -2,6 +2,8 @@
 
 - Improved resilience against multiple versions of the lib being included, mainly working around akward usage of `#[link_section]`
   on wasm targets. See also [rust-lang/rust#56639](https://github.com/rust-lang/rust/issues/56639).
+- Changed linkage in the macro in response to [rust-lang/rust#149868](https://github.com/rust-lang/rust/pull/149868).
+  See #27 for reference, thanks @EvanCarroll.
 
 ## wasm_split_cli v0.2.1
 
