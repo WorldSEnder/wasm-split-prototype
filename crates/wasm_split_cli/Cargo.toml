@@ -13,9 +13,9 @@ readme = "README.md"
 eyre = "0.6"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 lazy_static = "1.4"
-regex = "1.11"
-wasm-encoder = { version = "0.240", features = ["wasmparser"] }
-wasmparser = "0.240"
+regex = "1.12"
+wasm-encoder = { version = "0.244", features = ["wasmparser"] }
+wasmparser = "0.244"
 # bin-only depdencies
 clap = { version = "4.5", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt"], optional = true }

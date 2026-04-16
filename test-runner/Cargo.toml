@@ -10,8 +10,8 @@ publish = false
 
 [dependencies]
 # this MUST be the same bindgen version as used on the tested artifact
-wasm-bindgen-cli = { version = "=0.2.105", artifact = ["bin:wasm-bindgen-test-runner"] }
+wasm-bindgen-cli = { version = "=0.2.108", artifact = ["bin:wasm-bindgen-test-runner"] }
 wasm_split_cli_support = { path = "../crates/wasm_split_cli" }
 eyre = "0.6.12"
-tempfile = "3.23.0"
-tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
+tempfile = "3.24.0"
+tracing-subscriber = { version = "0.3.22", features = ["fmt"] }
