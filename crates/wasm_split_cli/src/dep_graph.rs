@@ -4,7 +4,7 @@ use std::{
 };
 
 use eyre::{anyhow, bail, Result};
-use wasmparser::RelocationEntry;
+use wasmparser::{Operator, RelocationEntry};
 
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, MemoryId, SymbolIndex, TableId, TagId},
@@ -55,6 +55,21 @@ pub fn get_dependencies(module: &InputModule) -> Result<DepGraph> {
     for dep_entry in iter_functions_with_relocs(module) {
         let (func_index, entry) = dep_entry?;
         deps.add_reloc_dep(DepNode::Function(func_index), entry)?;
+    }
+
+    for func_id in no_reloc_call_funcs(module)? {
+        let defined_idx = func_id - module.imported_funcs.len();
+        let mut ops = module.defined_funcs[defined_idx]
+            .body
+            .get_operators_reader()?;
+        while !ops.eof() {
+            if let Operator::Call { function_index } = ops.read()? {
+                deps.add_dep(
+                    DepNode::Function(func_id),
+                    DepNode::Function(function_index as usize),
+                );
+            }
+        }
     }
 
     for dep_entry in iter_data_dependencies(module) {
@@ -116,6 +131,29 @@ fn iter_functions_with_relocs<'m>(
         let func_index = module.imported_funcs.len() + function_index;
         Ok((func_index, entry))
     })
+}
+
+pub(crate) fn no_reloc_call_funcs(module: &InputModule) -> Result<HashSet<InputFuncId>> {
+    let funcs_with_relocs: HashSet<InputFuncId> = iter_functions_with_relocs(module)
+        .filter_map(|r| r.ok().map(|(idx, _)| idx))
+        .collect();
+
+    let num_imports = module.imported_funcs.len();
+    let mut out = HashSet::new();
+    for (idx, defined_func) in module.defined_funcs.iter().enumerate() {
+        let func_id = num_imports + idx;
+        if funcs_with_relocs.contains(&func_id) {
+            continue;
+        }
+        let mut ops = defined_func.body.get_operators_reader()?;
+        while !ops.eof() {
+            if matches!(ops.read()?, Operator::Call { .. }) {
+                out.insert(func_id);
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 enum DataDependency<'a> {
