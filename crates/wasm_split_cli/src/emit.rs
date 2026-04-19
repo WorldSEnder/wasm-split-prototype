@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    dep_graph::DepNode,
+    dep_graph::{self, DepNode},
     magic_constants,
     read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
@@ -13,7 +13,7 @@ use crate::{
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
-use wasm_encoder::{EntityType, ProducersField, ProducersSection};
+use wasm_encoder::{reencode::Reencode, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
     BinaryReader, Data, DataKind, DefinedDataSymbol, ExternalKind, ProducersSectionReader,
     SegmentFlags, SymbolInfo, TypeRef,
@@ -1020,9 +1020,33 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_code_section(&mut self) -> Result<()> {
+        let no_reloc = dep_graph::no_reloc_call_funcs(self.input_module)?;
+        tracing::debug!(
+            module = self.output_module_index,
+            no_reloc_count = no_reloc.len(),
+            defined_count = self.defined_functions.len(),
+            "emitting code section",
+        );
         let mut section = wasm_encoder::CodeSection::new();
         for output_func in self.defined_functions.iter() {
             match output_func.kind {
+                OutputFunctionKind::Defined if no_reloc.contains(&output_func.input_func_id) => {
+                    let body = self.input_module.defined_funcs
+                        [output_func.input_func_id - self.input_module.imported_funcs.len()]
+                    .body
+                    .clone();
+                    FuncReencoder {
+                        dep_to_local_index: &self.dep_to_local_index,
+                        func_id: output_func.input_func_id,
+                    }
+                    .parse_function_body(&mut section, body)
+                    .map_err(|e| {
+                        anyhow!(
+                            "re-encoding no-reloc func {}: {e}",
+                            output_func.input_func_id
+                        )
+                    })?;
+                }
                 OutputFunctionKind::Defined => {
                     let input_func = &self.input_module.defined_funcs
                         [output_func.input_func_id - self.input_module.imported_funcs.len()];
@@ -1270,6 +1294,34 @@ impl<'a> ModuleEmitState<'a> {
         producers.field(PROCESSED_BY_FIELD_NAME, &produced_by);
         self.output_module.section(&producers);
         Ok(())
+    }
+}
+
+/// Re-encodes a function body through `wasm_encoder::reencode`, remapping every
+/// function-index reference (direct calls, ref.func, element items, ...) via
+/// the current module's `dep_to_local_index`.
+struct FuncReencoder<'s> {
+    dep_to_local_index: &'s HashMap<DepNode, usize>,
+    func_id: InputFuncId,
+}
+
+impl wasm_encoder::reencode::Reencode for FuncReencoder<'_> {
+    type Error = eyre::Report;
+
+    fn function_index(
+        &mut self,
+        func: u32,
+    ) -> Result<u32, wasm_encoder::reencode::Error<Self::Error>> {
+        self.dep_to_local_index
+            .get(&DepNode::Function(func as usize))
+            .copied()
+            .map(|i| i as u32)
+            .ok_or_else(|| {
+                wasm_encoder::reencode::Error::UserError(anyhow!(
+                    "no-reloc func {} references input func {func} with no output mapping",
+                    self.func_id,
+                ))
+            })
     }
 }
 
