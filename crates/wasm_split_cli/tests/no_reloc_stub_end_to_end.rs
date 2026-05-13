@@ -1,15 +1,15 @@
 //! Builds a minimal splittable wasm that contains a function whose `call`
-//! instruction has no covering `reloc.CODE` entry — the exact pattern
-//! wasm-ld synthesizes for LTO-merged wrapper stubs. Runs the full
+//! instruction has no covering `reloc.CODE` entry - a pattern
+//! wasm-ld synthesizes for LTO-merged wrapper stubs. Then runs the full
 //! `wasm_split_cli_support::transform()` pipeline on it and asserts:
 //!
-//!   1. a pure call-forwarding `stub` (body = `call $helper; end`) gets
+//!   1. a pure call-forwarding `stub` (body = `(call $helper)`) gets
 //!      re-encoded, so its `call` immediate in the output points at
 //!      helper's remapped index (not the stale input-module index); and
-//!   2. a `dangerous_stub` (body = `global.get $g; drop; call $helper`)
-//!      is rejected by the warn list and falls through to the raw-copy
-//!      path — its `call` immediate in the output MUST stay at the
-//!      stale input index, because re-encoding it would silently emit
+//!   2. a `dangerous_stub` (body = `(global.get $g drop call $helper)`)
+//!      falls through to the raw-copy path - its `call` immediate in
+//!      the output SHOULD stay at the stale input index.
+//!      Re-encoding it should emit a warning, to not silently emit
 //!      a stale `global.get` immediate (FuncReencoder only remaps
 //!      function indices).
 //!
@@ -33,14 +33,20 @@ use wasm_split_cli_support::{transform, Options};
 /// in the output can never coincide with the remapped output index (the
 /// main output module only keeps a handful of defined funcs).
 const PAD: u32 = 10;
-const HELPER_IDX: u32 = 1 + PAD;
+const HELPER_IDX: u32 = PAD + 1;
+const HELPER_EXPORT: &str = "helper";
 const STUB_IDX: u32 = HELPER_IDX + 1;
+const STUB_EXPORT: &str = "stub";
 const DANGEROUS_STUB_IDX: u32 = STUB_IDX + 1;
+const DANGEROUS_STUB_EXPORT: &str = "dangerous_stub";
 const SPLIT_BODY_IDX: u32 = DANGEROUS_STUB_IDX + 1;
 const MAIN_IDX: u32 = SPLIT_BODY_IDX + 1;
 
+#[path = "../src/magic_constants.rs"]
+mod magic_constants;
+
 /// Crucially there is **no `reloc.CODE` custom section**. That means
-/// every `call` instruction in defined functions has no reloc entry —
+/// every `call` instruction in defined functions has no reloc entry -
 /// the exact condition that used to miscompile before PR #29.
 fn build_input_wasm() -> Vec<u8> {
     let mut module = Module::new();
@@ -56,14 +62,14 @@ fn build_input_wasm() -> Vec<u8> {
 
     let mut imports = ImportSection::new();
     imports.import(
-        "__wasm_split_placeholder__",
+        magic_constants::PLACEHOLDER_IMPORT_MODULE,
         &import_name,
         wasm_encoder::EntityType::Function(0),
     );
     module.section(&imports);
 
     let mut functions = FunctionSection::new();
-    for _ in 0..(PAD + 5) {
+    for _ in 1..=MAIN_IDX {
         functions.function(0);
     }
     module.section(&functions);
@@ -103,9 +109,9 @@ fn build_input_wasm() -> Vec<u8> {
     let mut exports = ExportSection::new();
     exports.export(&export_name, ExportKind::Func, SPLIT_BODY_IDX);
     exports.export("main", ExportKind::Func, MAIN_IDX);
-    exports.export("stub", ExportKind::Func, STUB_IDX);
-    exports.export("dangerous_stub", ExportKind::Func, DANGEROUS_STUB_IDX);
-    exports.export("helper", ExportKind::Func, HELPER_IDX);
+    exports.export(STUB_EXPORT, ExportKind::Func, STUB_IDX);
+    exports.export(DANGEROUS_STUB_EXPORT, ExportKind::Func, DANGEROUS_STUB_IDX);
+    exports.export(HELPER_EXPORT, ExportKind::Func, HELPER_IDX);
     exports.export("__indirect_function_table", ExportKind::Table, 0);
     exports.export("memory", ExportKind::Memory, 0);
     module.section(&exports);
@@ -119,7 +125,7 @@ fn build_input_wasm() -> Vec<u8> {
         code.function(&pad);
     }
 
-    // helper: empty body — not a stub (no `call` inside).
+    // helper: empty body - not a stub (no `call` inside).
     let mut helper = Function::new([]);
     helper.instruction(&Instruction::End);
     code.function(&helper);
@@ -135,7 +141,7 @@ fn build_input_wasm() -> Vec<u8> {
     // must see `global.get` and refuse to treat this as a re-encodable
     // stub (FuncReencoder only remaps function indices, not globals).
     // It should fall through to the raw-copy emit path, preserving the
-    // body bytes verbatim — including the stale input `call $helper`
+    // body bytes verbatim - including the stale input `call $helper`
     // immediate.
     let mut dangerous = Function::new([]);
     dangerous.instruction(&Instruction::GlobalGet(0));
@@ -170,18 +176,18 @@ fn build_input_wasm() -> Vec<u8> {
     linking.symbol_table(&sym_tab);
     module.section(&linking);
 
-    // wasm-split marker: [tag u8][payload_len uleb][payload].
+    // wasm-split marker: [tag u8][payload_len uleb][payload]. (see wasm_split/../marker.rs)
     let ws_payload = [1u8, 1u8, 1u8];
     module.section(&CustomSection {
-        name: Cow::Borrowed("__wasm_split_unstable"),
+        name: Cow::Borrowed(magic_constants::LINK_SECTION),
         data: Cow::Borrowed(&ws_payload),
     });
 
     module.finish()
 }
 
-/// `(func_export_index, defined_func_index, import_count)`.
-fn locate_export(wasm: &[u8], export_name: &str) -> (u32, usize, usize) {
+/// `(func_export_index, defined_func_index)`.
+fn locate_export(wasm: &[u8], export_name: &str) -> (u32, usize) {
     let mut import_count: usize = 0;
     let mut target: Option<u32> = None;
     for payload in Parser::new(0).parse_all(wasm) {
@@ -199,6 +205,7 @@ fn locate_export(wasm: &[u8], export_name: &str) -> (u32, usize, usize) {
                     let exp = exp.expect("valid export");
                     if exp.name == export_name {
                         target = Some(exp.index);
+                        break;
                     }
                 }
             }
@@ -212,7 +219,7 @@ fn locate_export(wasm: &[u8], export_name: &str) -> (u32, usize, usize) {
              not a defined function (imports = {import_count})"
         )
     });
-    (idx, defined, import_count)
+    (idx, defined)
 }
 
 /// Returns the first `Call`'s `function_index` immediate from a body.
@@ -246,56 +253,47 @@ fn no_reloc_stub_is_rewritten_and_dangerous_stub_is_raw_copied() {
         payload.expect("input wasm is valid");
     }
 
-    let tmp = std::env::temp_dir().join(format!(
-        "wasm_split_no_reloc_test_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&tmp).expect("create tmpdir");
-    let main_out = tmp.join("main.wasm");
+    let mut tmp = tempfile::tempdir().expect("create tmpdir");
+    tmp.disable_cleanup(true);
+    let main_out = tmp.path().join("main.wasm");
 
     let mut opts = Options::new(&input);
-    opts.output_dir = &tmp;
+    opts.output_dir = tmp.path();
     opts.main_out_path = &main_out;
-    opts.link_name = "./__wasm_split.js";
-    opts.main_module = "./main.js";
 
     transform(opts).expect("transform succeeds");
 
     let main_bytes = std::fs::read(&main_out).expect("read main.wasm output");
 
-    let (helper_func_idx, _, _) = locate_export(&main_bytes, "helper");
-    let (_, stub_defined_idx, _) = locate_export(&main_bytes, "stub");
-    let (_, dangerous_defined_idx, _) = locate_export(&main_bytes, "dangerous_stub");
+    let (helper_func_idx, _) = locate_export(&main_bytes, HELPER_EXPORT);
+    let (_, stub_defined_idx) = locate_export(&main_bytes, STUB_EXPORT);
+    let (_, dangerous_defined_idx) = locate_export(&main_bytes, DANGEROUS_STUB_EXPORT);
 
     // --- Assertion 1: pure stub's call was remapped.
     let stub_call = first_call_immediate(&nth_defined_body(&main_bytes, stub_defined_idx));
     assert_eq!(
         stub_call, helper_func_idx,
         "pure stub should have its `call` immediate remapped to helper's \
-         output index {helper_func_idx}, got {stub_call} — PR #29 remap regressed?",
+         output index {helper_func_idx}, got {stub_call} - PR #29 remap regressed?",
     );
 
     // --- Assertion 2: dangerous stub was raw-copied (NOT re-encoded).
     // A stale input immediate is the signal that the warn list rejected
     // the classification and the body went through raw-copy. Commenting
     // out the warn list flips this: the dangerous stub gets re-encoded
-    // and the call is rewritten to `helper_func_idx` — silently emitting
+    // and the call is rewritten to `helper_func_idx` - silently emitting
     // a stale `global.get` immediate in the process.
     let dangerous_call =
         first_call_immediate(&nth_defined_body(&main_bytes, dangerous_defined_idx));
 
     assert_eq!(
         dangerous_call, HELPER_IDX,
-        "dangerous stub (with global.get) must be raw-copied, so its \
+        "dangerous stub (with global.get) should be raw-copied, so its \
          `call` immediate stays at the stale input index {HELPER_IDX}. \
-         Got {dangerous_call} — warn-list regressed and the body went \
+         Got {dangerous_call} - warn-list regressed and the body went \
          through the re-encoder, which would also silently mis-emit the \
          global.get immediate.",
     );
 
-    let _ = std::fs::remove_dir_all(&tmp);
+    tmp.disable_cleanup(false);
 }

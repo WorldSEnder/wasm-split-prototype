@@ -59,8 +59,9 @@ pub fn get_dependencies(module: &InputModule) -> Result<(DepGraph, HashSet<Input
         deps.add_reloc_dep(DepNode::Function(func_index), entry)?;
     }
 
-    let imported_fns_len = module.imported_funcs.len();
+    // See issue #29 for why we detect stub functions that aren't covered by reloc data
     let mut stub_fns = HashSet::<InputFuncId>::new();
+    let imported_fns_len = module.imported_funcs.len();
     let mut unexpected_ops: HashMap<String, (usize, InputFuncId)> = HashMap::new();
 
     for (i, defined_func) in module.defined_funcs.iter().enumerate() {
@@ -80,7 +81,10 @@ pub fn get_dependencies(module: &InputModule) -> Result<(DepGraph, HashSet<Input
 
     if !unexpected_ops.is_empty() {
         for (op, (count, sample)) in &unexpected_ops {
-            tracing::warn!("skipped {count} no-reloc stub func(s) with {op} (e.g. func[{sample}])",);
+            tracing::warn!(
+                "skipped {count} no-reloc stub func(s) with {op} (e.g. func[{sample}] {:?})",
+                module.names.functions.get(sample).unwrap_or(&"<anon>")
+            );
         }
     }
 
@@ -150,15 +154,21 @@ fn validate_no_reloc_stub(
     func_id: InputFuncId,
     unexpected_ops: &mut HashMap<String, (usize, InputFuncId)>,
 ) -> Result<Option<Vec<InputFuncId>>> {
-    let mut targets = vec![];
-    let mut ops = body.get_operators_reader()?;
-    while !ops.eof() {
-        match ops.read()? {
-            Operator::Call { function_index } => targets.push(function_index as usize),
-            op @ (Operator::RefFunc { .. }
+    // Three reasons why a function could have no relocations:
+    // 1) it is a stub function which is missing them, as in #29
+    // 2) it is a simple function that doesn't refer to indices that need relocating.
+    // 3) it is a complex function that is missing relocation information
+    // We only want to handle the first case here, and emit warning for the third case.
+    // To keep noise down, we err on the side of classifying a function as 2) for op-codes that
+    // we don't recognize.
+    fn surely_needs_reloc_information(op: &Operator) -> bool {
+        matches!(
+            op, //
+            | Operator::Call { .. }     // part of a normal stub, anyway
             | Operator::ReturnCall { .. }
-            | Operator::ReturnCallIndirect { .. }
             | Operator::CallIndirect { .. }
+            | Operator::ReturnCallIndirect { .. }
+            | Operator::RefFunc { .. }
             | Operator::GlobalGet { .. }
             | Operator::GlobalSet { .. }
             | Operator::TableGet { .. }
@@ -170,7 +180,24 @@ fn validate_no_reloc_stub(
             | Operator::TableCopy { .. }
             | Operator::MemoryInit { .. }
             | Operator::DataDrop { .. }
-            | Operator::ElemDrop { .. }) => {
+            | Operator::ElemDrop { .. }
+        )
+        // There might be more operators to add in the future. At the moment, we miss
+        // out on a warning on even more complicated functions that do for some reason
+        // not use one of the operators above.
+    }
+    let mut targets = vec![];
+    let mut ops = body.get_operators_reader()?;
+    let mut needs_reloc_info = false;
+    while !ops.eof() {
+        let op = ops.read()?;
+        needs_reloc_info |= surely_needs_reloc_information(&op);
+        match op {
+            // We expect the following operators in a simple stub:
+            Operator::Call { function_index } => targets.push(function_index as usize),
+            Operator::LocalGet { .. } | Operator::Return | Operator::End => {}
+            // Any other operator signals a more complicated stub and will get warned on.
+            op if needs_reloc_info => {
                 let name = op_short_name(&op);
                 let entry = unexpected_ops.entry(name).or_insert((0, func_id));
                 entry.0 += 1;
@@ -180,11 +207,8 @@ fn validate_no_reloc_stub(
         }
     }
 
-    if targets.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(targets))
+    let any_targets = !targets.is_empty();
+    Ok(any_targets.then_some(targets))
 }
 
 fn op_short_name(op: &Operator) -> String {
