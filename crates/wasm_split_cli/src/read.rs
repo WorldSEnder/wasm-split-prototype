@@ -1,6 +1,8 @@
 use eyre::{bail, Result};
 use std::collections::HashMap;
-use wasmparser::{BinaryReader, NameSectionReader, Payload, Subsection, Subsections, TypeRef};
+use wasmparser::{
+    BinaryReader, Imports, NameSectionReader, Payload, Subsection, Subsections, TypeRef,
+};
 pub use wasmparser::{
     Data, Element, Export, FuncType, FunctionBody, Global, Import, MemoryType, Table, TagType,
 };
@@ -192,7 +194,24 @@ impl<'a> InputModule<'a> {
                         .collect::<Result<Vec<_>, _>>()?;
                 }
                 Payload::ImportSection(reader) => {
-                    module.imports = reader.into_iter().collect::<Result<Vec<_>, _>>()?;
+                    let gathered = &mut module.imports;
+                    for imports in reader.into_iter() {
+                        match imports? {
+                            Imports::Single(_, import) => gathered.push(import),
+                            Imports::Compact1 { module, items } => {
+                                for item in items.into_iter() {
+                                    let wasmparser::ImportItemCompact { name, ty } = item?;
+                                    gathered.push(Import { module, name, ty })
+                                }
+                            }
+                            Imports::Compact2 { module, ty, names } => {
+                                for name in names.into_iter() {
+                                    let name = name?;
+                                    gathered.push(Import { module, name, ty })
+                                }
+                            }
+                        }
+                    }
                 }
                 Payload::FunctionSection(reader) => {
                     function_types = reader
@@ -269,7 +288,7 @@ impl<'a> InputModule<'a> {
         for (import_id, import) in module.imports.iter().enumerate() {
             let import_id = import_id as ImportId;
             match import.ty {
-                TypeRef::Func(func_type_id) => {
+                TypeRef::Func(func_type_id) | TypeRef::FuncExact(func_type_id) => {
                     let func_id = module.imported_funcs.len();
                     module.imported_funcs.push(ImportedFunc {
                         import_id,

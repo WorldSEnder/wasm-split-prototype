@@ -732,7 +732,9 @@ impl<'a> ModuleEmitState<'a> {
         let mut exported_dont_share = HashSet::new();
         for export in emit_state.input_module.exports.iter() {
             let dep = match export.kind {
-                ExternalKind::Func => DepNode::Function(export.index as usize),
+                ExternalKind::Func | ExternalKind::FuncExact => {
+                    DepNode::Function(export.index as usize)
+                }
                 ExternalKind::Table => DepNode::Table(export.index as usize),
                 ExternalKind::Global => DepNode::Global(export.index as usize),
                 ExternalKind::Tag => DepNode::Tag(export.index as usize),

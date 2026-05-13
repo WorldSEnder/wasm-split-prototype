@@ -194,7 +194,9 @@ fn locate_export(wasm: &[u8], export_name: &str) -> (u32, usize) {
         match payload.expect("valid wasm") {
             Payload::ImportSection(reader) => {
                 for imp in reader {
-                    let imp = imp.expect("valid import");
+                    let Ok(wasmparser::Imports::Single(_, imp)) = imp else {
+                        panic!("valid import")
+                    };
                     if matches!(imp.ty, TypeRef::Func(_)) {
                         import_count += 1;
                     }
