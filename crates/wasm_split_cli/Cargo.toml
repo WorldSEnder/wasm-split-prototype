@@ -17,7 +17,7 @@ regex = "1.12"
 wasm-encoder = { version = "0.248", features = ["wasmparser"] }
 wasmparser = "0.248"
 # bin-only depdencies
-clap = { version = "4.5", features = ["derive"], optional = true }
+clap = { version = "4.6", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt"], optional = true }
 
 [dev-dependencies]
