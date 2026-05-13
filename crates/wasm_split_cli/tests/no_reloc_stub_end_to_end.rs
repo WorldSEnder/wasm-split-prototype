@@ -246,6 +246,8 @@ fn nth_defined_body<'a>(wasm: &'a [u8], nth: usize) -> wasmparser::FunctionBody<
 
 #[test]
 fn no_reloc_stub_is_rewritten_and_dangerous_stub_is_raw_copied() {
+    tracing_subscriber::fmt::init();
+
     let input = build_input_wasm();
 
     // Sanity: input should parse as a wasm module.

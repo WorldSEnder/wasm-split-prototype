@@ -82,7 +82,7 @@ pub fn get_dependencies(module: &InputModule) -> Result<(DepGraph, HashSet<Input
     if !unexpected_ops.is_empty() {
         for (op, (count, sample)) in &unexpected_ops {
             tracing::warn!(
-                "skipped {count} no-reloc stub func(s) with {op} (e.g. func[{sample}] {:?})",
+                "skipped {count} func(s) with missing reloc info, {op} looks too complicated for a stub (e.g. func[{sample}] {:?})",
                 module.names.functions.get(sample).unwrap_or(&"<anon>")
             );
         }
@@ -189,6 +189,7 @@ fn validate_no_reloc_stub(
     let mut targets = vec![];
     let mut ops = body.get_operators_reader()?;
     let mut needs_reloc_info = false;
+    let mut is_simple_stub = true;
     while !ops.eof() {
         let op = ops.read()?;
         needs_reloc_info |= surely_needs_reloc_information(&op);
@@ -203,12 +204,12 @@ fn validate_no_reloc_stub(
                 entry.0 += 1;
                 return Ok(None);
             }
-            _ => {}
+            _ => is_simple_stub = false,
         }
     }
 
     let any_targets = !targets.is_empty();
-    Ok(any_targets.then_some(targets))
+    Ok((is_simple_stub && any_targets).then_some(targets))
 }
 
 fn op_short_name(op: &Operator) -> String {
