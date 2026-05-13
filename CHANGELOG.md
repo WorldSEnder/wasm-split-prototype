@@ -8,6 +8,8 @@
 ## wasm_split_cli v0.2.1
 
 - Improved error messages.
+- Work around an issue with wasm-ld and LTO which does not generate relocations for all stubs, see #29.
+  Fixed in #30 by @adrianncovaci.
 
 ## wasm_split_cli v0.2.0, wasm_split_helpers v0.2.0
 
