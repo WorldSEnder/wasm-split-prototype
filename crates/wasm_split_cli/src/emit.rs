@@ -13,7 +13,7 @@ use crate::{
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
-use wasm_encoder::{EntityType, ProducersField, ProducersSection};
+use wasm_encoder::{reencode::Reencode, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
     BinaryReader, Data, DataKind, DefinedDataSymbol, ExternalKind, ProducersSectionReader,
     SegmentFlags, SymbolInfo, TypeRef,
@@ -27,6 +27,7 @@ pub(crate) struct EmitState<'a> {
     indirect_functions: IndirectFunctionEmitInfo,
     data_relocations: DataEmitInfo,
     shared_names: HashMap<DepNode, Cow<'a, str>>,
+    no_reloc_stubs: HashSet<InputFuncId>,
 }
 
 impl<'a> EmitState<'a> {
@@ -35,6 +36,7 @@ impl<'a> EmitState<'a> {
         module: &'a InputModule<'a>,
         program_info: &SplitProgramInfo,
         link_module: &'a str,
+        no_reloc_stubs: HashSet<InputFuncId>,
     ) -> Result<Self> {
         let indirect_functions = IndirectFunctionEmitInfo::new(module, program_info)?;
         let data_relocations = DataEmitInfo::new(module, program_info)?;
@@ -83,6 +85,7 @@ impl<'a> EmitState<'a> {
             indirect_functions,
             data_relocations,
             shared_names,
+            no_reloc_stubs,
         })
     }
 
@@ -1020,9 +1023,34 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_code_section(&mut self) -> Result<()> {
+        tracing::debug!(
+            module = self.output_module_index,
+            defined_count = self.defined_functions.len(),
+            "emitting code section",
+        );
         let mut section = wasm_encoder::CodeSection::new();
         for output_func in self.defined_functions.iter() {
             match output_func.kind {
+                OutputFunctionKind::Defined
+                    if self
+                        .emit_state
+                        .no_reloc_stubs
+                        .contains(&output_func.input_func_id) =>
+                {
+                    let body = self.input_module.defined_funcs
+                        [output_func.input_func_id - self.input_module.imported_funcs.len()]
+                    .body
+                    .clone();
+
+                    FuncReencoder {
+                        dep_to_local_index: &self.dep_to_local_index,
+                        func_id: output_func.input_func_id,
+                    }
+                    .parse_function_body(&mut section, body)
+                    .with_context(|| {
+                        format!("re-encoding no-reloc func {}", output_func.input_func_id)
+                    })?;
+                }
                 OutputFunctionKind::Defined => {
                     let input_func = &self.input_module.defined_funcs
                         [output_func.input_func_id - self.input_module.imported_funcs.len()];
@@ -1270,6 +1298,49 @@ impl<'a> ModuleEmitState<'a> {
         producers.field(PROCESSED_BY_FIELD_NAME, &produced_by);
         self.output_module.section(&producers);
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct MissingFunctionMapping {
+    stub_func: InputFuncId,
+    referenced: u32,
+}
+
+impl std::fmt::Display for MissingFunctionMapping {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "no-reloc func {} references input func {} with no output mapping",
+            self.stub_func, self.referenced,
+        )
+    }
+}
+
+impl std::error::Error for MissingFunctionMapping {}
+
+struct FuncReencoder<'a> {
+    dep_to_local_index: &'a HashMap<DepNode, InputFuncId>,
+    func_id: InputFuncId,
+}
+
+impl wasm_encoder::reencode::Reencode for FuncReencoder<'_> {
+    type Error = MissingFunctionMapping;
+
+    fn function_index(
+        &mut self,
+        func: u32,
+    ) -> Result<u32, wasm_encoder::reencode::Error<Self::Error>> {
+        self.dep_to_local_index
+            .get(&DepNode::Function(func as usize))
+            .copied()
+            .map(|i| i as u32)
+            .ok_or(wasm_encoder::reencode::Error::UserError(
+                MissingFunctionMapping {
+                    stub_func: self.func_id,
+                    referenced: func,
+                },
+            ))
     }
 }
 

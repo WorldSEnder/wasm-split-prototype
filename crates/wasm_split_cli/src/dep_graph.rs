@@ -4,7 +4,7 @@ use std::{
 };
 
 use eyre::{anyhow, bail, Result};
-use wasmparser::RelocationEntry;
+use wasmparser::{FunctionBody, Operator, RelocationEntry};
 
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, MemoryId, SymbolIndex, TableId, TagId},
@@ -24,7 +24,7 @@ pub enum DepNode {
 
 pub type DepGraph = HashMap<DepNode, HashSet<DepNode>>;
 
-pub fn get_dependencies(module: &InputModule) -> Result<DepGraph> {
+pub fn get_dependencies(module: &InputModule) -> Result<(DepGraph, HashSet<InputFuncId>)> {
     struct Builder<'a, 'm>(DepGraph, &'a InputModule<'m>);
     impl Builder<'_, '_> {
         fn add_dep(&mut self, a: DepNode, b: DepNode) {
@@ -51,10 +51,41 @@ pub fn get_dependencies(module: &InputModule) -> Result<DepGraph> {
     }
 
     let mut deps = Builder(DepGraph::new(), module);
+    let mut fns_with_relocs = HashSet::<InputFuncId>::new();
 
     for dep_entry in iter_functions_with_relocs(module) {
         let (func_index, entry) = dep_entry?;
+        fns_with_relocs.insert(func_index);
         deps.add_reloc_dep(DepNode::Function(func_index), entry)?;
+    }
+
+    // See issue #29 for why we detect stub functions that aren't covered by reloc data
+    let mut stub_fns = HashSet::<InputFuncId>::new();
+    let imported_fns_len = module.imported_funcs.len();
+    let mut unexpected_ops: HashMap<String, (usize, InputFuncId)> = HashMap::new();
+
+    for (i, defined_func) in module.defined_funcs.iter().enumerate() {
+        let idx = imported_fns_len + i;
+        if fns_with_relocs.contains(&idx) {
+            continue;
+        }
+
+        if let Some(targets) = validate_no_reloc_stub(&defined_func.body, idx, &mut unexpected_ops)?
+        {
+            stub_fns.insert(idx);
+            for target in targets {
+                deps.add_dep(DepNode::Function(idx), DepNode::Function(target));
+            }
+        }
+    }
+
+    if !unexpected_ops.is_empty() {
+        for (op, (count, sample)) in &unexpected_ops {
+            tracing::warn!(
+                "skipped {count} func(s) with missing reloc info, {op} looks too complicated for a stub (e.g. func[{sample}] {:?})",
+                module.names.functions.get(sample).unwrap_or(&"<anon>")
+            );
+        }
     }
 
     for dep_entry in iter_data_dependencies(module) {
@@ -91,7 +122,7 @@ pub fn get_dependencies(module: &InputModule) -> Result<DepGraph> {
             }
         }
     }
-    Ok(deps.0)
+    Ok((deps.0, stub_fns))
 }
 
 fn iter_functions_with_relocs<'m>(
@@ -116,6 +147,77 @@ fn iter_functions_with_relocs<'m>(
         let func_index = module.imported_funcs.len() + function_index;
         Ok((func_index, entry))
     })
+}
+
+fn validate_no_reloc_stub(
+    body: &FunctionBody<'_>,
+    func_id: InputFuncId,
+    unexpected_ops: &mut HashMap<String, (usize, InputFuncId)>,
+) -> Result<Option<Vec<InputFuncId>>> {
+    // Three reasons why a function could have no relocations:
+    // 1) it is a stub function which is missing them, as in #29
+    // 2) it is a simple function that doesn't refer to indices that need relocating.
+    // 3) it is a complex function that is missing relocation information
+    // We only want to handle the first case here, and emit warning for the third case.
+    // To keep noise down, we err on the side of classifying a function as 2) for op-codes that
+    // we don't recognize.
+    fn surely_needs_reloc_information(op: &Operator) -> bool {
+        matches!(
+            op, //
+            | Operator::Call { .. }     // part of a normal stub, anyway
+            | Operator::ReturnCall { .. }
+            | Operator::CallIndirect { .. }
+            | Operator::ReturnCallIndirect { .. }
+            | Operator::RefFunc { .. }
+            | Operator::GlobalGet { .. }
+            | Operator::GlobalSet { .. }
+            | Operator::TableGet { .. }
+            | Operator::TableSet { .. }
+            | Operator::TableSize { .. }
+            | Operator::TableGrow { .. }
+            | Operator::TableFill { .. }
+            | Operator::TableInit { .. }
+            | Operator::TableCopy { .. }
+            | Operator::MemoryInit { .. }
+            | Operator::DataDrop { .. }
+            | Operator::ElemDrop { .. }
+        )
+        // There might be more operators to add in the future. At the moment, we miss
+        // out on a warning on even more complicated functions that do for some reason
+        // not use one of the operators above.
+    }
+    let mut targets = vec![];
+    let mut ops = body.get_operators_reader()?;
+    let mut needs_reloc_info = false;
+    let mut is_simple_stub = true;
+    while !ops.eof() {
+        let op = ops.read()?;
+        needs_reloc_info |= surely_needs_reloc_information(&op);
+        match op {
+            // We expect the following operators in a simple stub:
+            Operator::Call { function_index } => targets.push(function_index as usize),
+            Operator::LocalGet { .. } | Operator::Return | Operator::End => {}
+            // Any other operator signals a more complicated stub and will get warned on.
+            op if needs_reloc_info => {
+                let name = op_short_name(&op);
+                let entry = unexpected_ops.entry(name).or_insert((0, func_id));
+                entry.0 += 1;
+                return Ok(None);
+            }
+            _ => is_simple_stub = false,
+        }
+    }
+
+    let any_targets = !targets.is_empty();
+    Ok((is_simple_stub && any_targets).then_some(targets))
+}
+
+fn op_short_name(op: &Operator) -> String {
+    let dbg = format!("{op:?}");
+    dbg.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .next()
+        .unwrap_or("<unknown>")
+        .to_owned()
 }
 
 enum DataDependency<'a> {
