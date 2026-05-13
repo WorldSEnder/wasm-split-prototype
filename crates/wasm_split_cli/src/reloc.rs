@@ -452,7 +452,7 @@ impl RelocInfo<'_> {
         reloc_base: InputOffset,
         relocation: &RelocationEntry,
     ) -> Result<()> {
-        let relocation_range = relocation.relocation_range();
+        let relocation_range = relocation.relocation_range()?;
         let target = &mut data[(reloc_base + relocation_range.start - data_offset)
             ..(reloc_base + relocation_range.end - data_offset)];
         let ty = relocation.ty;

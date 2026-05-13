@@ -132,7 +132,7 @@ fn iter_functions_with_relocs<'m>(
     let code_section_offset = module.reloc_info.code_section_offset();
     let mut function_index = 0;
     code_relocs.map(move |entry| {
-        let reloc_file_range = shift_range(entry.relocation_range(), code_section_offset);
+        let reloc_file_range = shift_range(entry.relocation_range()?, code_section_offset);
         // We do an exponential search for a function that contains the relocation's target range.
         let found_index = crate::util::exponential_partition_point(
             &module.defined_funcs[function_index..],
@@ -271,7 +271,10 @@ fn iter_data_dependencies<'m>(
     let mut overlap_candidates: Vec<&DataSymbol> = vec![];
     std::iter::from_fn(move || loop {
         if let Some(&entry) = data_relocs.peek() {
-            let reloc_file_range = shift_range(entry.relocation_range(), data_section_offset);
+            let reloc_file_range = shift_range(
+                emit_iter_err!(entry.relocation_range()),
+                data_section_offset,
+            );
             let should_handle_reloc = match data_symbols.peek() {
                 None => true,
                 Some(next_symbol) => next_symbol.range.start >= reloc_file_range.end,

@@ -189,7 +189,9 @@ fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> H
     roots.insert(module.main_memory());
     for wasmparser::Export { index, kind, .. } in module.exports.iter() {
         roots.insert(match kind {
-            wasmparser::ExternalKind::Func => DepNode::Function(*index as usize),
+            wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
+                DepNode::Function(*index as usize)
+            }
             wasmparser::ExternalKind::Table => DepNode::Table(*index as usize),
             wasmparser::ExternalKind::Global => DepNode::Global(*index as usize),
             wasmparser::ExternalKind::Tag => DepNode::Tag(*index as usize),
