@@ -1,3 +1,12 @@
+## Unreleased
+
+- A failed split-module load is no longer cached for the lifetime of the session
+  (one transient network failure used to permanently break the module and panic
+  the runtime — see #35). The JS loader now retries transient fetch failures
+  with a short backoff and only memoizes successful loads; `ensure_loaded`
+  re-invokes the load function after a failed callback (bounded per call) and
+  resets the loader state on failure so later calls always start fresh.
+
 ## wasm_split_helpers v0.2.1
 
 - Improved resilience against multiple versions of the lib being included, mainly working around akward usage of `#[link_section]`

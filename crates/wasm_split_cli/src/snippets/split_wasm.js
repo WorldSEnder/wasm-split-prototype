@@ -24,7 +24,18 @@ function makeLoad(fetchOpts, deps) {
     };
     let loadingModule = undefined;
     return () => {
-        if (loadingModule === undefined) loadingModule = loader();
+        if (loadingModule === undefined) {
+            const thisLoad = loader();
+            // Memoize successes only: a rejected load must not be cached for
+            // the lifetime of the session, or one transient network failure
+            // permanently breaks the module. Clearing on rejection lets the
+            // next call (e.g. the Rust side re-invoking load after a failed
+            // callback) start a fresh attempt.
+            thisLoad.catch(() => {
+                if (loadingModule === thisLoad) loadingModule = undefined;
+            });
+            loadingModule = thisLoad;
+        }
         return loadingModule;
     }
 }
