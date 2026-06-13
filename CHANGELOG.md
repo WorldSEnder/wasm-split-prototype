@@ -1,11 +1,15 @@
 ## Unreleased
 
 - A failed split-module load is no longer cached for the lifetime of the session
-  (one transient network failure used to permanently break the module and panic
-  the runtime — see #35). The JS loader now retries transient fetch failures
-  with a short backoff and only memoizes successful loads; `ensure_loaded`
-  re-invokes the load function after a failed callback (bounded per call) and
-  resets the loader state on failure so later calls always start fresh.
+  (one transient network failure used to permanently break the module — see
+  #35). Two layers cooperate: the generated JS loader retries the fetch itself a
+  few times with a short backoff (handling brief network blips), and on the Rust
+  side the loader now uses `async_once_cell::OnceCell` instead of `Lazy`, so a
+  load that still fails leaves the cell uninitialized rather than memoizing the
+  failure — a later `ensure_loaded` (e.g. on the next navigation) starts a fresh
+  attempt. A hard failure that survives the JS retries still panics (the load is
+  infallible from the caller's perspective), but the panic is no longer
+  permanent for the session. `makeLoad` now memoizes only successful loads.
 
 ## wasm_split_helpers v0.2.1
 
