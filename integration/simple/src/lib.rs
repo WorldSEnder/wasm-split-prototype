@@ -55,7 +55,10 @@ fn fallible_preloadable() -> Result<u32, SplitLoaderError> {
 
 // A use-site can declare its own error type as long as it is
 // `From<SplitLoaderError>`; the load failure folds straight into it.
+// On non-wasm the load can't fail, so `From::from` (and thus the only
+// construction site) is unreachable there -- allow the host-only dead code.
 #[derive(Debug, PartialEq)]
+#[allow(dead_code)]
 struct DemoError;
 
 impl From<SplitLoaderError> for DemoError {
