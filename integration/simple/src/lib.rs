@@ -3,7 +3,7 @@ use std::{
     pin::Pin,
     sync::atomic::{AtomicU32, Ordering},
 };
-use wasm_split_helpers::wasm_split;
+use wasm_split_helpers::{wasm_split, SplitLoaderError};
 
 #[wasm_split(split)]
 fn lazy() -> u32 {
@@ -41,14 +41,44 @@ fn preloadable() -> u32 {
     42
 }
 
+// `fallible` keeps the user's signature: the function returns its own
+// `Result<_, E>` and the macro converts a load failure into `E` via `?`/`From`.
 #[wasm_split(fallible_split, fallible)]
-fn fallible_lazy() -> u32 {
-    42
+fn fallible_lazy() -> Result<u32, SplitLoaderError> {
+    Ok(42)
 }
 
 #[wasm_split(fallible_preload_split, preload(preload_fallible), fallible)]
-fn fallible_preloadable() -> u32 {
-    42
+fn fallible_preloadable() -> Result<u32, SplitLoaderError> {
+    Ok(42)
+}
+
+// A use-site can declare its own error type as long as it is
+// `From<SplitLoaderError>`; the load failure folds straight into it.
+#[derive(Debug, PartialEq)]
+struct DemoError;
+
+impl From<SplitLoaderError> for DemoError {
+    fn from(_: SplitLoaderError) -> Self {
+        DemoError
+    }
+}
+
+#[wasm_split(custom_err_split, fallible)]
+fn custom_err_lazy() -> Result<u32, DemoError> {
+    Ok(42)
+}
+
+// `fallible` composed with `return_wrapper` (an async wrapper) -- the exact shape
+// leptos generates for an async lazy-route view. The awaited output must itself
+// be the `Result`, and `?` folds the load failure into it.
+#[wasm_split(
+    fallible_async_split,
+    fallible,
+    return_wrapper(let future = _ ; { future.await } -> Result<u32, SplitLoaderError>)
+)]
+fn fallible_async() -> Pin<Box<dyn Future<Output = Result<u32, SplitLoaderError>>>> {
+    Box::pin(async move { Ok(42) })
 }
 
 pub static SHARED_MUT: AtomicU32 = AtomicU32::new(0xdead);
@@ -132,6 +162,19 @@ mod tests {
             .await
             .expect("preload should succeed");
         assert_eq!(crate::fallible_preloadable().await, Ok(42));
+    }
+
+    #[test]
+    pub async fn it_supports_fallible_custom_error() {
+        // The wrapper keeps the user's signature; a load failure would convert
+        // into `DemoError` via `From<SplitLoaderError>`. On success it is `Ok`.
+        assert_eq!(crate::custom_err_lazy().await, Ok(42));
+    }
+
+    #[test]
+    pub async fn it_supports_fallible_with_return_wrapper() {
+        // `fallible` + `return_wrapper` (the leptos async-view shape).
+        assert_eq!(crate::fallible_async().await, Ok(42));
     }
 
     #[test]

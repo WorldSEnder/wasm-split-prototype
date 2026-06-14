@@ -136,10 +136,12 @@ impl Parse for Args {
 ///   fetches the module in which the wrapped function is contained without calling it. Its signature is `async fn()`
 ///   and a hard load failure panics, matching the wrapper; with the `fallible` option it instead returns
 ///   `Result<(), wasm_split_helpers::SplitLoaderError>`.
-/// - `fallible` makes the generated wrapper (and the `preload` function, if any) return
-///   `Result<_, wasm_split_helpers::SplitLoaderError>`, surfacing a load failure as `Err` instead of panicking (a panic
-///   aborts the whole wasm module). Without this option both keep their infallible signatures and a hard load failure
-///   panics, as before. The failure is never cached, so a later call retries from scratch.
+/// - `fallible` surfaces a load failure as `Err` instead of panicking (a panic aborts the whole wasm module). The
+///   annotated function must return `Result<_, E>` where `E: From<wasm_split_helpers::SplitLoaderError>`; the macro
+///   leaves that signature untouched and converts a load failure into your `E` via `?`, so a use-site can fold it
+///   straight into a framework-specific error. The generated `preload` function (if any) returns
+///   `Result<(), wasm_split_helpers::SplitLoaderError>`. Without this option both keep their infallible signatures and
+///   a hard load failure panics, as before. The failure is never cached, so a later call retries from scratch.
 ///
 /// [this blog post]: https://blog.rust-lang.org/2026/04/04/changes-to-webassembly-targets-and-handling-undefined-symbols/#what-is-going-to-break-and-how-to-fix
 #[proc_macro_attribute]
@@ -299,12 +301,11 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         })).await
     };
     let (preload_output, preload_load, preload_tail, load_and_compute) = if fallible {
-        let inner_output: syn::Type = match &wrapper_sig.output {
-            ReturnType::Default => parse_quote!(()),
-            ReturnType::Type(_, ty) => (**ty).clone(),
-        };
-        wrapper_sig.output =
-            parse_quote!(-> ::core::result::Result<#inner_output, #split_loader_error>);
+        // `fallible` keeps the user's own signature: they must return
+        // `Result<_, E>` where `E: From<SplitLoaderError>`. We do NOT synthesize
+        // the return type. `#preload_name().await?` converts a load failure into
+        // the user's `E` via `?`/`From`, so a use-site can fold it straight into
+        // a framework error (e.g. leptos surfacing it to `<ErrorBoundary>`).
         (
             quote!(-> ::core::result::Result<(), #split_loader_error>),
             quote! { return #ensure_loaded; },
@@ -312,7 +313,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             quote! { #[allow(unreachable_code)] ::core::result::Result::Ok(()) },
             quote! {
                 #preload_name().await?;
-                ::core::result::Result::Ok({ #compute_result })
+                #compute_result
             },
         )
     } else {
