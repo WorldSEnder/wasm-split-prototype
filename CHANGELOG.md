@@ -1,18 +1,12 @@
 ## Unreleased
 
 - A failed split-module load is no longer cached for the lifetime of the session
-  (one transient network failure used to permanently break the module — see
-  #35). On the Rust side the loader now uses `async_once_cell::OnceCell` instead
-  of `Lazy`, so a load that fails leaves the cell uninitialized rather than
-  memoizing the failure, and `makeLoad` likewise memoizes only successful loads —
-  a later load attempt (e.g. on the next navigation) starts fresh. Recovery is
-  driven by the caller rather than forced retries: `ensure_loaded` now returns
-  `Result<(), SplitLoaderError>`, and `#[wasm_split(..)]` gains a `fallible`
-  option that makes the generated wrapper return
-  `Result<_, SplitLoaderError>` and propagate the load error instead of
-  panicking (a panic aborts the whole wasm module). The generated `preload`
-  function returns the same `Result`. Without `fallible` the wrapper still
-  `.expect()`s a successful load, preserving the previous behavior.
+  (one transient network failure used to permanently break the module; see #35).
+  Only successful loads are now memoized, so a later load attempt starts fresh.
+  `ensure_loaded` returns `Result<(), SplitLoaderError>`, and `#[wasm_split(..)]`
+  gains a `fallible` option that makes the generated wrapper return the load
+  error instead of panicking. Without `fallible` the wrapper still expects a
+  successful load, as before.
 
 ## wasm_split_helpers v0.2.1
 

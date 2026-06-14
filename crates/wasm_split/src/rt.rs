@@ -13,12 +13,10 @@ pub type LoadFn = unsafe extern "C" fn(LoadCallbackFn, *const c_void) -> ();
 
 /// A split-module load attempt failed.
 ///
-/// The failure is **not** cached: a later [`ensure_loaded`] call (or a later
-/// invocation of a `fallible` split function / its `preload`) starts a fresh
-/// attempt, so a transient network failure can be recovered from simply by
-/// retrying. See CHANGELOG / issue #35.
+/// Exact error information is currently not tracked but logged to the browser
+/// console. If you need access to the details, please open an issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SplitLoaderError;
+pub struct SplitLoaderError(());
 
 impl std::fmt::Display for SplitLoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -28,15 +26,10 @@ impl std::fmt::Display for SplitLoaderError {
 
 impl std::error::Error for SplitLoaderError {}
 
-/// Loads a split module on demand.
+/// Loads a split module on demand, memoizing only successful loads.
 ///
-/// Backed by [`async_once_cell::OnceCell`]: a *successful* load is memoized so
-/// the module is only ever loaded once, but a *failed* load leaves the cell
-/// uninitialized, so a later `ensure_loaded` call retries from scratch. This is
-/// what prevents a single transient load failure (flaky network, aborted
-/// request) from bricking the split module for the lifetime of the session.
-/// The failure is surfaced as [`SplitLoaderError`] rather than cached, so the
-/// caller decides whether to retry. See CHANGELOG / issue #35.
+/// A failed load leaves the loader uninitialized, so a later `ensure_loaded`
+/// retries from scratch rather than caching the failure for the session.
 pub struct LazySplitLoader {
     load: LoadFn,
     cell: OnceCell<()>,
@@ -59,24 +52,21 @@ impl LazySplitLoader {
 /// Ensures the split module is loaded, returning [`SplitLoaderError`] if the
 /// load attempt failed.
 ///
-/// On failure the loader state is left uninitialized rather than caching the
-/// error, so simply calling `ensure_loaded` again starts a fresh attempt — this
-/// is how a transient network failure is recovered from. A `#[wasm_split(..)]`
-/// function opts into seeing this error by adding the `fallible` option;
-/// otherwise the generated wrapper `.expect()`s success.
+/// On failure the loader is left uninitialized rather than caching the error,
+/// so calling `ensure_loaded` again starts a fresh attempt. A `#[wasm_split(..)]`
+/// function opts into seeing this error via the `fallible` option; otherwise the
+/// generated wrapper expects a successful load.
 pub async fn ensure_loaded(loader: Pin<&LazySplitLoader>) -> Result<(), SplitLoaderError> {
     // SAFETY: pin projection; `LazySplitLoader` is never moved out of.
     let loader = loader.get_ref();
-    // `OnceCell` runs the init future once, serializing concurrent callers onto
-    // a single in-flight attempt and waking them all when it settles. On `Err`
-    // the cell stays empty, so a subsequent `ensure_loaded` starts a fresh
-    // attempt rather than caching the failure.
+    // `OnceCell` runs the init future once, serializing concurrent callers onto a
+    // single in-flight attempt. On `Err` the cell stays empty, so a later call
+    // starts a fresh attempt rather than caching the failure.
     loader
         .cell
         .get_or_try_init(SplitLoaderFuture::new(loader.load))
         .await
-        .map(|_: &()| ())
-        .map_err(|()| SplitLoaderError)
+        .map(|_| ())
 }
 
 unsafe extern "C" fn load_callback(loader: *const c_void, success: bool) {
@@ -84,67 +74,69 @@ unsafe extern "C" fn load_callback(loader: *const c_void, success: bool) {
     unsafe { Arc::<SplitLoader>::from_raw(loader.cast()) }.complete(success);
 }
 
-/// Bridges the FFI callback into a `Future`. One instance exists per load
-/// attempt and is polled by exactly one task (`OnceCell` serializes init), so a
-/// single optional waker suffices — there is no need to track multiple waiters
-/// here. Resolves `Ok(())` on success and `Err(())` on failure.
+enum SplitLoaderFutState {
+    Deferred(LoadFn),
+    Pending(Arc<SplitLoader>),
+}
+
 struct SplitLoaderFuture {
-    load: LoadFn,
-    shared: Option<Arc<SplitLoader>>,
+    state: SplitLoaderFutState,
 }
 
 impl SplitLoaderFuture {
-    fn new(load: LoadFn) -> Self {
-        Self { load, shared: None }
-    }
-}
-
-impl Future for SplitLoaderFuture {
-    type Output = Result<(), ()>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), ()>> {
-        match &self.shared {
-            // First poll: kick off the load. The callback (sync or async) drives
-            // `complete`. Not under any lock, so a synchronous callback is fine.
-            None => {
-                let shared = Arc::new(SplitLoader {
-                    state: Mutex::new(SplitLoaderState::Pending(Some(cx.waker().clone()))),
-                });
-                // SAFETY: contract upheld by the caller of `LazySplitLoader::new`;
-                // the matching `from_raw` happens in `load_callback`.
-                unsafe {
-                    (self.load)(
-                        load_callback,
-                        Arc::<SplitLoader>::into_raw(shared.clone()).cast(),
-                    )
-                };
-                // A synchronous callback may already have marked it Done.
-                let done = shared.state.lock().expect("lock poisoned").done_value();
-                self.shared = Some(shared);
-                match done {
-                    Some(success) => Poll::Ready(ok_or_err(success)),
-                    None => Poll::Pending,
-                }
-            }
-            Some(shared) => {
-                let mut state = shared.state.lock().expect("lock poisoned");
-                match &mut *state {
-                    SplitLoaderState::Done(success) => Poll::Ready(ok_or_err(*success)),
-                    SplitLoaderState::Pending(waker) => {
-                        *waker = Some(cx.waker().clone());
-                        Poll::Pending
-                    }
-                }
-            }
+    const fn new(load: LoadFn) -> Self {
+        SplitLoaderFuture {
+            state: SplitLoaderFutState::Deferred(load),
         }
     }
 }
 
-fn ok_or_err(success: bool) -> Result<(), ()> {
+impl Future for SplitLoaderFuture {
+    type Output = Result<(), SplitLoaderError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), SplitLoaderError>> {
+        match self.state {
+            SplitLoaderFutState::Deferred(load) => {
+                let shared_state = Arc::new(SplitLoader {
+                    state: Mutex::new(SplitLoaderState::Waiting(cx.waker().clone())),
+                });
+                // SAFETY: the contract is upheld by the caller of `LazySplitLoader::new`;
+                // the matching `from_raw` happens in `load_callback`. A synchronous
+                // callback completes `shared_state` and wakes this waker, so the future
+                // is re-polled and observes `Done` below.
+                unsafe {
+                    load(
+                        load_callback,
+                        Arc::<SplitLoader>::into_raw(shared_state.clone()).cast(),
+                    )
+                };
+                self.state = SplitLoaderFutState::Pending(shared_state);
+                Poll::Pending
+            }
+            SplitLoaderFutState::Pending(ref state) => state.update(|state| match state {
+                SplitLoaderState::Done(value) => Poll::Ready(load_result(*value)),
+                SplitLoaderState::Waiting(ref mut waker) => {
+                    *waker = cx.waker().clone();
+                    Poll::Pending
+                }
+            }),
+        }
+    }
+}
+
+// our future should never get canceled before completion. We could assert this?
+// impl Drop for SplitLoaderFuture { }
+
+/// Maps the success flag from the load callback into the public load result.
+/// This is the single place a [`SplitLoaderError`] is constructed, ready to
+/// carry richer detail in the future.
+fn load_result(success: bool) -> Result<(), SplitLoaderError> {
+    // Equivalent to `success.then_some(()).ok_or(SplitLoaderError(()))`, or
+    // `success.ok_or(SplitLoaderError(()))` should `bool::ok_or` ever stabilize.
     if success {
         Ok(())
     } else {
-        Err(())
+        Err(SplitLoaderError(()))
     }
 }
 
@@ -153,35 +145,27 @@ struct SplitLoader {
 }
 
 impl SplitLoader {
+    /// Runs `f` while holding the state lock. Keeping every caller's closure
+    /// panic-free is what guarantees the lock is never poisoned, so the
+    /// `expect("lock poisoned")` never fires.
+    fn update<R>(&self, f: impl FnOnce(&mut SplitLoaderState) -> R) -> R {
+        let mut state = self.state.lock().expect("lock poisoned");
+        f(&mut state)
+    }
     fn complete(&self, value: bool) {
-        let waker = {
-            let mut state = self.state.lock().expect("lock poisoned");
-            match std::mem::replace(&mut *state, SplitLoaderState::Done(value)) {
-                SplitLoaderState::Pending(waker) => waker,
-                // Calling back twice for one invocation violates the documented
-                // load contract (and would already have been a double `from_raw`
-                // in `load_callback`); nothing useful to do here.
-                SplitLoaderState::Done(_) => None,
+        self.update(|state| {
+            if let SplitLoaderState::Waiting(waker) =
+                std::mem::replace(state, SplitLoaderState::Done(value))
+            {
+                waker.wake();
             }
-        };
-        if let Some(waker) = waker {
-            waker.wake();
-        }
+        });
     }
 }
 
 enum SplitLoaderState {
-    Pending(Option<Waker>),
+    Waiting(Waker),
     Done(bool),
-}
-
-impl SplitLoaderState {
-    fn done_value(&self) -> Option<bool> {
-        match self {
-            SplitLoaderState::Done(v) => Some(*v),
-            SplitLoaderState::Pending(_) => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -246,7 +230,7 @@ mod tests {
         // A failed load surfaces as `Err` rather than panicking.
         assert_eq!(
             block_on(ensure_loaded(Pin::new(&loader))),
-            Err(SplitLoaderError)
+            Err(SplitLoaderError(()))
         );
         assert_eq!(CALLS.load(Ordering::SeqCst), 1);
 
@@ -286,7 +270,7 @@ mod tests {
             body_runs.fetch_add(1, Ordering::SeqCst);
             42
         }));
-        assert_eq!(first, Err(SplitLoaderError));
+        assert_eq!(first, Err(SplitLoaderError(())));
         assert_eq!(
             body_runs.load(Ordering::SeqCst),
             0,

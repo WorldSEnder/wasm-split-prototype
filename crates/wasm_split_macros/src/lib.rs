@@ -133,11 +133,11 @@ impl Parse for Args {
 ///   Example use case: `return_wrapper( let future = _ ; { future.await } -> Output)` to `await` a future directly in
 ///   the wrapper.
 /// - `preload( $( #[$attr] )* $preload_name:ident )` generates an additional preload function `$preload_name` with the
-///   signature `async fn() -> Result<(), wasm_split_helpers::rt::SplitLoaderError>` which can be used to fetch the
+///   signature `async fn() -> Result<(), wasm_split_helpers::SplitLoaderError>` which can be used to fetch the
 ///   module in which the wrapped function is contained without calling it. A failed load is reported as `Err` and is
 ///   not cached, so calling the preload again retries.
 /// - `fallible` wraps the generated wrapper's return type in
-///   `Result<_, wasm_split_helpers::rt::SplitLoaderError>` and returns `Err` when the module fails to load, instead of
+///   `Result<_, wasm_split_helpers::SplitLoaderError>` and returns `Err` when the module fails to load, instead of
 ///   panicking (a panic aborts the whole wasm module). Without this option the wrapper `.expect()`s a successful load.
 ///   The failure is never cached, so a later call retries from scratch.
 ///
@@ -283,13 +283,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
         }};
     }
 
-    // The generated `preload` function surfaces a load failure as
-    // `Result<(), SplitLoaderError>`. With the `fallible` option, the wrapper
-    // propagates that error: its return type is wrapped in `Result<_, _>` and a
-    // failed load returns `Err` instead of panicking (a panic aborts the whole
-    // wasm module). Without it, the wrapper `.expect()`s success, preserving the
-    // historical behavior.
-    let split_loader_error = quote!(#wasm_split_path::rt::SplitLoaderError);
+    let split_loader_error = quote!(#wasm_split_path::SplitLoaderError);
     let load_and_compute = if fallible {
         let inner_output: syn::Type = match &wrapper_sig.output {
             ReturnType::Default => parse_quote!(()),
