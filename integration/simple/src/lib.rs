@@ -46,6 +46,11 @@ fn fallible_lazy() -> u32 {
     42
 }
 
+#[wasm_split(fallible_preload_split, preload(preload_fallible), fallible)]
+fn fallible_preloadable() -> u32 {
+    42
+}
+
 pub static SHARED_MUT: AtomicU32 = AtomicU32::new(0xdead);
 
 #[wasm_split(shared_mut)]
@@ -101,7 +106,9 @@ mod tests {
 
     #[test]
     pub async fn it_can_preload_a_split() {
-        crate::preload_it().await.expect("preload should succeed");
+        // A non-`fallible` preload keeps its `async fn() -> ()` signature, so
+        // this awaits a `()` (no `Result` to handle) exactly as before.
+        crate::preload_it().await;
         assert_eq!(
             crate::preloadable().await,
             42,
@@ -116,6 +123,15 @@ mod tests {
             Ok(42),
             "a fallible wrapper returns Ok(_) on a successful load"
         );
+    }
+
+    #[test]
+    pub async fn it_supports_fallible_preload() {
+        // With `fallible`, the preload returns `Result<(), SplitLoaderError>`.
+        crate::preload_fallible()
+            .await
+            .expect("preload should succeed");
+        assert_eq!(crate::fallible_preloadable().await, Ok(42));
     }
 
     #[test]

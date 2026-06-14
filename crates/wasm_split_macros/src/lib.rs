@@ -132,14 +132,14 @@ impl Parse for Args {
 ///
 ///   Example use case: `return_wrapper( let future = _ ; { future.await } -> Output)` to `await` a future directly in
 ///   the wrapper.
-/// - `preload( $( #[$attr] )* $preload_name:ident )` generates an additional preload function `$preload_name` with the
-///   signature `async fn() -> Result<(), wasm_split_helpers::SplitLoaderError>` which can be used to fetch the
-///   module in which the wrapped function is contained without calling it. A failed load is reported as `Err` and is
-///   not cached, so calling the preload again retries.
-/// - `fallible` wraps the generated wrapper's return type in
-///   `Result<_, wasm_split_helpers::SplitLoaderError>` and returns `Err` when the module fails to load, instead of
-///   panicking (a panic aborts the whole wasm module). Without this option the wrapper `.expect()`s a successful load.
-///   The failure is never cached, so a later call retries from scratch.
+/// - `preload( $( #[$attr] )* $preload_name:ident )` generates an additional preload function `$preload_name` that
+///   fetches the module in which the wrapped function is contained without calling it. Its signature is `async fn()`
+///   and a hard load failure panics, matching the wrapper; with the `fallible` option it instead returns
+///   `Result<(), wasm_split_helpers::SplitLoaderError>`.
+/// - `fallible` makes the generated wrapper (and the `preload` function, if any) return
+///   `Result<_, wasm_split_helpers::SplitLoaderError>`, surfacing a load failure as `Err` instead of panicking (a panic
+///   aborts the whole wasm module). Without this option both keep their infallible signatures and a hard load failure
+///   panics, as before. The failure is never cached, so a later call retries from scratch.
 ///
 /// [this blog post]: https://blog.rust-lang.org/2026/04/04/changes-to-webassembly-targets-and-handling-undefined-symbols/#what-is-going-to-break-and-how-to-fix
 #[proc_macro_attribute]
@@ -284,22 +284,47 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     }
 
     let split_loader_error = quote!(#wasm_split_path::SplitLoaderError);
-    let load_and_compute = if fallible {
+    // The load is awaited inside `preload`. With `fallible`, both the wrapper
+    // and `preload` surface a load failure as `Result<_, SplitLoaderError>`;
+    // without it they keep their infallible signatures and a hard failure
+    // panics, exactly as before. Keeping `preload` infallible by default is
+    // load-bearing: existing callers expect `async fn() -> ()` — e.g. leptos's
+    // `LazyRoute::preload` is typed `Output = ()` — and changing that
+    // unconditionally would break them.
+    let ensure_loaded = quote! {
+        #wasm_split_path::rt::ensure_loaded(::core::pin::Pin::static_ref({
+            // SAFETY: the imported c function correctly implements the callback
+            static LOADER: #wasm_split_path::rt::LazySplitLoader = unsafe { #wasm_split_path::rt::LazySplitLoader::new(#load_module_ident) };
+            &LOADER
+        })).await
+    };
+    let (preload_output, preload_load, preload_tail, load_and_compute) = if fallible {
         let inner_output: syn::Type = match &wrapper_sig.output {
             ReturnType::Default => parse_quote!(()),
             ReturnType::Type(_, ty) => (**ty).clone(),
         };
         wrapper_sig.output =
             parse_quote!(-> ::core::result::Result<#inner_output, #split_loader_error>);
-        quote! {
-            #preload_name().await?;
-            ::core::result::Result::Ok({ #compute_result })
-        }
+        (
+            quote!(-> ::core::result::Result<(), #split_loader_error>),
+            quote! { return #ensure_loaded; },
+            // On non-wasm targets the function is called directly; nothing to load.
+            quote! { #[allow(unreachable_code)] ::core::result::Result::Ok(()) },
+            quote! {
+                #preload_name().await?;
+                ::core::result::Result::Ok({ #compute_result })
+            },
+        )
     } else {
-        quote! {
-            #preload_name().await.expect("failed to load split module");
-            #compute_result
-        }
+        (
+            quote!(),
+            quote! { #ensure_loaded.expect("load callback should succeed"); },
+            quote!(),
+            quote! {
+                #preload_name().await;
+                #compute_result
+            },
+        )
     };
 
     let mut extra_code = quote! {};
@@ -318,7 +343,7 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     quote! {
         // This could have weak linkage to unify all mentions of the same module
         #( #preload_attrs )*
-        #vis async fn #preload_name () -> ::core::result::Result<(), #split_loader_error> {
+        #vis async fn #preload_name () #preload_output {
             #[cfg(target_family = "wasm")]
             #[link(wasm_import_module = #link_name)]
             unsafe extern "C" {
@@ -327,15 +352,9 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
             }
             #[cfg(target_family = "wasm")]
             {
-                return #wasm_split_path::rt::ensure_loaded(::core::pin::Pin::static_ref({
-                    // SAFETY: the imported c function correctly implements the callback
-                    static LOADER: #wasm_split_path::rt::LazySplitLoader = unsafe { #wasm_split_path::rt::LazySplitLoader::new(#load_module_ident) };
-                    &LOADER
-                })).await;
+                #preload_load
             }
-            // On non-wasm targets the function is called directly; nothing to load.
-            #[allow(unreachable_code)]
-            ::core::result::Result::Ok(())
+            #preload_tail
         }
         #(#attrs)*
         #vis #wrapper_sig {
