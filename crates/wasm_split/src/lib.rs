@@ -22,6 +22,10 @@
 
 pub use wasm_split_macros::wasm_split;
 
+/// The error returned by a `fallible` split function (and `preload`) when its
+/// module fails to load.
+pub use rt::SplitLoaderError;
+
 #[doc(hidden)]
 pub mod rt;
 

@@ -1,3 +1,14 @@
+## Unreleased
+
+- A failed split-module load is no longer cached for the lifetime of the session
+  (one transient network failure used to permanently break the module; see #35).
+  Only successful loads are now memoized, so a later load attempt starts fresh.
+  `ensure_loaded` returns `Result<(), SplitLoaderError>`, and `#[wasm_split(..)]`
+  gains a `fallible` option that makes the generated wrapper (and its `preload`)
+  return the load error instead of panicking. Without `fallible` the wrapper and
+  `preload` keep their previous infallible signatures and a hard failure panics,
+  as before.
+
 ## wasm_split_helpers v0.2.1
 
 - Improved resilience against multiple versions of the lib being included, mainly working around akward usage of `#[link_section]`
