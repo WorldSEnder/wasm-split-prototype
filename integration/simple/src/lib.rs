@@ -139,9 +139,8 @@ mod tests {
 
     #[test]
     pub async fn it_can_preload_a_split() {
-        // A non-`fallible` preload keeps its `async fn() -> ()` signature, so
-        // this awaits a `()` (no `Result` to handle) exactly as before.
-        crate::preload_it().await;
+        // A non-`fallible` preload `expects` the load to succeed.
+        let () = crate::preload_it().await;
         assert_eq!(
             crate::preloadable().await,
             42,
