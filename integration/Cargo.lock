@@ -513,7 +513,7 @@ checksum = "3746ad029217960123cf2ebf939dda51eb931ba9f8f09c117e39c820b96aa794"
 
 [[package]]
 name = "wasm_split_helpers"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-once-cell",
  "wasm_split_macros",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "wasm_split_macros"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base16",
  "quote",
