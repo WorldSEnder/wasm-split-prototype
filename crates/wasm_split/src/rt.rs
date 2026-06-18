@@ -1,6 +1,7 @@
 use std::{
     ffi::c_void,
     future::Future,
+    marker::PhantomData,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
@@ -15,8 +16,13 @@ pub type LoadFn = unsafe extern "C" fn(LoadCallbackFn, *const c_void) -> ();
 ///
 /// Exact error information is currently not tracked but logged to the browser
 /// console. If you need access to the details, please open an issue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SplitLoaderError(());
+#[derive(Debug, Clone)]
+pub struct SplitLoaderError {
+    // Future proofs the impl by not making the struct Send+Sync,
+    // in case we want to capture a JsValue in the future without that being
+    // a breaking change
+    _not_send_sync: PhantomData<*const u8>,
+}
 
 impl std::fmt::Display for SplitLoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -136,7 +142,9 @@ fn load_result(success: bool) -> Result<(), SplitLoaderError> {
     if success {
         Ok(())
     } else {
-        Err(SplitLoaderError(()))
+        Err(SplitLoaderError {
+            _not_send_sync: PhantomData,
+        })
     }
 }
 
@@ -228,18 +236,24 @@ mod tests {
         let loader = unsafe { LazySplitLoader::new(scripted_load) };
 
         // A failed load surfaces as `Err` rather than panicking.
-        assert_eq!(
-            block_on(ensure_loaded(Pin::new(&loader))),
-            Err(SplitLoaderError(()))
+        assert!(
+            block_on(ensure_loaded(Pin::new(&loader))).is_err(),
+            "first call should fail"
         );
         assert_eq!(CALLS.load(Ordering::SeqCst), 1);
 
         // The failure must NOT be cached: a later call starts fresh and succeeds.
-        assert!(block_on(ensure_loaded(Pin::new(&loader))).is_ok());
+        assert!(
+            block_on(ensure_loaded(Pin::new(&loader))).is_ok(),
+            "second call should succeed"
+        );
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
 
         // And once loaded it stays memoized.
-        assert!(block_on(ensure_loaded(Pin::new(&loader))).is_ok());
+        assert!(
+            block_on(ensure_loaded(Pin::new(&loader))).is_ok(),
+            "third call should still succeed"
+        );
         assert_eq!(CALLS.load(Ordering::SeqCst), 2);
     }
 
@@ -270,7 +284,7 @@ mod tests {
             body_runs.fetch_add(1, Ordering::SeqCst);
             42
         }));
-        assert_eq!(first, Err(SplitLoaderError(())));
+        assert!(first.is_err(), "first call should fail");
         assert_eq!(
             body_runs.load(Ordering::SeqCst),
             0,
@@ -283,7 +297,7 @@ mod tests {
             body_runs.fetch_add(1, Ordering::SeqCst);
             42
         }));
-        assert_eq!(second, Ok(42));
+        assert!(matches!(second, Ok(42)), "second call should succeed");
         assert_eq!(body_runs.load(Ordering::SeqCst), 1);
     }
 }

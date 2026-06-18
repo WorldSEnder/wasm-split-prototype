@@ -20,6 +20,7 @@
 //! # let _ = check_passphrase;
 //! ```
 
+/// [`SplitLoaderError`]: crate::SplitLoaderError
 pub use wasm_split_macros::wasm_split;
 
 /// The error returned by a `fallible` split function (and `preload`) when its

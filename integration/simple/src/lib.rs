@@ -101,6 +101,35 @@ mod tests {
     #[cfg(target_family = "wasm")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
+    /// Shim for std::assert_matches! which got stabilized in 1.96
+    macro_rules! assert_matches {
+        ($scrut:expr, $(|)? $( $pattern:pat_param )|+ $( if $guard: expr )? $(,)?) => {
+            match $scrut {
+                $( $pattern )|+ $( if $guard )? => {}
+                ref scrutinee => panic!(
+                    "\
+assertion `scrutinee matches pattern` failed
+ scrutinee: {scrutinee:?}
+   pattern: {}",
+                    std::stringify!($($pattern)|+ $(if $guard)?)
+                ),
+            }
+        };
+        ($scrut:expr, $(|)? $( $pattern:pat_param )|+ $( if $guard: expr )? , $($arg:tt)+) => {
+            match $scrut {
+                $( $pattern )|+ $( if $guard )? => {}
+                ref scrutinee => panic!(
+                    "\
+assertion `scrutinee matches pattern` failed: {}
+ scrutinee: {scrutinee:?}
+   pattern: {}",
+                    std::format_args!( $($arg)+ ),
+                    std::stringify!($($pattern)|+ $(if $guard)?)
+                ),
+            }
+        };
+    }
+
     #[test]
     pub async fn it_runs() {
         assert_eq!(
@@ -150,7 +179,7 @@ mod tests {
 
     #[test]
     pub async fn it_supports_fallible_wrappers() {
-        assert_eq!(
+        assert_matches!(
             crate::fallible_lazy().await,
             Ok(42),
             "a fallible wrapper returns Ok(_) on a successful load"
@@ -163,20 +192,20 @@ mod tests {
         crate::preload_fallible()
             .await
             .expect("preload should succeed");
-        assert_eq!(crate::fallible_preloadable().await, Ok(42));
+        assert_matches!(crate::fallible_preloadable().await, Ok(42));
     }
 
     #[test]
     pub async fn it_supports_fallible_custom_error() {
         // The wrapper keeps the user's signature; a load failure would convert
         // into `DemoError` via `From<SplitLoaderError>`. On success it is `Ok`.
-        assert_eq!(crate::custom_err_lazy().await, Ok(42));
+        assert_matches!(crate::custom_err_lazy().await, Ok(42));
     }
 
     #[test]
     pub async fn it_supports_fallible_with_return_wrapper() {
         // `fallible` + `return_wrapper` (the leptos async-view shape).
-        assert_eq!(crate::fallible_async().await, Ok(42));
+        assert_matches!(crate::fallible_async().await, Ok(42));
     }
 
     #[test]

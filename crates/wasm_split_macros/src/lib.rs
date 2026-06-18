@@ -99,7 +99,7 @@ impl Parse for Args {
 /// Indicate a function as a split point.
 ///
 /// The macro emits a function with the same signature, except that it is `async`. Calls to this function will first load
-/// the module into which the input function was split into before forwarding the arguments and the result. On non-`wasm`
+/// the module into which the annotated function was split into before forwarding the arguments and the result. On non-`wasm`
 /// targets, the function will be called directly.
 ///
 /// The annotated function must fulfill the requirements a typical `extern` declared function must fufill:
@@ -135,15 +135,17 @@ impl Parse for Args {
 /// - `preload( $( #[$attr] )* $preload_name:ident )` generates an additional preload function `$preload_name` that
 ///   fetches the module in which the wrapped function is contained without calling it. Its signature is `async fn()`
 ///   and a hard load failure panics, matching the wrapper; with the `fallible` option it instead returns
-///   `Result<(), wasm_split_helpers::SplitLoaderError>`.
+///   `Result<(), $wasm_split_path::SplitLoaderError>`. See also [`SplitLoaderError`][].
 /// - `fallible` surfaces a load failure as `Err` instead of panicking (a panic aborts the whole wasm module). The
-///   annotated function must return `Result<_, E>` where `E: From<wasm_split_helpers::SplitLoaderError>`; the macro
+///   annotated function must return `Result<_, E>` where `E: From<$wasm_split_path::SplitLoaderError>`; the macro
 ///   leaves that signature untouched and converts a load failure into your `E` via `?`, so a use-site can fold it
 ///   straight into a framework-specific error. The generated `preload` function (if any) returns
-///   `Result<(), wasm_split_helpers::SplitLoaderError>`. Without this option both keep their infallible signatures and
-///   a hard load failure panics, as before. The failure is never cached, so a later call retries from scratch.
+///   `Result<(), $wasm_split_path::SplitLoaderError>`. Without this option both keep their infallible signatures and
+///   a hard load failure panics. The failure is not cached, so a later call retries from scratch. See also
+///   [`SplitLoaderError`][].
 ///
 /// [this blog post]: https://blog.rust-lang.org/2026/04/04/changes-to-webassembly-targets-and-handling-undefined-symbols/#what-is-going-to-break-and-how-to-fix
+/// [`SplitLoaderError`]: https://docs.rs/wasm_split_helpers/0.2.2/wasm_split_helpers/struct.SplitLoaderError.html
 #[proc_macro_attribute]
 pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
     let Args {
