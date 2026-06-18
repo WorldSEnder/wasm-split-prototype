@@ -1,6 +1,7 @@
 use std::{
     ffi::c_void,
     future::Future,
+    marker::PhantomData,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
@@ -16,7 +17,12 @@ pub type LoadFn = unsafe extern "C" fn(LoadCallbackFn, *const c_void) -> ();
 /// Exact error information is currently not tracked but logged to the browser
 /// console. If you need access to the details, please open an issue.
 #[derive(Debug, Clone)]
-pub struct SplitLoaderError(());
+pub struct SplitLoaderError {
+    // Future proofs the impl by not making the struct Send+Sync,
+    // in case we want to capture a JsValue in the future without that being
+    // a breaking change
+    _not_send_sync: PhantomData<*const u8>,
+}
 
 impl std::fmt::Display for SplitLoaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -136,7 +142,9 @@ fn load_result(success: bool) -> Result<(), SplitLoaderError> {
     if success {
         Ok(())
     } else {
-        Err(SplitLoaderError(()))
+        Err(SplitLoaderError {
+            _not_send_sync: PhantomData,
+        })
     }
 }
 
