@@ -5,4 +5,5 @@ unset RUSTUP_TOOLCHAIN CARGO # make sure the below invocation is done with the t
 export XCARGO_BIN_NAME="$CARGO_BIN_NAME"
 export XCARGO_MANIFEST_DIR="$CARGO_MANIFEST_DIR"
 export XCARGO_TARGET_TMPDIR="$CARGO_TARGET_TMPDIR"
+export XCARGO_PKG_NAME="$CARGO_PKG_NAME"
 cargo run --release -p wasm-split-test-runner -- "$@"

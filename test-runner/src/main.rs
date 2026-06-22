@@ -68,6 +68,19 @@ fn wasm_split_cli(target: &Path, dir: &Path) -> Result<(PathBuf, Report)> {
     Ok((main_file, report))
 }
 
+fn find_build_tempdir_root(target: &Path) -> PathBuf {
+    let build_dir = target
+        .parent()
+        .expect("strip executable name")
+        .parent()
+        .expect("strip profile name");
+    let out_path = build_dir
+        .join("wasm-split-integration")
+        .join(std::env::var_os("XCARGO_PKG_NAME").expect("pkg name set by runner script"));
+    std::fs::create_dir_all(&out_path).expect("make temp dir host");
+    out_path
+}
+
 pub fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -78,7 +91,8 @@ pub fn main() -> Result<()> {
         .expect("env variable to manifest should be set by runner script");
 
     let target = Path::new(&target);
-    let mut tempdir = tempfile::tempdir()?;
+    let target_tempdir = find_build_tempdir_root(target);
+    let mut tempdir = tempfile::Builder::new().tempdir_in(&target_tempdir)?;
     tempdir.disable_cleanup(true); // keep the dir for debugging
     eprintln!(
         "Splitting wasm from {target_manifest_dir} in {}",
