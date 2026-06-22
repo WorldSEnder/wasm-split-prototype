@@ -28,13 +28,14 @@ pub(crate) struct EmitState<'a> {
     data_relocations: DataEmitInfo,
     shared_names: HashMap<DepNode, Cow<'a, str>>,
     no_reloc_stubs: HashSet<InputFuncId>,
+    canary_import_name: &'a str,
 }
 
 impl<'a> EmitState<'a> {
     pub(crate) fn new(
         input_options: &'a crate::Options<'a>,
         module: &'a InputModule<'a>,
-        program_info: &SplitProgramInfo,
+        program_info: &'a SplitProgramInfo,
         link_module: &'a str,
         no_reloc_stubs: HashSet<InputFuncId>,
     ) -> Result<Self> {
@@ -86,7 +87,12 @@ impl<'a> EmitState<'a> {
             data_relocations,
             shared_names,
             no_reloc_stubs,
+            canary_import_name: program_info.canary_export_name(),
         })
+    }
+
+    pub(crate) fn input(&self) -> &InputModule<'_> {
+        self.input_module
     }
 
     fn get_indirect_function_table_type(&self) -> wasmparser::TableType {
@@ -854,6 +860,17 @@ impl<'a> ModuleEmitState<'a> {
                 &imp.module
             };
             section.import(module, &imp.name, EntityType::try_from(imp.ty).unwrap());
+        }
+        if !self.is_main() && self.emit_state.input_module.options.debug_assertions {
+            section.import(
+                "__wasm_split",
+                self.emit_state.canary_import_name,
+                EntityType::Global(wasm_encoder::GlobalType {
+                    val_type: wasm_encoder::ValType::I32,
+                    mutable: false,
+                    shared: false,
+                }),
+            );
         }
         self.output_module.section(&section);
     }

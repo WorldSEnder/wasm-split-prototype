@@ -21,9 +21,14 @@ jobs:
         with:
           toolchain: nightly
           components: rustfmt
-      - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            integration
+            test-runner
 
       - run: just fmt-check
 
@@ -35,9 +40,14 @@ jobs:
         with:
           toolchain: nightly
           components: clippy
-      - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            integration
+            test-runner
 
       - run: just clippy
 
@@ -52,9 +62,14 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            integration
+            test-runner
 
       - name: Run integration tests
         run: xvfb-run just test-integrations

@@ -1,3 +1,7 @@
+## wasm_split_cli v0.2.2
+
+- Add a canary import to diagnose modules getting loaded from different compilation units.
+
 ## wasm_split_helpers v0.2.2
 
 - A failed split-module load is no longer cached for the lifetime of the session
