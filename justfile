@@ -4,7 +4,7 @@ set positional-arguments
 test-integrations toolchain="":
     cargo ${1:+"$1"} test --target wasm32-unknown-unknown --workspace
     cargo ${1:+"$1"} test --workspace
-    cargo ${1:+"$1"} test --target wasm32-unknown-unknown --config profile.test.opt-level=3
+    XCARGO_REPORT_TAG=opt cargo ${1:+"$1"} test --target wasm32-unknown-unknown --workspace --config profile.test.opt-level=3
 
 test-all-integrations: (test-integrations "+stable") (test-integrations "+nightly") (test-integrations "+1.84")
 

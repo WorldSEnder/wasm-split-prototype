@@ -7,17 +7,32 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Default)]
+#[serde_with::serde_as]
+#[derive(Default, serde::Serialize)]
 struct Report {
+    #[serde_as(as = "Vec<(_, _)>")]
     file_sizes: HashMap<PathBuf, u64>,
     cli_runtime: Duration,
 }
 
-fn print_report(report: Report, _manifest_dir: &Path) -> Result<()> {
-    eprintln!("Split in {:?}", report.cli_runtime);
-    for (module, size) in report.file_sizes {
-        eprintln!("{}\t{size}", module.display());
-    }
+fn print_report(report: Report, report_dir: &Path) -> Result<()> {
+    let branded_report_name = format!(
+        "report-{}{}.json",
+        std::env::var("XRUSTUP_TOOLCHAIN").unwrap(),
+        if let Ok(tag) = std::env::var("XCARGO_REPORT_TAG") {
+            format!("-{tag}")
+        } else {
+            String::new()
+        },
+    );
+    let report_path = report_dir.join(branded_report_name);
+    let mut report_file = std::fs::File::options()
+        .write(true)
+        .truncate(true)
+        .create(true)
+        .open(&report_path)
+        .expect("report path to open");
+    serde_json::to_writer_pretty(&mut report_file, &report)?;
     Ok(())
 }
 
@@ -91,8 +106,8 @@ pub fn main() -> Result<()> {
         .expect("env variable to manifest should be set by runner script");
 
     let target = Path::new(&target);
-    let target_tempdir = find_build_tempdir_root(target);
-    let mut tempdir = tempfile::Builder::new().tempdir_in(&target_tempdir)?;
+    let target_report_dir = find_build_tempdir_root(target);
+    let mut tempdir = tempfile::Builder::new().tempdir_in(&target_report_dir)?;
     tempdir.disable_cleanup(true); // keep the dir for debugging
     eprintln!(
         "Splitting wasm from {target_manifest_dir} in {}",
@@ -100,7 +115,7 @@ pub fn main() -> Result<()> {
     );
 
     let (split_main, report) = wasm_split_cli(target, tempdir.path())?;
-    print_report(report, Path::new(&target_manifest_dir))?;
+    print_report(report, &target_report_dir)?;
 
     let mut wbg = wasm_bindgen_test_runner();
     // Currently, testing is ONLY supported in browser mode. For node and others, the wrapper script needs to be
