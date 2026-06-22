@@ -26,5 +26,9 @@ clippy:
 semver-check:
     cargo semver-checks
 
-release-checks: fmt-check clippy all-tests semver-check
-pr-checks: fmt-check clippy all-tests
+[private]
+@clean-dir:
+    git diff --quiet HEAD || (echo >&2 "not in a clean working directory" && exit 1)
+
+release-checks: clean-dir fmt-check clippy all-tests semver-check
+pr-checks: clean-dir fmt-check clippy all-tests

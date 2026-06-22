@@ -4,21 +4,29 @@ use std::{collections::HashMap, fmt::Write, path::Path};
 use crate::{
     dep_graph::DepNode,
     emit::EmitState,
+    read::InputModule,
     split_point::{OutputModuleInfo, SplitModuleIdentifier, SplitProgramInfo},
 };
 
 type PrefetchMap = HashMap<String, Vec<String>>;
-pub struct LinkModuleWriter {
+pub struct LinkModuleWriter<'p> {
+    input_module: &'p InputModule<'p>,
+    program_info: &'p SplitProgramInfo,
     javascript: String,
     prefetch_map: PrefetchMap,
 }
 
-impl LinkModuleWriter {
-    fn new() -> Self {
+impl<'p> LinkModuleWriter<'p> {
+    fn new(program_info: &'p SplitProgramInfo, emit_state: &'p EmitState) -> Self {
         Self {
+            program_info,
+            input_module: emit_state.input(),
             javascript: String::new(),
             prefetch_map: HashMap::new(),
         }
+    }
+    fn canary_name(&self) -> &str {
+        self.program_info.canary_export_name()
     }
     fn write_main_import(&mut self, mod_path: &str) -> Result<()> {
         Ok(writeln!(
@@ -28,12 +36,17 @@ impl LinkModuleWriter {
         )?)
     }
     fn write_get_shared_imports(&mut self, main_shares: &str) -> Result<()> {
+        let canary_props = if self.input_module.options.debug_assertions {
+            format!("{}: ~0xdead,", self.canary_name())
+        } else {
+            String::new()
+        };
         Ok(write!(
             &mut self.javascript,
             r#"let sharedImports = undefined;
 function getSharedImports() {{
     if (sharedImports === undefined) {{
-        sharedImports = {{ __wasm_split: {{ }} }};
+        sharedImports = {{ __wasm_split: {{ {canary_props} }} }};
         const mainExports = initSync(undefined, undefined);
         const {{ {main_shares} }} = mainExports;
         Object.assign(sharedImports.__wasm_split, {{ {main_shares} }});
@@ -47,7 +60,11 @@ function getSharedImports() {{
         self.javascript
             .push_str(include_str!("./snippets/split_wasm.js"));
         self.javascript
-            .push_str(include_str!("./snippets/makeFetch.web.js"));
+            .push_str(if self.input_module.options.debug_assertions {
+                include_str!("./snippets/makeFetch.web.debug.js")
+            } else {
+                include_str!("./snippets/makeFetch.web.js")
+            });
         Ok(())
     }
     fn write_export_const(&mut self, name: &str, def: &impl std::fmt::Display) -> Result<()> {
@@ -153,12 +170,12 @@ fn reexported_shared_symbols(
     Ok(shares)
 }
 
-pub fn link_module(
+pub fn link_module<'p>(
     main_module_path: &str,
-    program_info: &SplitProgramInfo,
-    emit_state: &EmitState,
-) -> Result<LinkModuleWriter> {
-    let mut link_module = LinkModuleWriter::new();
+    program_info: &'p SplitProgramInfo,
+    emit_state: &'p EmitState,
+) -> Result<LinkModuleWriter<'p>> {
+    let mut link_module = LinkModuleWriter::new(program_info, emit_state);
 
     let (_, main_module) = program_info
         .output_modules

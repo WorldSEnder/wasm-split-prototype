@@ -2,7 +2,7 @@
 
 #[path = "./magic_constants.rs"]
 mod magic_constants;
-use magic_constants::{link_section, SubsectionTag, Version};
+use magic_constants::{link_section, FeatureTag, SubsectionTag, Version};
 
 const fn usize_to_u32(len: usize) -> u32 {
     // We ... don't assume usize is bigger or smaller than a u32,
@@ -50,17 +50,31 @@ const fn u32_uleb(num: u32, buffer: &mut [u8]) {
 // | tag: u8 | len: u32 as uleb | payload: [u8; len] |
 // ```
 macro_rules! encode_subsection {
-    ( const ($LEN:ident, fn $encoder:ident) = ($tag:expr, $payload_len:expr, $encode_payload:path) ; ) => {
+    ( tag: $tag:expr, len: $payload_len:expr, $encode_payload:path, $($entropy:expr),* ) => {
         const _PAYLOAD_LEN: u32 = usize_to_u32($payload_len);
-        const $LEN: usize = 1 + u32_uleb_len(_PAYLOAD_LEN) + $payload_len;
-        const fn $encoder(buffer: &mut [u8]) {
-            debug_assert!(buffer.len() == $LEN);
-            let (tag_buf, buffer) = buffer.split_at_mut(1);
-            let (len_buf, payload_buffer) = buffer.split_at_mut(u32_uleb_len(_PAYLOAD_LEN));
-            tag_buf[0] = $tag;
-            u32_uleb(_PAYLOAD_LEN, len_buf);
-            $encode_payload(payload_buffer);
-        }
+        const _SECTION_LEN: usize = 1 + u32_uleb_len(_PAYLOAD_LEN) + $payload_len;
+        const SECTION_CONTENT: [u8; _SECTION_LEN] = {
+            const fn encoder(buffer: &mut [u8]) {
+                debug_assert!(buffer.len() == _SECTION_LEN);
+                let (tag_buf, buffer) = buffer.split_at_mut(1);
+                let (len_buf, payload_buffer) = buffer.split_at_mut(u32_uleb_len(_PAYLOAD_LEN));
+                const TAG: crate::marker::magic_constants::SubsectionTag = $tag;
+                tag_buf[0] = TAG as u8;
+                crate::marker::u32_uleb(_PAYLOAD_LEN, len_buf);
+                $encode_payload(payload_buffer);
+            }
+            let mut buffer = [0; _SECTION_LEN];
+            encoder(&mut buffer);
+            buffer
+        };
+        // #[export_name] is needed so the linker doesn't remove the section. Might be replaced by #[used(linker)] in the future.
+        // See also: https://github.com/rust-lang/rust/issues/56639
+        #[unsafe(export_name = ::core::concat!(::wasm_split_macros::version_stamp!() , $($entropy),* ))]
+        static _MARKER: () = {
+            #[used]
+            #[unsafe(link_section = crate::marker::magic_constants::link_section!())]
+            static _DUMMY: [u8; _SECTION_LEN] = SECTION_CONTENT;
+        };
     };
 }
 
@@ -79,20 +93,24 @@ const fn encode_version(buffer: &mut [u8]) {
 }
 
 encode_subsection! {
-    const (VERSION_SUBSECTION_LEN, fn encode_version_subsection) = (SubsectionTag::Version as u8, VERSION_PAYLOAD_LEN, encode_version);
+    tag: SubsectionTag::Version,
+    len: VERSION_PAYLOAD_LEN,
+    encode_version,
+    "version"
 }
 
-const WASM_SPLIT_VERSION: [u8; VERSION_SUBSECTION_LEN] = {
-    let mut buffer = [0; VERSION_SUBSECTION_LEN];
-    encode_version_subsection(&mut buffer);
-    buffer
-};
+#[cfg(debug_assertions)]
+const _: () = {
+    const FEATURE_PAYLOAD_LEN: usize = 1;
+    const fn encode_feature_debug_assertions(buffer: &mut [u8]) {
+        debug_assert!(buffer.len() == FEATURE_PAYLOAD_LEN);
+        buffer[0] = FeatureTag::CfgDebugAssertions as u8;
+    }
 
-// #[no_mangle] is needed so the linker doesn't remove the section. Might be replaced by #[used(linker)] in the future.
-// See also: https://github.com/rust-lang/rust/issues/56639
-#[unsafe(export_name = wasm_split_macros::version_stamp!())]
-static _MARKER: () = {
-    #[used]
-    #[unsafe(link_section = link_section!())]
-    static _WASM_SPLIT_VERSION: [u8; VERSION_SUBSECTION_LEN] = WASM_SPLIT_VERSION;
+    encode_subsection! {
+        tag: SubsectionTag::Feature,
+        len: FEATURE_PAYLOAD_LEN,
+        encode_feature_debug_assertions,
+        "debug_asserts"
+    }
 };

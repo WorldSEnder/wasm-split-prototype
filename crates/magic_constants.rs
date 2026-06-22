@@ -8,6 +8,11 @@
 #[repr(u8)]
 pub enum SubsectionTag {
     Version = 1,
+    Feature = 2,
+}
+#[repr(u8)]
+pub enum FeatureTag {
+    CfgDebugAssertions = 1,
 }
 // This is a macro instead of a constant so that it can be used in #[link_section]
 macro_rules! __link_section {

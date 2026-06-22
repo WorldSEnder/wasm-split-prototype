@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::{DefaultHasher, Hasher};
 
 use crate::dep_graph::{DepGraph, DepNode};
 use crate::graph_utils::tarjan_scc::{SccEvent, SccId, TarjanSccResult};
@@ -342,6 +343,19 @@ pub struct SplitProgramInfo {
 
     pub shared_deps: HashSet<DepNode>,
     pub symbol_output_module: HashMap<DepNode, usize>,
+    /// A pseudo-unique identifier for the input file and options.
+    /// We get better detection if this differs between compilations, but it should be derived from
+    /// the input deterministically. Options can (and should) influence this if they lead to different
+    /// output modules.
+    pub canary_export_name: String,
+}
+
+impl SplitProgramInfo {
+    /// The name of the additional import included in split modules to verify at link time that they
+    /// are loaded from the correct main module.
+    pub fn canary_export_name(&self) -> &str {
+        &self.canary_export_name
+    }
 }
 
 struct DepGraphAnalysis<'g> {
@@ -543,6 +557,14 @@ pub fn compute_split_modules(
                 .insert(symbol, output_index);
         }
     }
+
+    // This exact implementation can differ between different compilations of the CLI, specifically
+    // between rust versions. That is fine and intended.
+    let mut hasher = DefaultHasher::new();
+    hasher.write(env!("CARGO_PKG_VERSION").as_bytes()); // TODO: hasher.write_str(_) once that's stabilized
+    hasher.write(module.raw);
+    // once options impact the output module, these should be hashed too
+    program_info.canary_export_name = format!("__canary_{:x}", hasher.finish());
 
     Ok(program_info)
 }

@@ -9,7 +9,9 @@ pub use wasmparser::{
 
 use crate::{
     dep_graph::DepNode,
-    magic_constants::{SubsectionTag as WsSubsectionTag, Version as WsVersion},
+    magic_constants::{
+        FeatureTag as WsFeature, SubsectionTag as WsSubsectionTag, Version as WsVersion,
+    },
     reloc::{RelocInfo, RelocInfoParser},
 };
 
@@ -167,6 +169,7 @@ pub struct InputModule<'a> {
     pub imported_func_map: HashMap<ImportId, InputFuncId>,
 
     pub reloc_info: RelocInfo<'a>,
+    pub options: Options,
 }
 
 pub enum Strictness {
@@ -273,7 +276,7 @@ impl<'a> InputModule<'a> {
             }
             if section.name == crate::magic_constants::LINK_SECTION {
                 let rdr = BinaryReader::new(section.data, section.data_offset);
-                let () = read_wasm_split_section(rdr)?;
+                let () = read_wasm_split_section(rdr, &mut module.options)?;
                 num_split_sections_found += 1;
             }
         }
@@ -326,8 +329,13 @@ enum WsReadVersion {
     Known(WsVersion),
     Unknown,
 }
+enum WsReadFeature {
+    Known(WsFeature),
+    Unknown,
+}
 enum WasmSplitSubsection<'a> {
     Version(WsReadVersion),
+    Feature(WsReadFeature),
     Unknown(BinaryReader<'a>),
 }
 fn read_version(reader: &mut BinaryReader<'_>) -> wasmparser::Result<WsReadVersion> {
@@ -338,6 +346,16 @@ fn read_version(reader: &mut BinaryReader<'_>) -> wasmparser::Result<WsReadVersi
         _ => WsReadVersion::Unknown,
     })
 }
+fn read_feature(reader: &mut BinaryReader<'_>) -> wasmparser::Result<WsReadFeature> {
+    let feature = reader.read_u8()?;
+    // TODO: for future version, read an uleb
+    Ok(match feature {
+        feat if feat == WsFeature::CfgDebugAssertions as u8 => {
+            WsReadFeature::Known(WsFeature::CfgDebugAssertions)
+        }
+        _ => WsReadFeature::Unknown,
+    })
+}
 
 impl<'a> Subsection<'a> for WasmSplitSubsection<'a> {
     fn from_reader(id: u8, mut reader: BinaryReader<'a>) -> wasmparser::Result<Self> {
@@ -346,12 +364,23 @@ impl<'a> Subsection<'a> for WasmSplitSubsection<'a> {
                 let version = read_version(&mut reader)?;
                 Ok(Self::Version(version))
             }
+            id if id == WsSubsectionTag::Feature as u8 => {
+                let feature = read_feature(&mut reader)?;
+                Ok(Self::Feature(feature))
+            }
             _ => Ok(Self::Unknown(reader)),
         }
     }
 }
 
-fn read_wasm_split_section(rdr: BinaryReader<'_>) -> Result<()> {
+/// Options found in the web assembly.
+// Make sure these do not depend on the order they are found in.
+#[derive(Default)]
+pub struct Options {
+    pub debug_assertions: bool,
+}
+
+fn read_wasm_split_section(rdr: BinaryReader<'_>, options: &mut Options) -> Result<()> {
     let subsections = Subsections::<WasmSplitSubsection>::new(rdr);
     for subsection in subsections {
         match subsection? {
@@ -362,6 +391,11 @@ fn read_wasm_split_section(rdr: BinaryReader<'_>) -> Result<()> {
             ),
             WasmSplitSubsection::Version(WsReadVersion::Known(WsVersion::Version1)) => {
                 // No additional information at the moment
+            }
+            // features are by design optional to detect!
+            WasmSplitSubsection::Feature(WsReadFeature::Unknown) => {}
+            WasmSplitSubsection::Feature(WsReadFeature::Known(WsFeature::CfgDebugAssertions)) => {
+                options.debug_assertions = true;
             }
             WasmSplitSubsection::Unknown(reader) => {
                 let _ = reader;
