@@ -5,7 +5,7 @@ test-integrations toolchain="":
     cargo ${1:+"$1"} test --target wasm32-unknown-unknown --workspace
     cargo ${1:+"$1"} test --workspace
     XCARGO_REPORT_TAG=opt cargo ${1:+"$1"} test --target wasm32-unknown-unknown --workspace --config profile.test.opt-level=3
-    XCARGO_REPORT_TAG=release cargo ${1:+"$1"} test --target wasm32-unknown-unknown --workspace
+    XCARGO_REPORT_TAG=release cargo ${1:+"$1"} test --target wasm32-unknown-unknown --workspace --release
 
 test-all-integrations: (test-integrations "+stable") (test-integrations "+nightly") (test-integrations "+1.84")
 
@@ -22,6 +22,8 @@ fmt-check:
 
 clippy:
     cargo +nightly clippy -- -Dwarnings
+    cargo +nightly clippy --target wasm32-unknown-unknown -- -Dwarnings
+    cargo +nightly clippy --profile=release --target wasm32-unknown-unknown -- -Dwarnings
     cd integration && cargo +nightly clippy -- -Dwarnings
     cd test-runner && cargo +nightly clippy -- -Dwarnings
 
