@@ -25,7 +25,7 @@ jobs:
       - run: cargo binstall just
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces:
+          workspaces: |
             .
             integration
             test-runner
@@ -44,7 +44,7 @@ jobs:
       - run: cargo binstall just
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces:
+          workspaces: |
             .
             integration
             test-runner
@@ -66,7 +66,7 @@ jobs:
       - run: cargo binstall just
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces:
+          workspaces: |
             .
             integration
             test-runner
