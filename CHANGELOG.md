@@ -1,3 +1,7 @@
+## wasm_split_helpers v0.2.3
+
+- Propagate `debug_assertions` to the CLI with a new marker in the hidden `#[link_section]`.
+
 ## wasm_split_cli v0.2.2
 
 - Add a canary import to diagnose modules getting loaded from different compilation units.
