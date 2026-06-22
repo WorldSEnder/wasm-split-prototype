@@ -16,11 +16,12 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
           components: rustfmt
+      - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
 
@@ -29,11 +30,12 @@ jobs:
   clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
 
@@ -45,11 +47,12 @@ jobs:
       matrix:
         toolchain: [nightly, stable, "1.84"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
 
