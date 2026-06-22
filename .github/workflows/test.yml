@@ -40,6 +40,7 @@ jobs:
         with:
           toolchain: nightly
           components: clippy
+          targets: wasm32-unknown-unknown
       - uses: cargo-bins/cargo-binstall@v1.15.9
       - run: cargo binstall just
       - uses: Swatinem/rust-cache@v2

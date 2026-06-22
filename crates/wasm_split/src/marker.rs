@@ -2,7 +2,7 @@
 
 #[path = "./magic_constants.rs"]
 mod magic_constants;
-use magic_constants::{link_section, FeatureTag, SubsectionTag, Version};
+use magic_constants::{link_section, SubsectionTag, Version};
 
 const fn usize_to_u32(len: usize) -> u32 {
     // We ... don't assume usize is bigger or smaller than a u32,
@@ -106,6 +106,8 @@ encode_subsection! {
 
 #[cfg(debug_assertions)]
 const _: () = {
+    use magic_constants::FeatureTag;
+
     const FEATURE_PAYLOAD_LEN: usize = 1;
     const fn encode_feature_debug_assertions(buffer: &mut [u8]) {
         debug_assert!(buffer.len() == FEATURE_PAYLOAD_LEN);
