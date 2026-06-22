@@ -316,7 +316,10 @@ impl DataEmitInfo {
                     let address = match offset_expr.get_operators_reader().read().unwrap() {
                         wasmparser::Operator::I32Const { value } => value as usize,
                         wasmparser::Operator::I64Const { value } => value as usize,
-                        _ => return DataSegmentAnalysis::FromInputOnlyIn(0),
+                        op => {
+                            warn!("Non-constant operator {op:?} found to specify a memory's base address. Putting it into main.");
+                            return DataSegmentAnalysis::FromInputOnlyIn(0);
+                        }
                     };
                     DataSegmentAnalysis::Ranges {
                         ranges: vec![],
@@ -346,6 +349,13 @@ impl DataEmitInfo {
                             "Expected data symbol dep node to ref to defined data symbol"
                         )));
                     };
+                    if def_data.size == 0 {
+                        // We don't care about zero-sized symbols.
+                        // There are some prominent examples, specifically __heap_base, that lead to a zero-sized
+                        // data symbol in the output. For this example specifically, it sometimes leads to problems
+                        // since it is often outside the range of data defined via segments in the input.
+                        return None;
+                    }
                     let segment_index = def_data.index as usize;
                     let DataSegmentAnalysis::Ranges { .. } = &per_segment[segment_index] else {
                         // Only relocate if in active range
@@ -371,6 +381,17 @@ impl DataEmitInfo {
                 let data_len = def_data.size as usize;
                 let data_offset = def_data.offset as usize;
                 let data_range = data_offset..data_offset + data_len;
+
+                let in_segment = &input_module.data_segments[segment_index];
+                if data_range.end > in_segment.data.len() {
+                    unreachable!(
+                        "Found data symbol {:?} that extends past the input module's data \
+                        bytes: {data_range:?} not in range for data segment of length {}",
+                        input_module.reloc_info.symbols[symbol_index],
+                        in_segment.data.len()
+                    );
+                }
+
                 let segment_align =
                     1usize << input_module.reloc_info.segments[segment_index].alignment;
 
@@ -379,9 +400,8 @@ impl DataEmitInfo {
                     // TODO: .isolate_least_significant_one()
                     data_align = data_align.min(1usize << data_offset.trailing_zeros());
                 }
-                if data_len != 0 {
-                    data_align = data_align.min(1usize << data_len.trailing_zeros());
-                }
+                debug_assert!(data_len != 0, "zero-sized symbols handled previously");
+                data_align = data_align.min(1usize << data_len.trailing_zeros());
 
                 let mut has_merged = false;
                 let range_idx = ranges.len();
@@ -495,6 +515,10 @@ impl DataEmitInfo {
         symbol_index: usize,
         data: &DefinedDataSymbol,
     ) -> Option<usize> {
+        if data.size == 0 {
+            // zero-sized symbols are not relocated
+            return None;
+        }
         let segment_idx = data.index as usize;
         let DataSegmentEmitInfo::Ranges {
             ranges,
