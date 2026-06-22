@@ -10,6 +10,7 @@ test-integrations toolchain="":
 test-all-integrations: (test-integrations "+stable") (test-integrations "+nightly") (test-integrations "+1.84")
 
 test-cli:
+    cargo test -p wasm_split_helpers
     cargo test -p wasm_split_cli_support --all-features
 
 all-tests: test-all-integrations test-cli
