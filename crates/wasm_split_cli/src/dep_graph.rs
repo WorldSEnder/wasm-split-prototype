@@ -4,7 +4,7 @@ use std::{
 };
 
 use eyre::{anyhow, bail, Result};
-use wasmparser::{FunctionBody, Operator, RelocationEntry};
+use wasmparser::{Export, ExternalKind, FunctionBody, Operator, RelocationEntry, SymbolInfo};
 
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, MemoryId, SymbolIndex, TableId, TagId},
@@ -24,7 +24,14 @@ pub enum DepNode {
 
 pub type DepGraph = HashMap<DepNode, HashSet<DepNode>>;
 
-pub fn get_dependencies(module: &InputModule) -> Result<(DepGraph, HashSet<InputFuncId>)> {
+pub struct Dependencies {
+    pub graph: DepGraph,
+    pub stub_fns: HashSet<InputFuncId>,
+    // `#i -> #s` if Global #i contains the address of symbol #s
+    pub symbol_as_global: HashMap<GlobalId, SymbolIndex>,
+}
+
+pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
     struct Builder<'a, 'm>(DepGraph, &'a InputModule<'m>);
     impl Builder<'_, '_> {
         fn add_dep(&mut self, a: DepNode, b: DepNode) {
@@ -122,7 +129,82 @@ pub fn get_dependencies(module: &InputModule) -> Result<(DepGraph, HashSet<Input
             }
         }
     }
-    Ok((deps.0, stub_fns))
+
+    let mut symbol_as_global = HashMap::new();
+    for &export in &module.exports {
+        let Export {
+            kind: ExternalKind::Global,
+            index: global_index,
+            name: global_name,
+        } = export
+        else {
+            continue;
+        };
+        // You would think that there is reloc data available that tells us which symbols are exported
+        // but there is not. The flags also do not tell us this information (which might be a bug in the
+        // way symbol information is emitted). In any case, we reconstruct this information.
+        let Some((symbol_index, symbol)) =
+            module
+                .reloc_info
+                .symbols
+                .iter()
+                .enumerate()
+                .find(|(_, &info)| {
+                    let SymbolInfo::Data {
+                        flags: _,
+                        name: symbol_name,
+                        symbol: _,
+                    } = info
+                    else {
+                        return false;
+                    };
+                    symbol_name == global_name
+                })
+        else {
+            continue;
+        };
+        tracing::trace!(
+            "Recovered global symbol {global_index} mapping to {symbol_index} [{symbol:?}]"
+        );
+        #[cfg(debug_assertions)]
+        {
+            use wasmparser::ValType;
+
+            let global = &module.globals[global_index as usize];
+            assert!(
+                matches!(global.ty.content_type, ValType::I32 | ValType::I64),
+                "expected be a memory address"
+            );
+            assert!(
+                !global.ty.mutable && !global.ty.shared,
+                "a memory address should be immutable and not shared"
+            );
+            let _addr: usize = match global.init_expr.get_operators_reader().read() {
+                Ok(Operator::I32Const { value }) => {
+                    usize::try_from(value).expect("a valid address should fit into a usize")
+                }
+                Ok(Operator::I64Const { value }) => {
+                    usize::try_from(value).expect("a valid address should fit into a usize")
+                }
+                _ => unreachable!(
+                    "expected a constant initializer expression for an exported data symbol"
+                ),
+            };
+            // could decode the symbol's address from the data-segment base address here too. Trust that this is correct
+        }
+        deps.add_dep(
+            DepNode::Global(global_index as usize),
+            DepNode::DataSymbol(symbol_index),
+        );
+        symbol_as_global.insert(global_index, symbol_index);
+    }
+
+    // Global symbols exporting the memory address of a symbol depend on that symbols
+    Ok(Dependencies {
+        graph: deps.0,
+        stub_fns,
+        symbol_as_global: HashMap::new(),
+    })
 }
 
 fn iter_functions_with_relocs<'m>(
