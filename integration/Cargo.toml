@@ -6,7 +6,8 @@ members = [
     "simple",
     "many_shares",
     "callback-in-split",
-    "optimize_splits"
+    "optimize_splits",
+    "static_mut",
 ]
 resolver = "2"
 
