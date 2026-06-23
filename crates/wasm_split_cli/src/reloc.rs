@@ -6,9 +6,9 @@ use std::{
 use eyre::{anyhow, bail, Result};
 use tracing::trace;
 use wasmparser::{
-    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Linking,
-    LinkingSectionReader, Payload, RelocAddendKind, RelocSectionReader, RelocationEntry,
-    RelocationType, Segment, SymbolFlags, SymbolInfo,
+    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Export,
+    ExternalKind, Linking, LinkingSectionReader, Payload, RelocAddendKind, RelocSectionReader,
+    RelocationEntry, RelocationType, Segment, SymbolFlags, SymbolInfo,
 };
 
 use crate::{
@@ -102,6 +102,8 @@ impl<'a> RelocInfoParser<'a> {
         };
         info.indirect_table = indirect_function_table;
         get_indirect_functions(&mut info, indirect_function_table, module)?;
+        reconstruct_global_symbols(&mut info, &module)?;
+        tracing::error!("{:?}", info.symbol_as_global);
         Ok(info)
     }
 }
@@ -213,6 +215,80 @@ fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Ve
     Ok(data_symbols)
 }
 
+fn reconstruct_global_symbols(reloc_info: &mut RelocInfo<'_>, module: &InputModule) -> Result<()> {
+    let symbol_as_global = &mut reloc_info.symbol_as_global;
+    debug_assert!(
+        symbol_as_global.is_empty(),
+        "should not yet contain reconstructed data"
+    );
+    for &export in &module.exports {
+        let Export {
+            kind: ExternalKind::Global,
+            index: global_index,
+            name: global_name,
+        } = export
+        else {
+            continue;
+        };
+        // You would think that there is reloc data available that tells us which symbols are exported
+        // but there is not. The flags also do not tell us this information (which might be a bug in the
+        // way symbol information is emitted). In any case, we reconstruct this information.
+        let Some((symbol_index, symbol)) =
+            reloc_info
+                .symbols
+                .iter()
+                .enumerate()
+                .find(|(_, &symbol_info)| {
+                    let SymbolInfo::Data {
+                        flags: _,
+                        name: symbol_name,
+                        symbol: _,
+                    } = symbol_info
+                    else {
+                        return false;
+                    };
+                    symbol_name == global_name
+                })
+        else {
+            continue;
+        };
+        let global_index: GlobalId = global_index.try_into().unwrap();
+        tracing::trace!(
+            "Recovered global symbol {global_index} mapping to {symbol_index} [{symbol:?}]"
+        );
+        #[cfg(debug_assertions)]
+        {
+            use eyre::ensure;
+            use eyre::Context;
+            use wasmparser::{Operator, ValType};
+
+            let global = &module.globals[global_index];
+            ensure!(
+                matches!(global.ty.content_type, ValType::I32 | ValType::I64),
+                "expected be a memory address"
+            );
+            ensure!(
+                !global.ty.mutable && !global.ty.shared,
+                "a memory address should be immutable and not shared"
+            );
+            let _addr: usize = match global.init_expr.get_operators_reader().read() {
+                Ok(Operator::I32Const { value }) => {
+                    usize::try_from(value).context("a valid address should fit into a usize")?
+                }
+                Ok(Operator::I64Const { value }) => {
+                    usize::try_from(value).context("a valid address should fit into a usize")?
+                }
+                _ => {
+                    bail!("expected a constant initializer expression for an exported data symbol")
+                }
+            };
+            // could decode the symbol's address from the data-segment base address here too. Trust that this is correct
+        }
+        symbol_as_global.insert(global_index, symbol_index);
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct RelocInfo<'a> {
     pub section_ranges: Vec<Range<InputOffset>>,
@@ -228,6 +304,8 @@ pub struct RelocInfo<'a> {
     pub stack_pointer: GlobalId,
     pub visible_indirects: HashSet<InputFuncId>,
     pub referenced_indirects: HashSet<InputFuncId>,
+    // `#i -> #s` if Global #i contains the address of symbol #s
+    pub symbol_as_global: HashMap<GlobalId, SymbolIndex>,
 }
 
 impl RelocInfo<'_> {

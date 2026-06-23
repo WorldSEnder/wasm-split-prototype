@@ -7,7 +7,7 @@ use std::{
 use crate::{
     dep_graph::DepNode,
     magic_constants,
-    read::{GlobalId, InputFuncId, InputModule, InputOffset, SymbolIndex},
+    read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::{SplitModuleIdentifier, SplitProgramInfo},
 };
@@ -28,7 +28,6 @@ pub(crate) struct EmitState<'a> {
     data_relocations: DataEmitInfo,
     shared_names: HashMap<DepNode, Cow<'a, str>>,
     no_reloc_stubs: &'a HashSet<InputFuncId>,
-    global_symbols: &'a HashMap<GlobalId, SymbolIndex>,
     canary_import_name: &'a str,
 }
 
@@ -39,7 +38,6 @@ impl<'a> EmitState<'a> {
         program_info: &'a SplitProgramInfo,
         link_module: &'a str,
         no_reloc_stubs: &'a HashSet<InputFuncId>,
-        global_symbols: &'a HashMap<GlobalId, SymbolIndex>,
     ) -> Result<Self> {
         let indirect_functions = IndirectFunctionEmitInfo::new(module, program_info)?;
         let data_relocations = DataEmitInfo::new(module, program_info)?;
@@ -89,7 +87,6 @@ impl<'a> EmitState<'a> {
             data_relocations,
             shared_names,
             no_reloc_stubs,
-            global_symbols,
             canary_import_name: program_info.canary_export_name(),
         })
     }
@@ -941,7 +938,13 @@ impl<'a> ModuleEmitState<'a> {
         for (global_idx, global) in self.input_module.globals.iter().enumerate() {
             let global_expr = global.init_expr.clone();
             let mut init_expr = global_expr.clone().try_into().unwrap();
-            if let Some(&symbol) = self.emit_state.global_symbols.get(&global_idx) {
+            if let Some(&symbol) = self
+                .emit_state
+                .input_module
+                .reloc_info
+                .symbol_as_global
+                .get(&global_idx)
+            {
                 let (reloc_type, conv_reloc_value): (RelocationType, fn(usize) -> ConstExpr) =
                     match global_expr.get_operators_reader().read() {
                         Ok(Operator::I32Const { value: _ }) => {

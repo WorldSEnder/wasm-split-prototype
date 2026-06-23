@@ -99,7 +99,6 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
         &split_program_info,
         link_module,
         &deps.stub_fns,
-        &deps.symbol_as_global,
     )?;
     let wasm_modules = emit::emit_modules(
         &split_program_info,
