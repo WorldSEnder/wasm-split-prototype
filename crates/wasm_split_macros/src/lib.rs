@@ -403,7 +403,11 @@ pub fn wasm_split(args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn version_stamp(_args: TokenStream) -> TokenStream {
     let unique_path = std::env::var_os("CARGO_MANIFEST_PATH").unwrap();
     let unique_id = base16::encode_lower(&sha2::Sha256::digest(unique_path.as_encoded_bytes()));
-    let id = format!("_WASM_SPLIT_MARKER_{}", &unique_id[0..16]);
+    let id = format!(
+        "{}{}",
+        magic_constants::GLOBAL_WASM_SPLIT_MARKER,
+        &unique_id[0..16]
+    );
     let id = syn::LitStr::new(&id, Span::call_site().into());
     quote! { #id }.into()
 }

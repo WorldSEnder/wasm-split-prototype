@@ -81,9 +81,10 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
         module.reloc_info.print_relocs();
     }
     // (2) dependency analysis and decide on splits
-    let (dep_graph, reloc_stub_fns) = dep_graph::get_dependencies(&module)?;
+    let deps = dep_graph::get_dependencies(&module)?;
     let split_points = split_point::get_split_points(&module)?;
-    let split_program_info = split_point::compute_split_modules(&module, &dep_graph, split_points)?;
+    let split_program_info =
+        split_point::compute_split_modules(&module, &deps.graph, split_points)?;
 
     if split_point::trace_enabled(opts.verbose) {
         for (name, split_deps) in split_program_info.output_modules.iter() {
@@ -97,7 +98,7 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
         &module,
         &split_program_info,
         link_module,
-        reloc_stub_fns,
+        &deps.stub_fns,
     )?;
     let wasm_modules = emit::emit_modules(
         &split_program_info,

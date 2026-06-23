@@ -29,3 +29,7 @@ pub enum Version {
 }
 
 pub const PLACEHOLDER_IMPORT_MODULE: &str = "__wasm_split_placeholder__";
+// see the version_stamp! macro why we need to emit additional (zero-sized) exported
+// symbols to emit bytes into our custom data section. These symbols are excluded
+// from the list of exported globals in the cli (and might not be needed in the future).
+pub const GLOBAL_WASM_SPLIT_MARKER: &str = "_WASM_SPLIT_MARKER_";
