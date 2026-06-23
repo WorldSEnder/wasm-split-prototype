@@ -12,6 +12,7 @@ use wasmparser::{
 };
 
 use crate::{
+    magic_constants,
     read::{GlobalId, InputFuncId, InputModule, InputOffset, TableId, TagId},
     util::{find_subrange, shift_range},
 };
@@ -102,8 +103,7 @@ impl<'a> RelocInfoParser<'a> {
         };
         info.indirect_table = indirect_function_table;
         get_indirect_functions(&mut info, indirect_function_table, module)?;
-        reconstruct_global_symbols(&mut info, &module)?;
-        tracing::error!("{:?}", info.symbol_as_global);
+        reconstruct_global_symbols(&mut info, module)?;
         Ok(info)
     }
 }
@@ -253,6 +253,20 @@ fn reconstruct_global_symbols(reloc_info: &mut RelocInfo<'_>, module: &InputModu
             continue;
         };
         let global_index: GlobalId = global_index.try_into().unwrap();
+        if global_name.starts_with(magic_constants::GLOBAL_WASM_SPLIT_MARKER) {
+            // let's try to be conservative and double check that the marker symbol is zero-sized data
+            match *symbol {
+                SymbolInfo::Data {
+                    symbol: Some(symbol),
+                    ..
+                } if symbol.size == 0 => {
+                    reloc_info.split_marker_globals.insert(global_index);
+                    continue;
+                }
+                SymbolInfo::Data { .. } => tracing::warn!("expected zero sized marker export"),
+                _ => tracing::warn!("expected wasm split marker export to export a data symbol"),
+            }
+        }
         tracing::trace!(
             "Recovered global symbol {global_index} mapping to {symbol_index} [{symbol:?}]"
         );
@@ -306,6 +320,7 @@ pub struct RelocInfo<'a> {
     pub referenced_indirects: HashSet<InputFuncId>,
     // `#i -> #s` if Global #i contains the address of symbol #s
     pub symbol_as_global: HashMap<GlobalId, SymbolIndex>,
+    pub split_marker_globals: HashSet<GlobalId>,
 }
 
 impl RelocInfo<'_> {

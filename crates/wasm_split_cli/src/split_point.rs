@@ -194,6 +194,14 @@ fn get_main_module_roots(module: &InputModule, split_points: &[SplitPoint]) -> H
                 DepNode::Function(*index as usize)
             }
             wasmparser::ExternalKind::Table => DepNode::Table(*index as usize),
+            wasmparser::ExternalKind::Global
+                if module
+                    .reloc_info
+                    .split_marker_globals
+                    .contains(&(*index as usize)) =>
+            {
+                continue
+            }
             wasmparser::ExternalKind::Global => DepNode::Global(*index as usize),
             wasmparser::ExternalKind::Tag => DepNode::Tag(*index as usize),
             wasmparser::ExternalKind::Memory => DepNode::Memory(*index as usize),
