@@ -6,8 +6,10 @@
 
 - Add a canary import to diagnose modules getting loaded from different compilation units.
   This is enabled when the crate is compiled with `debug_assertions` enabled. Detection
-  of this is automatic when compiling against `wasm_split_helpers >= 0.2.3`.
-- Fixed an error on nightly Rust related to zero-sized symbols past the defined data segments.
+  of this is automatic when compiling against `wasm_split_helpers >= 0.2.3`. (#40).
+- Fixed an error on nightly Rust related to zero-sized symbols past the defined data
+  segments (#41).
+- Fix: globally exposed data symbols are now exported with their relocated address (#42).
 
 ## wasm_split_helpers v0.2.2
 
