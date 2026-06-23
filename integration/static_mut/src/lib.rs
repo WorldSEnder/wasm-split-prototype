@@ -1,9 +1,6 @@
-//! This test case is a bit brittle as we try to force a specific case in the analysis,
-//! specifically we target the branch when we detect an "overlong segment" and force data to
-//! be put into the main module.
-//! We then have a static item (PUB_TEST_FN) that references a dead function and which
-//! itself is unreachable. This will have to be relocated but is not reachable from any
-//! of the output functions.
+//! We construct a static item (PUB_TEST_FN) that references a "dead" function and which
+//! itself is unreachable from inside the module. It is never-the-less publically exposed
+//! to the javascript host, and can thus be called via its address.
 
 fn reachable_from_env() -> u32 {
     42
@@ -27,7 +24,7 @@ mod tests {
         }
     "#)]
     extern "C" {
-        fn call_static_mut(fun: &JsValue) -> u32;
+        fn call_static_mut(instance: &JsValue) -> u32;
     }
 
     // This pulls in the magic marker which we assert in all tests
