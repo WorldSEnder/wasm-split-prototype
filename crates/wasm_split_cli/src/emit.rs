@@ -13,10 +13,10 @@ use crate::{
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
-use wasm_encoder::{reencode::Reencode, EntityType, ProducersField, ProducersSection};
+use wasm_encoder::{reencode::Reencode, ConstExpr, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
-    BinaryReader, Data, DataKind, DefinedDataSymbol, ExternalKind, ProducersSectionReader,
-    SegmentFlags, SymbolInfo, TypeRef,
+    BinaryReader, Data, DataKind, DefinedDataSymbol, ExternalKind, Operator,
+    ProducersSectionReader, RelocationType, SegmentFlags, SymbolInfo, TypeRef,
 };
 
 pub(crate) struct EmitState<'a> {
@@ -27,7 +27,7 @@ pub(crate) struct EmitState<'a> {
     indirect_functions: IndirectFunctionEmitInfo,
     data_relocations: DataEmitInfo,
     shared_names: HashMap<DepNode, Cow<'a, str>>,
-    no_reloc_stubs: HashSet<InputFuncId>,
+    no_reloc_stubs: &'a HashSet<InputFuncId>,
     canary_import_name: &'a str,
 }
 
@@ -37,7 +37,7 @@ impl<'a> EmitState<'a> {
         module: &'a InputModule<'a>,
         program_info: &'a SplitProgramInfo,
         link_module: &'a str,
-        no_reloc_stubs: HashSet<InputFuncId>,
+        no_reloc_stubs: &'a HashSet<InputFuncId>,
     ) -> Result<Self> {
         let indirect_functions = IndirectFunctionEmitInfo::new(module, program_info)?;
         let data_relocations = DataEmitInfo::new(module, program_info)?;
@@ -606,16 +606,17 @@ impl RelocTarget for ModuleEmitState<'_> {
                     .emit_state
                     .indirect_functions
                     .function_table_index
-                    .get(&input_func_id)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Dependency analysis error: \
-                             No indirect function table index \
-                             for input function {input_func_id} \
-                             referenced by relocation."
-                        )
-                    })?;
-                Ok(Some(*index))
+                    .get(&input_func_id);
+                // in some cases, we fallback to emitting the whole module's data in the main module
+                // in these cases, some data symbols reference functions that we found to be unreachable
+                // these do not get an index in the emitted function table. We rewrite them to the
+                // index 0, which will trap when executed.
+                // no other relocations are expected against data segments.
+                let index = index.cloned().unwrap_or(0);
+                // TODO: we could assert that we are indeed relocating a data segment here.
+                // an improved analysis of data segments could perhaps avoid this case entirely
+                // and restore the assertion that the referenced function is reachable.
+                Ok(Some(index))
             }
             RelocDetails::RelTableIndex(_details) => {
                 bail!("Unsupported relocation type: relative table index")
@@ -846,7 +847,7 @@ impl<'a> ModuleEmitState<'a> {
         self.generate_function_section();
         self.generate_table_section();
         self.generate_memory_section();
-        self.generate_global_section();
+        self.generate_global_section()?;
         self.generate_export_section();
         self.generate_start_section();
         self.generate_element_section()?;
@@ -929,18 +930,59 @@ impl<'a> ModuleEmitState<'a> {
         self.output_module.section(&section);
     }
 
-    fn generate_global_section(&mut self) {
+    fn generate_global_section(&mut self) -> Result<()> {
         if !self.is_main() {
-            return;
+            return Ok(());
         }
         let mut section = wasm_encoder::GlobalSection::new();
-        for global in self.input_module.globals.iter() {
-            section.global(
-                global.ty.try_into().unwrap(),
-                &global.init_expr.clone().try_into().unwrap(),
-            );
+        for (global_idx, global) in self.input_module.globals.iter().enumerate() {
+            let global_expr = global.init_expr.clone();
+            let mut init_expr = global_expr.clone().try_into().unwrap();
+            if let Some(&symbol) = self
+                .emit_state
+                .input_module
+                .reloc_info
+                .symbol_as_global
+                .get(&global_idx)
+            {
+                let (reloc_type, conv_reloc_value): (RelocationType, fn(usize) -> ConstExpr) =
+                    match global_expr.get_operators_reader().read() {
+                        Ok(Operator::I32Const { value: _ }) => {
+                            (RelocationType::MemoryAddrI32, |val: usize| {
+                                ConstExpr::i32_const(val.try_into().unwrap())
+                            })
+                        }
+                        Ok(Operator::I64Const { value: _ }) => {
+                            (RelocationType::MemoryAddrI64, |val: usize| {
+                                ConstExpr::i64_const(val.try_into().unwrap())
+                            })
+                        }
+                        _ => {
+                            bail!("Expected a i32/i64.const expression for an exported data symbol")
+                        }
+                    };
+                let fake_reloc = wasmparser::RelocationEntry {
+                    ty: reloc_type,
+                    offset: 0,
+                    index: symbol as u32,
+                    addend: 0,
+                };
+                let details = self
+                    .emit_state
+                    .input_module
+                    .reloc_info
+                    .expand_relocation(&fake_reloc)
+                    .expect("fake reloc to look good");
+                if let Some(resolved_addr) =
+                    self.reloc_value(details).expect("to resolve an address")
+                {
+                    init_expr = conv_reloc_value(resolved_addr);
+                }
+            }
+            section.global(global.ty.try_into().unwrap(), &init_expr);
         }
         self.output_module.section(&section);
+        Ok(())
     }
 
     fn generate_export_section(&mut self) {

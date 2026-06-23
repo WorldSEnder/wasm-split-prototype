@@ -24,7 +24,12 @@ pub enum DepNode {
 
 pub type DepGraph = HashMap<DepNode, HashSet<DepNode>>;
 
-pub fn get_dependencies(module: &InputModule) -> Result<(DepGraph, HashSet<InputFuncId>)> {
+pub struct Dependencies {
+    pub graph: DepGraph,
+    pub stub_fns: HashSet<InputFuncId>,
+}
+
+pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
     struct Builder<'a, 'm>(DepGraph, &'a InputModule<'m>);
     impl Builder<'_, '_> {
         fn add_dep(&mut self, a: DepNode, b: DepNode) {
@@ -122,7 +127,19 @@ pub fn get_dependencies(module: &InputModule) -> Result<(DepGraph, HashSet<Input
             }
         }
     }
-    Ok((deps.0, stub_fns))
+
+    for (&global_index, &symbol_index) in &module.reloc_info.symbol_as_global {
+        deps.add_dep(
+            DepNode::Global(global_index),
+            DepNode::DataSymbol(symbol_index),
+        );
+    }
+
+    // Global symbols exporting the memory address of a symbol depend on that symbols
+    Ok(Dependencies {
+        graph: deps.0,
+        stub_fns,
+    })
 }
 
 fn iter_functions_with_relocs<'m>(
