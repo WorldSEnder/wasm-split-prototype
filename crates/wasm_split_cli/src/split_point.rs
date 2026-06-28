@@ -356,6 +356,14 @@ pub struct SplitProgramInfo {
     /// the input deterministically. Options can (and should) influence this if they lead to different
     /// output modules.
     pub canary_export_name: String,
+    /// Related to [wasm-bindgen hack].
+    /// wasm-bindgen replaces a part of cast-functions with an import. This import then gets its
+    /// signature transformed in some cases in the externref pass. Hence, two things need to happen:
+    /// - the replaced function must be in the main module (done by coloring it and its dependencies
+    ///   with the main module).
+    /// - an additional shim function needs to be used in the indirect_function_table instead of it,
+    ///   because other modules expect the original signature.
+    pub needs_shim_in_main: HashSet<InputFuncId>,
 }
 
 impl SplitProgramInfo {
@@ -475,6 +483,7 @@ pub fn compute_split_modules(
         graph_analysis.explore(roots, SplitModuleIdentifier::Split(module_name.clone()));
     }
 
+    let mut program_info = SplitProgramInfo::default();
     // We "paint" each dependency with the modules it must be loaded in, then put them into that module
     // accordingly.
     let mut painter = graph_analysis.into_painter();
@@ -488,10 +497,19 @@ pub fn compute_split_modules(
             .or_default()
             .included_symbols
             .insert(node);
+        let DepNode::Function(func_id) = node else {
+            continue;
+        };
+        if color == &SplitModuleIdentifier::Main
+            && dep_graph
+                .get(&node)
+                .is_some_and(|deps| !deps.is_disjoint(&wbg_rooting_deps))
+        {
+            program_info.needs_shim_in_main.insert(func_id);
+        }
     }
 
     // Now, check for each module which of its dependencies it needs to import from some other module.
-    let mut program_info = SplitProgramInfo::default();
     for out_module in split_module_contents.values_mut() {
         let needed_symbols = out_module
             .included_symbols
