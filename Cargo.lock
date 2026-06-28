@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "wasm_split_cli_support"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "eyre",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "wasm_split_helpers"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "async-once-cell",
  "wasm_split_macros",

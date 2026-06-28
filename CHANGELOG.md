@@ -1,9 +1,17 @@
+## wasm_split_helpers v0.2.3
+
+- Propagate `debug_assertions` to the CLI with a new marker in the hidden `#[link_section]`.
+- Propagate `reference-types` into the wasm binary. This removes a long-standing hack, and
+  should lead to cleaner binding code emitted from `wasm-bindgen`.
+
 ## wasm_split_cli v0.2.2
 
 - Add a canary import to diagnose modules getting loaded from different compilation units.
   This is enabled when the crate is compiled with `debug_assertions` enabled. Detection
-  of this is automatic when compiling against `wasm_split_helpers >= 0.2.3`.
-- Fixed an error on nightly Rust related to zero-sized symbols past the defined data segments.
+  of this is automatic when compiling against `wasm_split_helpers >= 0.2.3`. (#40).
+- Fixed an error on nightly Rust related to zero-sized symbols past the defined data
+  segments (#41).
+- Fix: globally exposed data symbols are now exported with their relocated address (#42).
 
 ## wasm_split_helpers v0.2.2
 
