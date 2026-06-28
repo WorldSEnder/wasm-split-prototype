@@ -1,6 +1,8 @@
 ## wasm_split_helpers v0.2.3
 
 - Propagate `debug_assertions` to the CLI with a new marker in the hidden `#[link_section]`.
+- Propagate `reference-types` into the wasm binary. This removes a long-standing hack, and
+  should lead to cleaner binding code emitted from `wasm-bindgen`.
 
 ## wasm_split_cli v0.2.2
 
