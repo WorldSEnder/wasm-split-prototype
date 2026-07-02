@@ -79,6 +79,7 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
     let module = crate::read::InputModule::parse(opts.input_wasm, strictness)?;
     if opts.verbose {
         module.reloc_info.print_relocs();
+        module.dwarf.print_fully();
     }
     // (2) dependency analysis and decide on splits
     let deps = dep_graph::get_dependencies(&module)?;

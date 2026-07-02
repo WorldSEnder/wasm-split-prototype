@@ -7,16 +7,18 @@ use std::{
 use crate::{
     dep_graph::DepNode,
     magic_constants,
-    read::{InputFuncId, InputModule, InputOffset},
+    read::{DwarfReader, InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::{SplitModuleIdentifier, SplitProgramInfo},
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
-use wasm_encoder::{reencode::Reencode, ConstExpr, EntityType, ProducersField, ProducersSection};
+use wasm_encoder::{
+    reencode::Reencode, ConstExpr, CustomSection, EntityType, ProducersField, ProducersSection,
+};
 use wasmparser::{
-    BinaryReader, Data, DataKind, DefinedDataSymbol, ExternalKind, Operator,
-    ProducersSectionReader, RelocationType, SegmentFlags, SymbolInfo, TypeRef,
+    Data, DataKind, DefinedDataSymbol, ExternalKind, Operator, RelocationType, SegmentFlags,
+    SymbolInfo, TypeRef,
 };
 
 pub(crate) struct EmitState<'a> {
@@ -660,6 +662,8 @@ impl RelocTarget for ModuleEmitState<'_> {
                 }
                 Ok(None)
             }
+            // TODO
+            RelocDetails::FunctionOffset(_details) => Ok(None),
         }
     }
 }
@@ -875,6 +879,7 @@ impl<'a> ModuleEmitState<'a> {
         self.generate_name_section()?;
         self.generate_target_features_section();
         self.generate_producers_section()?;
+        self.generate_debug_sections()?;
         Ok(())
     }
 
@@ -1388,46 +1393,35 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_wasm_bindgen_sections(&mut self) {
-        for custom in self.input_module.custom_sections.iter() {
-            if self.is_main() && custom.name == "__wasm_bindgen_unstable" {
-                self.output_module.section(&wasm_encoder::CustomSection {
-                    name: custom.name.into(),
-                    data: custom.data.into(),
-                });
-            }
+        if !self.is_main() {
+            return;
+        }
+        for custom in &self.input_module.wasm_bindgen_unstable {
+            self.output_module.section(&wasm_encoder::CustomSection {
+                name: custom.name().into(),
+                data: custom.data().into(),
+            });
         }
     }
 
     fn generate_target_features_section(&mut self) {
-        for custom in self.input_module.custom_sections.iter() {
-            if custom.name == "target_features" {
-                self.output_module.section(&wasm_encoder::CustomSection {
-                    name: custom.name.into(),
-                    data: custom.data.into(),
-                });
-            }
+        if let Some(custom) = self.input_module.target_features.as_ref() {
+            self.output_module.section(&wasm_encoder::CustomSection {
+                name: custom.name().into(),
+                data: custom.data().into(),
+            });
         }
     }
 
     fn generate_producers_section(&mut self) -> Result<()> {
         let mut producers = ProducersSection::new();
         let mut produced_by = ProducersField::new();
-        const PRODUCERS_NAME: &str = "producers";
         const PROCESSED_BY_FIELD_NAME: &str = "processed-by";
 
         if self.is_main() {
             // copy the section from input wasm, but insert ourselves
-            if let Some(input_producers) = self
-                .input_module
-                .custom_sections
-                .iter()
-                .find(|section| section.name == PRODUCERS_NAME)
-            {
-                let fields = ProducersSectionReader::new(BinaryReader::new(
-                    input_producers.data,
-                    input_producers.data_offset,
-                ))?;
-                for input_field in fields.into_iter() {
+            if let Some(fields) = self.input_module.producers.as_ref() {
+                for input_field in fields.clone().into_iter() {
                     let input_field = input_field?;
                     let mut field = ProducersField::new();
                     for entry in input_field.values.into_iter() {
@@ -1445,6 +1439,40 @@ impl<'a> ModuleEmitState<'a> {
         produced_by.value("wasm_split_cli_support", env!("CARGO_PKG_VERSION"));
         producers.field(PROCESSED_BY_FIELD_NAME, &produced_by);
         self.output_module.section(&producers);
+        Ok(())
+    }
+
+    fn write_relocate_dwarf_section<S: gimli::Section<DwarfReader<'a>>>(
+        &mut self,
+        section: &S,
+    ) -> Result<()> {
+        let reader = section.reader();
+        let input_range = reader.range();
+        if input_range.is_empty() {
+            // We emit empty sections
+            return Ok(());
+        }
+        let reloc_data = RelocInfo::get_relocated_data(&self.input_module, input_range, self)?;
+        self.output_module.section(&CustomSection {
+            name: S::section_name().into(),
+            data: reloc_data.into(),
+        });
+        Ok(())
+    }
+    fn generate_debug_sections(&mut self) -> Result<()> {
+        let crate::read::DwarfState::Inline(input_dwarf) = &self.input_module.dwarf else {
+            return Ok(());
+        };
+        if !self.is_main() {
+            return Ok(());
+        }
+        //let () = self.write_relocate_dwarf_section(&input_dwarf.debug_info)?;
+        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_abbrev)?;
+        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_info)?;
+        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_ranges)?;
+        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_str)?;
+        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_line)?;
+        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_loc)?;
         Ok(())
     }
 }

@@ -19,6 +19,7 @@ wasmparser = "0.252"
 # bin-only depdencies
 clap = { version = "4.5", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt"], optional = true }
+gimli = { version = "0.34.0", default-features = false, features = ["std", "read", "write"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

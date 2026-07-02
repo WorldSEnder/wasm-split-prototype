@@ -3,12 +3,12 @@ use std::{
     ops::Range,
 };
 
-use eyre::{anyhow, bail, Result};
+use eyre::{anyhow, bail, ensure, Result};
 use tracing::trace;
 use wasmparser::{
-    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Export,
-    ExternalKind, Linking, LinkingSectionReader, Payload, RelocAddendKind, RelocSectionReader,
-    RelocationEntry, RelocationType, Segment, SymbolFlags, SymbolInfo,
+    CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Export, ExternalKind,
+    KnownCustom, Linking, Payload, RelocAddendKind, RelocationEntry, RelocationType, Segment,
+    SymbolFlags, SymbolInfo,
 };
 
 use crate::{
@@ -30,52 +30,58 @@ pub struct RelocInfoParser<'a> {
 }
 
 impl<'a> RelocInfoParser<'a> {
-    fn visit_custom(&mut self, custom: &CustomSectionReader<'a>) -> Result<()> {
-        if custom.name() == "linking" {
-            self.has_linking_section = true;
-            let reader =
-                LinkingSectionReader::new(BinaryReader::new(custom.data(), custom.data_offset()))?;
-            let reader = reader.subsections();
-            for subsection in reader {
-                let subsection = subsection?;
-                if let Linking::SegmentInfo(segments) = subsection {
-                    assert!(self.info.segments.is_empty(), "duplicate segments info");
-                    self.info.segments = segments.into_iter().collect::<Result<_, _>>()?;
-                    continue;
-                }
-                if let Linking::SymbolTable(map) = subsection {
-                    assert!(self.info.symbols.is_empty(), "duplicate symbol table");
-                    self.info.symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
-                    for sym in &self.info.symbols {
-                        #[allow(clippy::single_match)] // other special cases might follow
-                        match *sym {
-                            SymbolInfo::Table {
-                                name: Some("__indirect_function_table"),
-                                index,
-                                ..
-                            } => {
-                                self.indirect_function_table = Some(index as TableId);
-                            }
-                            _ => {}
+    fn visit_linking(&mut self, subsection: Linking<'a>) -> Result<()> {
+        match subsection {
+            Linking::SegmentInfo(segments) => {
+                ensure!(self.info.segments.is_empty(), "duplicate segments info");
+                self.info.segments = segments.into_iter().collect::<Result<_, _>>()?;
+                return Ok(());
+            }
+            Linking::SymbolTable(map) => {
+                ensure!(self.info.symbols.is_empty(), "duplicate symbol table");
+                self.info.symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
+                for sym in &self.info.symbols {
+                    #[allow(clippy::single_match)] // other special cases might follow
+                    match *sym {
+                        SymbolInfo::Table {
+                            name: Some("__indirect_function_table"),
+                            index,
+                            ..
+                        } => {
+                            self.indirect_function_table = Some(index as TableId);
                         }
+                        _ => {}
                     }
                 }
             }
-        } else if custom.name().starts_with("reloc.") {
-            let reader =
-                RelocSectionReader::new(BinaryReader::new(custom.data(), custom.data_offset()))?;
-            let mut reloc_entries = reader
-                .entries()
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
-            reloc_entries.sort_by_key(|entry| entry.offset);
-            self.info
-                .relocs
-                .insert(reader.section_index() as SectionIndex, reloc_entries);
+            _ => {}
         }
         Ok(())
     }
-    pub fn visit_payload(&mut self, payload: &Payload<'a>) -> Result<()> {
+    fn visit_custom(&mut self, custom: &CustomSectionReader<'a>) -> Result<bool> {
+        match custom.as_known() {
+            KnownCustom::Linking(reader) => {
+                self.has_linking_section = true;
+                for subsection in reader.subsections() {
+                    let () = self.visit_linking(subsection?)?;
+                }
+                Ok(true)
+            }
+            KnownCustom::Reloc(reader) => {
+                let mut reloc_entries = reader
+                    .entries()
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?;
+                reloc_entries.sort_by_key(|entry| entry.offset);
+                self.info
+                    .relocs
+                    .insert(reader.section_index() as SectionIndex, reloc_entries);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+    pub fn visit_payload(&mut self, payload: &Payload<'a>) -> Result<bool> {
         let section_index = self.info.section_ranges.len();
         if let Some((_, section_range)) = payload.as_section() {
             self.info.section_ranges.push(section_range);
@@ -83,14 +89,15 @@ impl<'a> RelocInfoParser<'a> {
         match payload {
             Payload::DataSection(_) => {
                 self.info.data_section_index = section_index;
+                Ok(true)
             }
             Payload::CodeSectionStart { .. } => {
                 self.info.code_section_index = section_index;
+                Ok(true)
             }
-            Payload::CustomSection(reader) => self.visit_custom(reader)?,
-            _ => {}
-        };
-        Ok(())
+            Payload::CustomSection(reader) => self.visit_custom(reader),
+            _ => Ok(false),
+        }
     }
     pub fn finish(self, module: &InputModule<'a>) -> Result<RelocInfo<'a>> {
         let mut info = self.info;
@@ -523,9 +530,19 @@ impl RelocInfo<'_> {
                 _symbol_idx: symbol_index,
                 _symbol: *symbol,
             }),
-            wasmparser::RelocationType::SectionOffsetI32
-            | wasmparser::RelocationType::FunctionOffsetI32
+            wasmparser::RelocationType::FunctionOffsetI32
             | wasmparser::RelocationType::FunctionOffsetI64 => {
+                let wasmparser::SymbolInfo::Func { flags, index, name } = *symbol else {
+                    bail!("Expected a func symbol as target of a FUNCTION_OFFSET relocation, got {symbol:?}");
+                };
+                Ok(RelocDetails::FunctionOffset(SymbolDetails {
+                    _symbol_index: symbol_index,
+                    _flags: flags,
+                    index: index as InputFuncId,
+                    _name: name,
+                }))
+            }
+            wasmparser::RelocationType::SectionOffsetI32 => {
                 bail!(
                     "unhandled relocation ty {:?} in module relocation",
                     relocation.ty
@@ -592,6 +609,7 @@ pub enum RelocDetails<'a> {
     TableNumber(SymbolDetails<'a, TableId>),
     GlobalIndex(SymbolDetails<'a, GlobalId>),
     TagIndex(SymbolDetails<'a, TagId>),
+    FunctionOffset(SymbolDetails<'a, InputFuncId>),
 }
 
 pub trait RelocTarget {
