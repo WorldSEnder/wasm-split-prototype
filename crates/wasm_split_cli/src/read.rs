@@ -1,7 +1,9 @@
-use eyre::{bail, Result};
-use std::collections::HashMap;
+use eyre::{bail, ensure, Result};
+use gimli::DwarfSections;
+use std::{collections::HashMap, fmt::Debug, ops::Range};
 use wasmparser::{
-    BinaryReader, Imports, NameSectionReader, Payload, Subsection, Subsections, TypeRef,
+    BinaryReader, CustomSectionReader, Imports, KnownCustom, NameSectionReader, Payload,
+    ProducersSectionReader, Subsection, Subsections, TypeRef,
 };
 pub use wasmparser::{
     Data, Element, Export, FuncType, FunctionBody, Global, Import, MemoryType, Table, TagType,
@@ -14,12 +16,6 @@ use crate::{
     },
     reloc::{RelocInfo, RelocInfoParser},
 };
-
-pub struct CustomSection<'a> {
-    pub name: &'a str,
-    pub data_offset: usize,
-    pub data: &'a [u8],
-}
 
 pub type FuncTypeId = usize;
 pub type InputFuncId = usize;
@@ -80,9 +76,9 @@ fn convert_indirect_name_map<'a>(
 }
 
 impl<'a> Names<'a> {
-    fn new(data: &'a [u8], original_offset: usize) -> Result<Self> {
+    fn from_reader(rdr: NameSectionReader<'a>) -> Result<Self> {
         let mut names: Self = Default::default();
-        for part in NameSectionReader::new(BinaryReader::new(data, original_offset)) {
+        for part in rdr {
             use wasmparser::Name;
             match part? {
                 Name::Module { name, .. } => {
@@ -133,6 +129,239 @@ impl<'a> Names<'a> {
 pub type InputOffset = usize;
 pub use crate::reloc::SymbolIndex;
 
+// We use our own struct here instead of a simple slice to track input positions and ranges
+#[derive(Clone)]
+pub struct DwarfReader<'a> {
+    data: &'a [u8],
+    input_position: usize,
+}
+impl Default for DwarfReader<'_> {
+    fn default() -> Self {
+        Self {
+            data: &[],
+            input_position: 0,
+        }
+    }
+}
+// TODO(MSRV): use std::fmt::from_fn
+struct DebugByte(u8);
+impl Debug for DebugByte {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02x}", self.0)
+    }
+}
+struct DebugLen(usize);
+impl Debug for DebugLen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "...; {}", self.0)
+    }
+}
+struct DebugBytes<'a>(&'a [u8]);
+impl Debug for DebugBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut list = f.debug_list();
+        list.entries(self.0.iter().take(8).copied().map(DebugByte));
+        if self.0.len() > 8 {
+            list.entry(&DebugLen(self.0.len()));
+        }
+        list.finish()
+    }
+}
+impl Debug for DwarfReader<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DwarfReader")
+            .field("data", &DebugBytes(self.data))
+            .field("pos", &self.input_position)
+            .finish()
+    }
+}
+impl DwarfReader<'_> {
+    fn offset_id_enc(&self, offset: usize) -> u64 {
+        self.data.as_ptr().wrapping_byte_add(offset) as u64
+    }
+    fn offset_id_dec(id: u64) -> *const u8 {
+        std::ptr::null::<u8>().wrapping_byte_offset(id as isize)
+    }
+    fn offset_of_addr(&self, ptr: *const u8) -> Option<usize> {
+        let offset = ptr as isize - self.data.as_ptr() as isize;
+        // TODO(MSRV): diff.cast_unsigned/diff.strict_cast_unsigned
+        if offset >= 0 && offset as usize <= gimli::Reader::len(self) {
+            Some(offset as usize)
+        } else {
+            None
+        }
+    }
+    /// range in the input of the byte range
+    pub fn range(&self) -> Range<usize> {
+        self.input_position..self.input_position + self.data.len()
+    }
+}
+impl<'a> From<CustomSectionReader<'a>> for DwarfReader<'a> {
+    fn from(custom: CustomSectionReader<'a>) -> Self {
+        DwarfReader {
+            data: custom.data(),
+            input_position: custom.data_offset(),
+        }
+    }
+}
+impl<'a> gimli::Reader for DwarfReader<'a> {
+    type Endian = gimli::LittleEndian;
+    type Offset = usize;
+
+    fn endian(&self) -> Self::Endian {
+        gimli::LittleEndian
+    }
+
+    fn len(&self) -> Self::Offset {
+        self.data.len()
+    }
+
+    fn empty(&mut self) {
+        let _ = self.truncate(0);
+    }
+
+    fn truncate(&mut self, len: Self::Offset) -> gimli::Result<()> {
+        let prefix = self.split(len)?;
+        *self = prefix;
+        Ok(())
+    }
+
+    fn offset_from(&self, base: &Self) -> Self::Offset {
+        let offset = base.offset_of_addr(self.data.as_ptr()).unwrap();
+        assert!(offset + self.len() <= base.len());
+        offset
+    }
+
+    fn offset_id(&self) -> gimli::ReaderOffsetId {
+        gimli::ReaderOffsetId(self.offset_id_enc(0))
+    }
+
+    fn lookup_offset_id(&self, id: gimli::ReaderOffsetId) -> Option<Self::Offset> {
+        let ptr = Self::offset_id_dec(id.0);
+        let offset = ptr as isize - self.data.as_ptr() as isize;
+        if offset >= 0 && offset as usize <= self.len() {
+            Some(offset as usize)
+        } else {
+            None
+        }
+    }
+
+    fn find(&self, byte: u8) -> gimli::Result<Self::Offset> {
+        self.data
+            .iter()
+            .position(|&c| c == byte)
+            .ok_or_else(|| gimli::Error::UnexpectedEof(self.offset_id()))
+    }
+
+    fn skip(&mut self, len: Self::Offset) -> gimli::Result<()> {
+        let _ = self.split(len)?;
+        Ok(())
+    }
+
+    fn split(&mut self, len: Self::Offset) -> gimli::Result<Self> {
+        if !(len <= self.data.len()) {
+            return Err(gimli::Error::UnexpectedEof(self.offset_id()));
+        }
+        let (prefix, more) = self.data.split_at(len);
+        *self = Self {
+            data: more,
+            input_position: self.input_position + len,
+        };
+        Ok(Self {
+            data: prefix,
+            input_position: self.input_position,
+        })
+    }
+
+    fn to_slice(&self) -> gimli::Result<std::borrow::Cow<'_, [u8]>> {
+        Ok(self.data.into())
+    }
+
+    fn to_string(&self) -> gimli::Result<std::borrow::Cow<'_, str>> {
+        match str::from_utf8(self.data) {
+            Ok(s) => Ok(s.into()),
+            _ => Err(gimli::Error::BadUtf8),
+        }
+    }
+
+    fn to_string_lossy(&self) -> gimli::Result<std::borrow::Cow<'_, str>> {
+        Ok(String::from_utf8_lossy(self.data))
+    }
+
+    fn read_slice(&mut self, buf: &mut [u8]) -> gimli::Result<()> {
+        let prefix = self.split(buf.len())?;
+        buf.copy_from_slice(prefix.data);
+        Ok(())
+    }
+}
+
+pub enum DwarfState<'a> {
+    None,
+    Inline(DwarfSections<DwarfReader<'a>>),
+    External,
+}
+
+impl Default for DwarfState<'_> {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+impl<'a> From<DwarfParseState<'a>> for DwarfState<'a> {
+    fn from(value: DwarfParseState<'a>) -> Self {
+        match value {
+            DwarfParseState::Undecided => Self::None,
+            DwarfParseState::Inline(sections) => Self::Inline(sections),
+            DwarfParseState::External => Self::External,
+        }
+    }
+}
+
+impl DwarfState<'_> {
+    pub fn print_fully(&self) {
+        let Self::Inline(dwarf) = &self else {
+            return;
+        };
+        if !tracing::event_enabled!(tracing::Level::WARN) {
+            return;
+        }
+        tracing::warn!("{dwarf:?}");
+    }
+}
+
+enum DwarfParseState<'a> {
+    Undecided,
+    Inline(DwarfSections<DwarfReader<'a>>),
+    External,
+}
+
+impl Default for DwarfParseState<'_> {
+    fn default() -> Self {
+        Self::Undecided
+    }
+}
+
+impl<'a> DwarfParseState<'a> {
+    fn as_internal(&mut self) -> Option<&mut DwarfSections<DwarfReader<'a>>> {
+        if let Self::Undecided = self {
+            *self = Self::Inline(DwarfSections::default());
+        }
+        match self {
+            Self::Inline(sections) => Some(sections),
+            _ => None,
+        }
+    }
+    fn as_external(&mut self) -> Option<()> {
+        if let Self::Undecided = self {
+            *self = Self::External;
+        }
+        match self {
+            Self::External => Some(()),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct InputModule<'a> {
     pub raw: &'a [u8],
@@ -163,7 +392,11 @@ pub struct InputModule<'a> {
 
     pub exports: Vec<Export<'a>>,
 
-    pub custom_sections: Vec<CustomSection<'a>>,
+    // interesting custom sections
+    pub producers: Option<ProducersSectionReader<'a>>,
+    pub target_features: Option<CustomSectionReader<'a>>,
+    pub wasm_bindgen_unstable: Vec<CustomSectionReader<'a>>,
+    pub dwarf: DwarfState<'a>,
 
     pub names: Names<'a>,
     pub imported_func_map: HashMap<ImportId, InputFuncId>,
@@ -186,9 +419,11 @@ impl<'a> InputModule<'a> {
         let mut reloc_info = RelocInfoParser::default();
         let mut function_types: Vec<FuncTypeId> = Vec::new();
         let parser = wasmparser::Parser::new(0);
+        let mut dwarf_state = DwarfParseState::default();
+        let mut num_split_sections_found = 0;
         for payload in parser.parse_all(wasm) {
             let payload = payload?;
-            reloc_info.visit_payload(&payload)?;
+            let was_reloc_section = reloc_info.visit_payload(&payload)?;
             match payload {
                 Payload::Version { .. } => {}
                 Payload::TypeSection(reader) => {
@@ -256,30 +491,77 @@ impl<'a> InputModule<'a> {
                     });
                 }
                 Payload::CustomSection(reader) => {
-                    module.custom_sections.push(CustomSection {
-                        name: reader.name(),
-                        data: reader.data(),
-                        data_offset: reader.data_offset(),
-                    });
+                    macro_rules! dwarf_match {
+                        ($name:ident) => {{
+                            let Some(dwarf) = dwarf_state.as_internal() else {
+                                bail!("can't have dwarf sections with external dwarf data");
+                            };
+                            dwarf.$name = DwarfReader::from(reader).into();
+                        }};
+                    }
+                    match (reader.as_known(), reader.name()) {
+                        (KnownCustom::Name(names), _) => module.names = Names::from_reader(names)?,
+                        (KnownCustom::Producers(producers), _) => {
+                            module.producers = Some(producers);
+                        }
+                        (_, "target_features") => {
+                            module.target_features = Some(reader);
+                        }
+                        (_, "__wasm_bindgen_unstable") => {
+                            module.wasm_bindgen_unstable.push(reader);
+                        }
+                        (_, crate::magic_constants::LINK_SECTION) => {
+                            let rdr = BinaryReader::new(reader.data(), reader.data_offset());
+                            let () = read_wasm_split_section(rdr, &mut module.options)?;
+                            num_split_sections_found += 1;
+                        }
+                        (_, ".debug_abbrev") => dwarf_match!(debug_abbrev),
+                        (_, ".debug_addr") => dwarf_match!(debug_addr),
+                        (_, ".debug_aranges") => dwarf_match!(debug_aranges),
+                        (_, ".debug_info") => dwarf_match!(debug_info),
+                        (_, ".debug_line") => dwarf_match!(debug_line),
+                        (_, ".debug_line_str") => dwarf_match!(debug_line_str),
+                        (_, ".debug_macinfo") => dwarf_match!(debug_macinfo),
+                        (_, ".debug_macro") => dwarf_match!(debug_macro),
+                        (_, ".debug_names") => dwarf_match!(debug_names),
+                        (_, ".debug_str") => dwarf_match!(debug_str),
+                        (_, ".debug_str_offsets") => dwarf_match!(debug_str_offsets),
+                        (_, ".debug_types") => dwarf_match!(debug_types),
+                        (_, ".debug_loc") => dwarf_match!(debug_loc),
+                        (_, ".debug_loclists") => dwarf_match!(debug_loclists),
+                        (_, ".debug_ranges") => dwarf_match!(debug_ranges),
+                        (_, ".debug_rnglists") => dwarf_match!(debug_rnglists),
+                        // https://github.com/WebAssembly/tool-conventions/blob/main/Dwarf.md
+                        (_, "external_debug_info") => {
+                            ensure!(
+                                dwarf_state.as_external().is_some(),
+                                "can't have both external and internal dwarf data"
+                            );
+                            // TODO: the file location "should" be relative to the input file
+                            // currently, we don't do any file loading in this tool though,
+                            // there is no protocol either to ask the caller about this either.
+                            tracing::warn!(
+                                "external DWARF data detected that will not be relocated"
+                            );
+                        }
+                        _ => {
+                            if !was_reloc_section {
+                                tracing::warn!(
+                                    "Ignoring custom section {} at [{:x}]",
+                                    reader.name(),
+                                    reader.data_offset()
+                                );
+                            }
+                        }
+                    };
                 }
                 Payload::End(_) => {}
                 section => {
-                    bail!("Unknown section: {:?}", section);
+                    tracing::warn!("Ignoring unknown section {section:?}");
                 }
             }
         }
 
-        let mut num_split_sections_found = 0;
-        for section in module.custom_sections.iter() {
-            if section.name == "name" {
-                module.names = Names::new(section.data, section.data_offset)?;
-            }
-            if section.name == crate::magic_constants::LINK_SECTION {
-                let rdr = BinaryReader::new(section.data, section.data_offset);
-                let () = read_wasm_split_section(rdr, &mut module.options)?;
-                num_split_sections_found += 1;
-            }
-        }
         if matches!(strict, Strictness::IntegrationTesting) && num_split_sections_found != 1 {
             bail!(
                 "Wrong number of custom sections for wasm-split found, expected 1 got {}",
@@ -287,6 +569,7 @@ impl<'a> InputModule<'a> {
             );
         }
         module.reloc_info = reloc_info.finish(&module)?;
+        module.dwarf = dwarf_state.into();
 
         for (import_id, import) in module.imports.iter().enumerate() {
             let import_id = import_id as ImportId;
