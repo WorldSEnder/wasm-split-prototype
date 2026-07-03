@@ -68,7 +68,10 @@ impl<'a> RelocInfoParser<'a> {
                 .entries()
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
-            reloc_entries.sort_by_key(|entry| entry.offset);
+            // We need to slices of entries when we search for a specific offset
+            // We *might* be fine with assuming that the entries are already sorted, but a single pass to correct this
+            // doesn't cost a lot of performance.
+            reloc_entries.sort_unstable_by_key(|entry| entry.offset);
             self.info
                 .relocs
                 .insert(reader.section_index() as SectionIndex, reloc_entries);
@@ -211,7 +214,8 @@ fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Ve
             range: shift_range(symbol_range, data_offset),
         });
     }
-    data_symbols.sort_by_key(|symbol| symbol.range.start);
+    // We assume that these are sorted by range start later on
+    data_symbols.sort_unstable_by_key(|symbol| symbol.range.start);
     Ok(data_symbols)
 }
 

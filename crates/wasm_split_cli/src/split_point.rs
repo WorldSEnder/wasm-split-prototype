@@ -90,6 +90,10 @@ pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
         );
     }
 
+    // This sort here should not influence downstream results,
+    // but we do it anyway for good measure since its cheap
+    let mut split_points = split_points;
+    split_points.sort_unstable_by_key(|split| split.export);
     Ok(split_points)
 }
 
@@ -572,9 +576,11 @@ pub fn compute_split_modules(
     program_info.split_points = split_points;
 
     program_info.output_modules = split_module_contents.into_iter().collect();
+    // We sort by split module here to get a stable assignment from split->output index
+    // An unstable sort is sufficient, no two keys compare equal.
     program_info
         .output_modules
-        .sort_by_key(|(identifier, _)| (*identifier).clone());
+        .sort_unstable_by_key(|(identifier, _)| (*identifier).clone());
 
     for (output_index, (_, info)) in program_info.output_modules.iter().enumerate() {
         for &symbol in info.included_symbols.iter() {
