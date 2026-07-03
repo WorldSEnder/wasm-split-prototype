@@ -1,4 +1,5 @@
-use eyre::{Result, bail};
+use eyre::{Result, ensure};
+use sha2::Digest;
 use std::{
     collections::HashMap,
     env::args_os,
@@ -12,10 +13,12 @@ use std::{
 struct Report {
     #[serde_as(as = "Vec<(_, _)>")]
     file_sizes: HashMap<PathBuf, u64>,
+    #[serde_as(as = "Vec<(_, _)>")]
+    file_hashes: HashMap<PathBuf, ContentHash>,
     cli_runtime: Duration,
 }
 
-fn print_report(report: Report, report_dir: &Path) -> Result<()> {
+fn print_report(report: &Report, report_dir: &Path) -> Result<()> {
     let branded_report_name = format!(
         "report-{}{}.json",
         std::env::var("XRUSTUP_TOOLCHAIN").unwrap(),
@@ -43,6 +46,24 @@ fn wasm_bindgen_test_runner() -> Command {
     )
 }
 
+type ContentHash = [u8; 32];
+fn hash_file(path: &Path) -> Result<ContentHash> {
+    struct Sink(sha2::Sha256);
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.update(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut sink = Sink(sha2::Sha256::new());
+    let _written = std::io::copy(&mut std::fs::File::open(path)?, &mut sink)?;
+    Ok(sink.0.finalize().0)
+}
+
 fn collect_file_sizes(
     report: &mut Report,
     main_file: &Path,
@@ -54,9 +75,22 @@ fn collect_file_sizes(
         .map(|p| p.as_ref())
         .chain([main_file])
     {
-        let file_size = std::fs::File::open(module)?.metadata()?.len();
+        let meta = std::fs::File::open(module)?.metadata()?;
+        let file_hash = hash_file(module)?;
+        let file_size = meta.len();
         report.file_sizes.insert(module.to_path_buf(), file_size);
+        report.file_hashes.insert(module.to_path_buf(), file_hash);
     }
+    Ok(())
+}
+
+fn check_reproducible(first_report: &Report, second_report: &Report) -> Result<()> {
+    ensure!(
+        first_report.file_hashes == second_report.file_hashes,
+        "mismatching file sizes. Expected `left` but got `right`\n  left = {:#?}\n  right = {:#?}",
+        first_report.file_sizes,
+        second_report.file_sizes
+    );
     Ok(())
 }
 
@@ -102,7 +136,7 @@ pub fn main() -> Result<()> {
     let mut args = args_os();
     let _ = args.next().expect("args[0] to be the name of this runner");
     let target = args.next().expect("args[1] to be a wasm program to test");
-    let target_manifest_dir = std::env::var("XCARGO_MANIFEST_DIR")
+    let target_manifest_dir = std::env::var_os("XCARGO_MANIFEST_DIR")
         .expect("env variable to manifest should be set by runner script");
 
     let target = Path::new(&target);
@@ -110,12 +144,20 @@ pub fn main() -> Result<()> {
     let mut tempdir = tempfile::Builder::new().tempdir_in(&target_report_dir)?;
     tempdir.disable_cleanup(true); // keep the dir for debugging
     eprintln!(
-        "Splitting wasm from {target_manifest_dir} in {}",
+        "Splitting wasm from {} in {}",
+        target_manifest_dir.display(),
         tempdir.path().display()
     );
 
     let (split_main, report) = wasm_split_cli(target, tempdir.path())?;
-    print_report(report, &target_report_dir)?;
+    print_report(&report, &target_report_dir)?;
+    if !std::env::var_os("XTEST_SKIP_REPRODUCTION").is_some_and(|skip| !skip.is_empty()) {
+        // check that the result is reproducible.
+        // we could do this in its own directory. However, when the result is reproducible,
+        // the second output should not have overwritten anything from the first either way.
+        let (_, second_report) = wasm_split_cli(target, tempdir.path())?;
+        check_reproducible(&report, &second_report)?;
+    }
 
     let mut wbg = wasm_bindgen_test_runner();
     // Currently, testing is ONLY supported in browser mode. For node and others, the wrapper script needs to be
@@ -128,9 +170,10 @@ pub fn main() -> Result<()> {
 
     wbg.arg(&split_main).args(args);
     let wbg_exit = wbg.status()?;
-    if !wbg_exit.success() {
-        bail!("Failed to execute wasm-bindgen-test-runner");
-    }
+    ensure!(
+        wbg_exit.success(),
+        "Failed to execute wasm-bindgen-test-runner"
+    );
 
     tempdir.disable_cleanup(false);
     Ok(())
