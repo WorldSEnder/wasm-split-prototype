@@ -45,11 +45,13 @@ impl<'a> EmitState<'a> {
         let mut shared_names = HashMap::new();
         // We potentially overwrite the mapping later on again, but that's okay.
         // We could also check the reloc section for better names.
-        let shared_by_import = program_info
+        let mut shared_by_import = program_info
             .shared_deps
             .iter()
-            .filter(|dep| !matches!(dep, DepNode::Function(_) | DepNode::DataSymbol(_)));
-        for (unique_id, dep) in shared_by_import.enumerate() {
+            .filter(|dep| !matches!(dep, DepNode::Function(_) | DepNode::DataSymbol(_)))
+            .collect::<Vec<_>>();
+        shared_by_import.sort();
+        for (unique_id, dep) in shared_by_import.into_iter().enumerate() {
             let chosen_name = Cow::Owned(format!("__wasm_split_shared{unique_id}"));
             shared_names.insert(*dep, chosen_name);
         }
@@ -177,11 +179,26 @@ impl<'a> EmitState<'a> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct IndirectFunctionEmitInfo {
     table_entries: Vec<InputFuncId>,
     function_table_index: HashMap<InputFuncId, usize>,
     table_range_for_output_module: Vec<Range<usize>>,
+}
+
+impl std::fmt::Debug for IndirectFunctionEmitInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = self.function_table_index;
+        f.debug_struct("IndirectFunctionEmitInfo")
+            .field("table_entries", &self.table_entries)
+            // Omit this field since it's derived from table_entries
+            // .field("function_table_index", &self.function_table_index)
+            .field(
+                "table_range_for_output_module",
+                &self.table_range_for_output_module,
+            )
+            .finish()
+    }
 }
 
 impl IndirectFunctionEmitInfo {
@@ -217,7 +234,8 @@ impl IndirectFunctionEmitInfo {
         };
 
         let mut table_entries: Vec<_> = indirect_functions.into_iter().collect();
-        table_entries.sort_unstable_by_key(|&func_id| module_for_func(func_id));
+        // all keys are unique, hence this sort is actually stable
+        table_entries.sort_unstable_by_key(|&func_id| (module_for_func(func_id), func_id));
         let function_table_index: HashMap<_, _> = table_entries
             .iter()
             .enumerate()
@@ -282,6 +300,7 @@ enum DataSegmentEmitInfo {
     },
 }
 
+#[derive(Debug)]
 struct DataEmitInfo {
     per_segment: Vec<DataSegmentEmitInfo>,
 }
@@ -364,7 +383,10 @@ impl DataEmitInfo {
                     Some(Ok((symbol_index, def_data)))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            included_symbols.sort_by_key(|(_, def_data)| (def_data.index, def_data.offset));
+            // all keys are unique by the inclusion of the symbol index
+            included_symbols.sort_unstable_by_key(|&(sym_index, ref def_data)| {
+                (def_data.index, def_data.offset, sym_index)
+            });
             for (symbol_index, def_data) in included_symbols {
                 let segment_index = def_data.index as usize;
                 let DataSegmentAnalysis::Ranges {
@@ -701,7 +723,13 @@ impl<'a> ModuleEmitState<'a> {
             });
         }
 
-        for dep in &output_module_info.included_symbols {
+        let mut included_symbols = output_module_info
+            .included_symbols
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        included_symbols.sort();
+        for dep in &included_symbols {
             if let &dep @ DepNode::Function(input_func) = dep {
                 let is_import = input_func < emit_state.input_module.imported_funcs.len();
                 if !is_import {
@@ -730,7 +758,12 @@ impl<'a> ModuleEmitState<'a> {
         let mut also_needs_indirect_table =
             !emit_state.indirect_functions.table_range_for_output_module[output_module_index]
                 .is_empty();
-        for used_shared in &output_module_info.used_shared_deps {
+        let mut used_shared_deps = output_module_info
+            .used_shared_deps
+            .iter()
+            .collect::<Vec<_>>();
+        used_shared_deps.sort();
+        for used_shared in used_shared_deps {
             if output_module_info.included_symbols.contains(used_shared) {
                 continue;
             }
@@ -809,7 +842,7 @@ impl<'a> ModuleEmitState<'a> {
             });
             exported_dont_share.insert(dep);
         }
-        for dep in &output_module_info.included_symbols {
+        for dep in &included_symbols {
             if !program_info.shared_deps.contains(dep) || exported_dont_share.contains(dep) {
                 continue;
             }

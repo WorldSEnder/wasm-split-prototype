@@ -1,4 +1,5 @@
 use eyre::{Result, ensure};
+use serde::Serialize;
 use sha2::Digest;
 use std::{
     collections::HashMap,
@@ -46,7 +47,19 @@ fn wasm_bindgen_test_runner() -> Command {
     )
 }
 
-type ContentHash = [u8; 32];
+#[derive(PartialEq, Eq, Serialize)]
+#[repr(transparent)]
+#[serde(transparent)]
+struct ContentHash([u8; 32]);
+impl std::fmt::Debug for ContentHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for d in &self.0 {
+            write!(f, "{:02x}", d)?;
+        }
+        Ok(())
+    }
+}
+
 fn hash_file(path: &Path) -> Result<ContentHash> {
     struct Sink(sha2::Sha256);
     impl std::io::Write for Sink {
@@ -61,7 +74,7 @@ fn hash_file(path: &Path) -> Result<ContentHash> {
     }
     let mut sink = Sink(sha2::Sha256::new());
     let _written = std::io::copy(&mut std::fs::File::open(path)?, &mut sink)?;
-    Ok(sink.0.finalize().0)
+    Ok(ContentHash(sink.0.finalize().0))
 }
 
 fn collect_file_sizes(
@@ -87,9 +100,11 @@ fn collect_file_sizes(
 fn check_reproducible(first_report: &Report, second_report: &Report) -> Result<()> {
     ensure!(
         first_report.file_hashes == second_report.file_hashes,
-        "mismatching file sizes. Expected `left` but got `right`\n  left = {:#?}\n  right = {:#?}",
+        "mismatching file hashes/sizes. Expected `left` but got `right`\n  left-sizes = {:#?}\n  left-hashes = {:#?}\n  right-sizes = {:#?}\n  right-hashes = {:#?}",
         first_report.file_sizes,
-        second_report.file_sizes
+        first_report.file_hashes,
+        second_report.file_sizes,
+        second_report.file_hashes,
     );
     Ok(())
 }
