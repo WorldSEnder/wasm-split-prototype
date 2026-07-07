@@ -1,6 +1,10 @@
 use eyre::{bail, ensure, Result};
 use gimli::DwarfSections;
-use std::{collections::HashMap, fmt::Debug, ops::Range};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    ops::{Deref, Range},
+};
 use wasmparser::{
     BinaryReader, CustomSectionReader, Imports, KnownCustom, NameSectionReader, Payload,
     ProducersSectionReader, Subsection, Subsections, TypeRef,
@@ -130,7 +134,7 @@ pub type InputOffset = usize;
 pub use crate::reloc::SymbolIndex;
 
 // We use our own struct here instead of a simple slice to track input positions and ranges
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct DwarfReader<'a> {
     data: &'a [u8],
     input_position: usize,
@@ -141,6 +145,12 @@ impl Default for DwarfReader<'_> {
             data: &[],
             input_position: 0,
         }
+    }
+}
+impl Deref for DwarfReader<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        self.data
     }
 }
 // TODO(MSRV): use std::fmt::from_fn
@@ -314,18 +324,6 @@ impl<'a> From<DwarfParseState<'a>> for DwarfState<'a> {
             DwarfParseState::Inline(sections) => Self::Inline(sections),
             DwarfParseState::External => Self::External,
         }
-    }
-}
-
-impl DwarfState<'_> {
-    pub fn print_fully(&self) {
-        let Self::Inline(dwarf) = &self else {
-            return;
-        };
-        if !tracing::event_enabled!(tracing::Level::WARN) {
-            return;
-        }
-        tracing::warn!("{dwarf:?}");
     }
 }
 

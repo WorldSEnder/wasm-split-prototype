@@ -7,15 +7,13 @@ use std::{
 use crate::{
     dep_graph::DepNode,
     magic_constants,
-    read::{DwarfReader, InputFuncId, InputModule, InputOffset},
+    read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::{SplitModuleIdentifier, SplitProgramInfo},
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
-use wasm_encoder::{
-    reencode::Reencode, ConstExpr, CustomSection, EntityType, ProducersField, ProducersSection,
-};
+use wasm_encoder::{reencode::Reencode, ConstExpr, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
     Data, DataKind, DefinedDataSymbol, ExternalKind, Operator, RelocationType, SegmentFlags,
     SymbolInfo, TypeRef,
@@ -538,10 +536,10 @@ impl DataEmitInfo {
         &self,
         symbol_index: usize,
         data: &DefinedDataSymbol,
-    ) -> Option<usize> {
+    ) -> Result<Option<usize>, ()> {
         if data.size == 0 {
             // zero-sized symbols are not relocated
-            return None;
+            return Ok(None);
         }
         let segment_idx = data.index as usize;
         let DataSegmentEmitInfo::Ranges {
@@ -553,17 +551,17 @@ impl DataEmitInfo {
         } = &self.per_segment[segment_idx]
         else {
             // If just copied, then its not relocated
-            return None;
+            return Ok(None);
         };
-        let &(range_index, offset_in_range) = range_lookup
-            .get(&symbol_index)
-            .expect("to find a data relocation index");
+        let Some(&(range_index, offset_in_range)) = range_lookup.get(&symbol_index) else {
+            return Err(());
+        };
         let range = &ranges[range_index];
         let mut address = *base_address;
         address += per_output_offset[&range.in_module];
         address += range.in_module_offset;
         address += offset_in_range;
-        Some(address)
+        Ok(Some(address))
     }
 }
 
@@ -581,19 +579,21 @@ pub struct OutputExport<'a> {
     pub index: u32,
 }
 
+type ModuleFuncId = usize;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum OutputFunction {
     DefinedFromInput {
         input_func_id: InputFuncId,
-        local_index: usize,
+        local_index: ModuleFuncId,
     },
     IndirectCallShim {
         input_func_id: InputFuncId,
-        shim_index: usize,
+        shim_index: ModuleFuncId,
     },
     LocalShim {
         input_func_id: InputFuncId,
-        shim_index: usize,
+        shim_index: ModuleFuncId,
     },
 }
 
@@ -609,7 +609,10 @@ struct ModuleEmitState<'a> {
     defined_functions: Vec<OutputFunction>,
 
     dep_to_local_index: HashMap<DepNode, usize>,
-    local_shims: HashMap<InputFuncId, usize>,
+    local_shims: HashMap<InputFuncId, ModuleFuncId>,
+
+    function_header_len: usize,
+    function_offset_hint: HashMap<ModuleFuncId, usize>,
 }
 
 impl RelocTarget for ModuleEmitState<'_> {
@@ -624,10 +627,14 @@ impl RelocTarget for ModuleEmitState<'_> {
                 let Some(symbol) = details.definition else {
                     return Ok(None);
                 };
-                Ok(self
+                let Ok(address) = self
                     .emit_state
                     .data_relocations
-                    .find_relocated_address(details.symbol_index, symbol))
+                    .find_relocated_address(details.symbol_index, symbol)
+                else {
+                    panic!("couldn't find a data relocation index")
+                };
+                Ok(address)
             }
             RelocDetails::TableIndex(details) => {
                 let input_func_id = details.index;
@@ -684,11 +691,14 @@ impl RelocTarget for ModuleEmitState<'_> {
                 }
                 Ok(None)
             }
-            // TODO
-            RelocDetails::FunctionOffset(_details) => Ok(None),
+            RelocDetails::FunctionOffset(_details) => {
+                bail!("function offset not expected in code/data section")
+            }
         }
     }
 }
+
+mod dwarf;
 
 impl<'a> ModuleEmitState<'a> {
     fn new(
@@ -883,6 +893,8 @@ impl<'a> ModuleEmitState<'a> {
             exports,
             dep_to_local_index,
             local_shims,
+            function_header_len: 0,
+            function_offset_hint: Default::default(),
         }
     }
 
@@ -1215,7 +1227,10 @@ impl<'a> ModuleEmitState<'a> {
                     .parse_function_body(&mut section, body)
                     .with_context(|| format!("re-encoding no-reloc func {}", input_func_id))?;
                 }
-                OutputFunction::DefinedFromInput { input_func_id, .. } => {
+                OutputFunction::DefinedFromInput {
+                    input_func_id,
+                    local_index,
+                } => {
                     let input_func = &self.input_module.defined_funcs
                         [input_func_id - self.input_module.imported_funcs.len()];
                     let relocated_def = self
@@ -1226,7 +1241,12 @@ impl<'a> ModuleEmitState<'a> {
                                 input_func_id, self.output_module_index,
                             )
                         })?;
+                    let func_offset = section.byte_len();
+                    // skip past the field encoding the size of the function itself
+                    let func_header_len = encoded_uleb_len(&relocated_def);
                     section.raw(&relocated_def);
+                    self.function_offset_hint
+                        .insert(local_index, func_offset + func_header_len);
                 }
                 OutputFunction::IndirectCallShim { input_func_id, .. } => {
                     let indirect_index = self
@@ -1252,7 +1272,24 @@ impl<'a> ModuleEmitState<'a> {
                 }
             }
         }
+        // We need to adjust the offsets by the header of the section.
+        // The section gets written as
+        // struct {
+        //     id: const(10u8),
+        //     len: uleb(_),
+        //     // ---- offsets must be relative to this address
+        //     count: uleb(function_count),
+        //     // ---- offsets are relative to this address, since we don't predict function_count
+        //     bytes: [u8; section.byte_len()],
+        // }
+        let offset_before_section = self.output_module.len();
+        let byte_len = section.byte_len();
         self.output_module.section(&section);
+        let offset_after_section = self.output_module.len();
+
+        let mut target_offset = offset_before_section; // skip id
+        target_offset += encoded_uleb_len(&self.output_module.as_slice()[target_offset..]);
+        self.function_header_len = offset_after_section - byte_len - target_offset;
         Ok(())
     }
 
@@ -1475,38 +1512,20 @@ impl<'a> ModuleEmitState<'a> {
         Ok(())
     }
 
-    fn write_relocate_dwarf_section<S: gimli::Section<DwarfReader<'a>>>(
-        &mut self,
-        section: &S,
-    ) -> Result<()> {
-        let reader = section.reader();
-        let input_range = reader.range();
-        if input_range.is_empty() {
-            // We emit empty sections
-            return Ok(());
-        }
-        let reloc_data = RelocInfo::get_relocated_data(&self.input_module, input_range, self)?;
-        self.output_module.section(&CustomSection {
-            name: S::section_name().into(),
-            data: reloc_data.into(),
-        });
-        Ok(())
-    }
     fn generate_debug_sections(&mut self) -> Result<()> {
-        let crate::read::DwarfState::Inline(input_dwarf) = &self.input_module.dwarf else {
-            return Ok(());
-        };
-        if !self.is_main() {
-            return Ok(());
+        dwarf::emit_debug_info(self)
+    }
+}
+
+/// Seek the length of a uleb that is encoded at the start of the passed buffer
+fn encoded_uleb_len(bytes: &[u8]) -> usize {
+    let mut pos = 0;
+    loop {
+        let last_byte = (bytes[pos] & 0x80) == 0;
+        pos += 1;
+        if last_byte {
+            return pos;
         }
-        //let () = self.write_relocate_dwarf_section(&input_dwarf.debug_info)?;
-        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_abbrev)?;
-        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_info)?;
-        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_ranges)?;
-        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_str)?;
-        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_line)?;
-        let () = self.write_relocate_dwarf_section(&input_dwarf.debug_loc)?;
-        Ok(())
     }
 }
 
