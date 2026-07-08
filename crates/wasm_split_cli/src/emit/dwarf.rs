@@ -125,6 +125,12 @@ pub fn emit_debug_info(module: &mut ModuleEmitState<'_>) -> Result<()> {
     write_relocatable_section!(debug_types       in input_dwarf);
 
     // You can dump the contained dwarf sections with `llvm-dwarfdump` which can read wasm object files
+    // TODO: the debugging information is currently NOT stripped.
+    // Downstream tools are required to understand tombstone markers in lineprogs and we also copy all bytes into all modules
+    // With more processing, we could garbage collect the output and strip it further.
+    // This would require more work though, and seems only worth for release builds with debugging information, or misbehaving
+    // tools. At least one issue https://github.com/emscripten-core/emscripten/issues/23710 points out that support might
+    // not be universal and we could put in more effort to clean up the relocated information.
 
     if module.emit_state.input_options.strict_tests {
         validate_info(
