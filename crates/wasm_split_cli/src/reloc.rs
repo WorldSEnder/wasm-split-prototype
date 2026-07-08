@@ -1,4 +1,5 @@
 use std::{
+    cell::OnceCell,
     collections::{HashMap, HashSet},
     ops::Range,
 };
@@ -13,12 +14,12 @@ use wasmparser::{
 
 use crate::{
     magic_constants,
-    read::{GlobalId, InputFuncId, InputModule, InputOffset, TableId, TagId},
+    read::{GlobalId, InputFuncId, InputModule, InputOffset, SectionId, TableId, TagId},
     util::{find_subrange, shift_range},
 };
 
 // An offset (index) into the bytes of the input module
-pub type SectionIndex = usize;
+pub type SectionIndex = SectionId;
 pub type SymbolIndex = usize;
 
 #[derive(Default)]
@@ -106,7 +107,10 @@ impl<'a> RelocInfoParser<'a> {
                 self.info.code_section_index = section_index;
                 Ok(true)
             }
-            Payload::CustomSection(reader) => self.visit_custom(reader),
+            Payload::CustomSection(reader) => {
+                self.info.custom_sections.insert(section_index);
+                self.visit_custom(reader)
+            }
             _ => Ok(false),
         }
     }
@@ -328,6 +332,8 @@ pub struct RelocInfo<'a> {
     // the relocation entry is offset from.
     pub relocatable_ranges: Vec<Range<InputOffset>>,
     pub segments: Vec<Segment<'a>>,
+    pub custom_sections: HashSet<SectionId>,
+    invalid_reloc_warn: OnceCell<()>,
 
     pub code_section_index: SectionIndex,
     pub data_section_index: SectionIndex,
@@ -452,6 +458,9 @@ impl RelocInfo<'_> {
     pub fn expand_relocation(&self, relocation: &RelocationEntry) -> Result<RelocDetails<'_>> {
         use wasmparser::RelocationType::*;
         let symbol_index = relocation.index as usize;
+        if symbol_index > self.symbols.len() {
+            bail!("Found {relocation:?} with invalid symbol index?");
+        }
         let symbol = &self.symbols[symbol_index];
         let ty = relocation.ty;
         match ty {
@@ -558,10 +567,25 @@ impl RelocInfo<'_> {
                 }))
             }
             wasmparser::RelocationType::SectionOffsetI32 => {
-                bail!(
-                    "unhandled relocation ty {:?} in module relocation",
-                    relocation.ty
+                let wasmparser::SymbolInfo::Section { flags, section } = *symbol else {
+                    bail!("Expected a section symbol as target of a SECTION_OFFSET relocation, got {symbol:?}");
+                };
+                let section = section as SectionId;
+                // If the reloc points to a section with semantic context (such as data/code), we expect to relocate against a symbol,
+                // not by offset. It is used e.g. to point to DIE in debug_info sections. Why this happens via offset and not by some
+                // kind of "symbol" "inside" that custom section with an associated range similar to data symbols is a question I can
+                // not answer.
+                // NOTE: it seems newer compiler versions do not bother to emit this in any case.
+                ensure!(
+                    self.custom_sections.contains(&section),
+                    "Expect a SECTION_OFFSET relocation to point into a custom section"
                 );
+                Ok(RelocDetails::SectionOffset(SymbolDetails {
+                    _symbol_index: symbol_index,
+                    index: section,
+                    _flags: flags,
+                    _name: None,
+                }))
             } // [relocate data segments]
               // TODO: there is no relocation for data segment indices. As such, we'd have to parse the opcodes to find
               // references to passive and declarative data segments. The solution: only handling active segments
@@ -576,6 +600,22 @@ impl RelocInfo<'_> {
         reloc_base_to_data_off: usize,
         relocation: &RelocationEntry,
     ) -> Result<()> {
+        // TODO(MSRV): -1i32.cast_unsigned() since rust 1.87
+        if relocation.index == (-1i32 as u32) {
+            // We have found a relocation against a symbol that isn't in the symbol table.
+            // This most likely means that we will miss out on correct relocations.
+            // We must handle this though, as some compilers will emit relocations in the debug section
+            // against non-public symbols and use index -1 for those.
+            // Should we try and recover the function offset from some internal code map? Would be
+            // more effort to compute and keep up to date. We also need to read the current value
+            // from `data` and use that to recover the function index.
+            self.invalid_reloc_warn.get_or_init(|| {
+                tracing::warn!(
+                    "Skipping relocation {relocation:?} with tombstone symbol (others omitted)"
+                );
+            });
+            return Ok(());
+        }
         let relocation_range = relocation.relocation_range()?;
         let target = &mut data[(relocation_range.start - reloc_base_to_data_off)
             ..(relocation_range.end - reloc_base_to_data_off)];
@@ -630,6 +670,7 @@ pub enum RelocDetails<'a> {
     GlobalIndex(SymbolDetails<'a, GlobalId>),
     TagIndex(SymbolDetails<'a, TagId>),
     FunctionOffset(SymbolDetails<'a, InputFuncId>),
+    SectionOffset(SymbolDetails<'a, SectionId>),
 }
 
 pub const SENTINEL_UNDEF: usize = usize::MAX;

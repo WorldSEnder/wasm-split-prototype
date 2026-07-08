@@ -31,6 +31,7 @@ pub type GlobalId = usize;
 pub type ElementId = usize;
 pub type DataSegmentId = usize;
 pub type TagId = usize;
+pub type SectionId = usize;
 
 #[derive(Debug)]
 pub struct ImportedFunc {

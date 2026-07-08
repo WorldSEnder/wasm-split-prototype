@@ -38,7 +38,7 @@ impl RelocTarget for DwarfRelocTarget<'_, '_> {
             }
             RelocDetails::MemoryAddr(DataDetails {
                 definition: None, ..
-            }) => return Ok(None), // undefined symbols don't get relocated
+            }) => None, // undefined symbols don't get relocated
             RelocDetails::MemoryAddr(DataDetails {
                 definition: Some(symbol),
                 symbol_index,
@@ -52,6 +52,12 @@ impl RelocTarget for DwarfRelocTarget<'_, '_> {
                 Ok(address) => address,
                 _ => RELOC_TO_TOMBSTONE_ADDRESS,
             },
+            // We do not move data in custom sections around.
+            // TODO: assert that the addressed section is indeed one of our debug sections?
+            RelocDetails::SectionOffset(details) => {
+                let _ = details;
+                None
+            }
             _ => bail!("unexpected reloc in debug section: {:?}", reloc),
         };
         Ok(reloc)

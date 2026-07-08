@@ -691,9 +691,7 @@ impl RelocTarget for ModuleEmitState<'_> {
                 }
                 Ok(None)
             }
-            RelocDetails::FunctionOffset(_details) => {
-                bail!("function offset not expected in code/data section")
-            }
+            _ => bail!("unexpected relocation {reloc:?} in code/data section"),
         }
     }
 }

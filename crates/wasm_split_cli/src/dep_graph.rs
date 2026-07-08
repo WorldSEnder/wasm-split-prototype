@@ -48,6 +48,7 @@ pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
                 RelocDetails::GlobalIndex(details) => Some(DepNode::Global(details.index)),
                 RelocDetails::TagIndex(details) => Some(DepNode::Tag(details.index)),
                 RelocDetails::FunctionOffset(details) => Some(DepNode::Function(details.index)),
+                RelocDetails::SectionOffset(_) => None,
             };
             if let Some(target) = target {
                 self.add_dep(a, target);
