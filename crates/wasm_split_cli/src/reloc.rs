@@ -600,31 +600,21 @@ impl RelocInfo<'_> {
         reloc_base_to_data_off: usize,
         relocation: &RelocationEntry,
     ) -> Result<()> {
-        let fixup;
         // TODO(MSRV): -1i32.cast_unsigned() since rust 1.87
-        let relocation = if relocation.index == (-1i32 as u32) {
-            fixup = reloc_target.fixup_reloc_entry(relocation)?;
-            &fixup
-        } else {
-            relocation
-        };
         let relocated = if relocation.index == (-1i32 as u32) {
             // We have found a relocation against a symbol that isn't in the symbol table.
             // This most likely means that we will miss out on correct relocations.
             // We must handle this though, as some compilers will emit relocations in the debug section
             // against non-public symbols and use index -1 for those.
-            ensure!(
-                T::SENTINEL_UNDEF,
-                "Invalid relocation {relocation:?} with tombstone symbol couldn't be fixed"
-            );
-            self.invalid_reloc_warn.get_or_init(|| {
-                tracing::warn!(
-                    "Skipping relocation {relocation:?} with tombstone symbol (others omitted)"
-                );
-            });
-            // Since we can't ensure that the relocation target can survive unchanged, relocate
-            // to a tombstone address.
-            Some(SENTINEL_UNDEF)
+            let fixup = reloc_target.fixup_reloc_entry(relocation)?;
+            if fixup.is_none_or(|addr| addr == SENTINEL_UNDEF) {
+                self.invalid_reloc_warn.get_or_init(|| {
+                    tracing::warn!(
+                        "Skipping relocation {relocation:?} with tombstone symbol (others omitted)"
+                    );
+                });
+            }
+            fixup
         } else {
             let details = self.expand_relocation(relocation)?;
             reloc_target.reloc_value(details)?
@@ -691,8 +681,13 @@ pub trait RelocTarget {
     /// Fixup a relocation entry with an invalid symbol. If this fixup fails,
     /// we warn and relocate to a tombstone address or error if tombstones
     /// are not enabled for this relocation context.
-    fn fixup_reloc_entry(&self, entry: &RelocationEntry) -> Result<RelocationEntry> {
-        Ok(entry.clone())
+    fn fixup_reloc_entry(&self, entry: &RelocationEntry) -> Result<Option<usize>> {
+        // assert: entry.index == (-1i32 as u32)
+        ensure!(
+            Self::SENTINEL_UNDEF,
+            "Invalid relocation {entry:?} with tombstone symbol couldn't be fixed"
+        );
+        Ok(Some(SENTINEL_UNDEF))
     }
     fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>>;
 }

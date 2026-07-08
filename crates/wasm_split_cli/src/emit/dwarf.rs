@@ -23,10 +23,7 @@ const RELOC_TO_TOMBSTONE_ADDRESS: Option<usize> = Some(reloc::SENTINEL_UNDEF);
 impl RelocTarget for DwarfRelocTarget<'_, '_> {
     const SENTINEL_UNDEF: bool = true;
 
-    fn fixup_reloc_entry(
-        &self,
-        entry: &wasmparser::RelocationEntry,
-    ) -> Result<wasmparser::RelocationEntry> {
+    fn fixup_reloc_entry(&self, entry: &wasmparser::RelocationEntry) -> Result<Option<usize>> {
         // Should we try and recover the function offset from some internal code map? Would be
         // more effort to compute and keep up to date. We also need to read the current value
         // from `data` and use that to recover the function index.
@@ -34,7 +31,7 @@ impl RelocTarget for DwarfRelocTarget<'_, '_> {
             matches!(entry.ty, wasmparser::RelocationType::FunctionOffsetI32 | wasmparser::RelocationType::MemoryAddrI32),
             "expected a FUNCTION_OFFSET or MEMORY_ADDR relocation against a (private) function or data which had its symbol scrubbed, got {entry:?}",
         );
-        Ok(entry.clone())
+        Ok(RELOC_TO_TOMBSTONE_ADDRESS)
     }
     fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>> {
         let reloc = match reloc {
