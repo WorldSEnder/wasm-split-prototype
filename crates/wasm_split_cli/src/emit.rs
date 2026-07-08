@@ -907,7 +907,15 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate(&mut self) -> Result<()> {
-        // Encode type section
+        // Encode sections. These must occur in order
+        // most custom sections at the end. The wasm standard doesn't specify a (partial) order, but llvm does
+        // reference: https://github.com/llvm/llvm-project/blob/b5fa9eee6798b678fc7cb5f2b42a977932b708f9/llvm/lib/Object/WasmObjectFile.cpp#L2212-L2220
+        // type < dylink
+        // data < linking
+        // linking < reloc, name
+        // name < producers
+        // producers < target_features
+        // we don't emit dylink, linking, reloc at this point.
         self.generate_type_section()?;
         self.generate_import_section();
         self.generate_function_section();
@@ -920,11 +928,12 @@ impl<'a> ModuleEmitState<'a> {
         self.generate_data_count_section();
         self.generate_code_section()?;
         self.generate_data_section()?;
-        self.generate_wasm_bindgen_sections();
+        // our chosen order thus is: name -> producers -> target_features
         self.generate_name_section()?;
-        self.generate_target_features_section();
         self.generate_producers_section()?;
+        self.generate_target_features_section();
         self.generate_debug_sections()?;
+        self.generate_wasm_bindgen_sections();
         Ok(())
     }
 

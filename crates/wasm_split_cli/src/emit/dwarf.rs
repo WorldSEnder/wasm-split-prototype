@@ -73,7 +73,7 @@ fn write_relocate_dwarf_section<'a, S: Section<DwarfReader<'a>>>(
     let reloc_data = RelocInfo::get_relocated_data(&module.input_module, input_range, &target)?;
     module.output_module.section(&CustomSection {
         name: S::section_name().into(),
-        data: reloc_data.clone().into(),
+        data: (&reloc_data).into(),
     });
     Ok(reloc_data)
 }
@@ -82,8 +82,8 @@ pub fn emit_debug_info(module: &mut ModuleEmitState<'_>) -> Result<()> {
     let crate::read::DwarfState::Inline(input_dwarf) = &module.input_module.dwarf else {
         return Ok(());
     };
-    let mut error_writer = ErrorWriter::new(std::io::BufWriter::new(std::io::stdout()));
-    if cfg!(debug_assertions) && module.is_main() {
+    let mut error_writer = ErrorWriter::new(std::io::BufWriter::new(std::io::stderr()));
+    if module.emit_state.input_options.strict_tests && module.is_main() {
         validate_info(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
         validate_line_progs(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
         if !error_writer.check_valid_and_reset() {
@@ -92,31 +92,41 @@ pub fn emit_debug_info(module: &mut ModuleEmitState<'_>) -> Result<()> {
     }
 
     let mut validate = gimli::DwarfSections::default();
-    let debug_info = write_relocate_dwarf_section(module, &input_dwarf.debug_info)?;
-    validate.debug_info = debug_info.into();
-    let debug_abbrev = write_relocate_dwarf_section(module, &input_dwarf.debug_abbrev)?;
-    validate.debug_abbrev = debug_abbrev.into();
+    // There is no strict order defined for these, but let's try to go from common to less useful
+    // Further, some sections are needed to successfully parse other ones, define those in order of dependency
+    // All section names (included commented out ones) have been taken from the table of section version numbers
+    // of the current DWARF 6 draft.
+    macro_rules! write_relocatable_section {
+        ($name:ident in $input:expr) => {
+            validate.$name = write_relocate_dwarf_section(module, &$input.$name)?.into()
+        };
+    }
+    write_relocatable_section!(debug_abbrev in input_dwarf);
+    write_relocatable_section!(debug_info   in input_dwarf);
 
-    validate.debug_addr = write_relocate_dwarf_section(module, &input_dwarf.debug_addr)?.into();
-    let debug_line = write_relocate_dwarf_section(module, &input_dwarf.debug_line)?;
-    validate.debug_line = debug_line.into();
-    validate.debug_loc = write_relocate_dwarf_section(module, &input_dwarf.debug_loc)?.into();
-    validate.debug_loclists =
-        write_relocate_dwarf_section(module, &input_dwarf.debug_loclists)?.into();
-    validate.debug_ranges = write_relocate_dwarf_section(module, &input_dwarf.debug_ranges)?.into();
-    validate.debug_rnglists =
-        write_relocate_dwarf_section(module, &input_dwarf.debug_rnglists)?.into();
-    validate.debug_str = write_relocate_dwarf_section(module, &input_dwarf.debug_str)?.into();
-    validate.debug_str_offsets =
-        write_relocate_dwarf_section(module, &input_dwarf.debug_str_offsets)?.into();
-    validate.debug_line_str =
-        write_relocate_dwarf_section(module, &input_dwarf.debug_line_str)?.into();
-    validate.debug_macro = write_relocate_dwarf_section(module, &input_dwarf.debug_macro)?.into();
+    write_relocatable_section!(debug_line     in input_dwarf);
+    write_relocatable_section!(debug_loc      in input_dwarf);
+    write_relocatable_section!(debug_ranges   in input_dwarf);
+    write_relocatable_section!(debug_str      in input_dwarf);
 
-    validate.debug_aranges =
-        write_relocate_dwarf_section(module, &input_dwarf.debug_aranges)?.into();
-    validate.debug_names = write_relocate_dwarf_section(module, &input_dwarf.debug_names)?.into();
-    if cfg!(debug_assertions) {
+    write_relocatable_section!(debug_addr        in input_dwarf);
+    write_relocatable_section!(debug_aranges     in input_dwarf);
+    // write_relocatable_section!(debug_frame     in input_dwarf); // as of now not supported, no exception handling in wasm
+    write_relocatable_section!(debug_line_str    in input_dwarf);
+    write_relocatable_section!(debug_loclists    in input_dwarf);
+    write_relocatable_section!(debug_macinfo     in input_dwarf);
+    write_relocatable_section!(debug_macro       in input_dwarf);
+    write_relocatable_section!(debug_names       in input_dwarf);
+    // write_relocatable_section!(debug_pubnames    in input_dwarf); // old, currently unused and not present in dwarf 5+
+    // write_relocatable_section!(debug_pubtypes    in input_dwarf); // same as above
+    write_relocatable_section!(debug_rnglists    in input_dwarf);
+    write_relocatable_section!(debug_str_offsets in input_dwarf);
+    // write_relocatable_section!(debug_sup         in input_dwarf); // supplemental files not supported at the moment
+    write_relocatable_section!(debug_types       in input_dwarf);
+
+    // You can dump the contained dwarf sections with `llvm-dwarfdump` which can read wasm object files
+
+    if module.emit_state.input_options.strict_tests {
         validate_info(
             &mut error_writer,
             validate.borrow(|v| gimli::EndianSlice::new(&v[..], gimli::LittleEndian)),
@@ -223,25 +233,22 @@ where
         let program = match program {
             Ok(program) => program,
             Err(err) => {
-                tracing::error!("error reading program 0x{:x}: {err}", offset.0);
+                let _ = writeln!(w, "error reading program 0x{:x}: {err}", offset.0);
                 continue;
             }
         };
-        let _ = writeln!(
-            w,
-            "Starting line number program 0x{:x} {:?}",
-            offset.0,
-            program.header()
-        );
         let mut rows = program.rows();
         while let Some(row) = rows.next_row().transpose() {
             if let Err(err) = row {
-                let _ = write!(w, "invalid line prog: {err}");
+                let _ = writeln!(w, "invalid line in program 0x{:x}: {err}", offset.0);
             }
         }
     }
 }
 
+// This is almost verbatim from gimli examples, copied with slight modifications
+// under Apache License. Their MIT license quotes "Copyright (c) 2015 The Rust Project Developers"
+// though that is a bit questionable attribution. The Apache license has not been filled in.
 fn validate_info<W, R>(w: &mut ErrorWriter<W>, dwarf: gimli::Dwarf<R>)
 where
     W: std::io::Write + Send,
