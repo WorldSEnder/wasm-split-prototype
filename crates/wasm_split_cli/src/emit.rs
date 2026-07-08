@@ -1241,12 +1241,11 @@ impl<'a> ModuleEmitState<'a> {
                                 input_func_id, self.output_module_index,
                             )
                         })?;
-                    let func_offset = section.byte_len();
-                    // skip past the field encoding the size of the function itself
-                    let func_header_len = encoded_uleb_len(&relocated_def);
                     section.raw(&relocated_def);
-                    self.function_offset_hint
-                        .insert(local_index, func_offset + func_header_len);
+                    let offset_after = section.byte_len();
+                    let func_offset = offset_after - relocated_def.len();
+                    tracing::trace!("FunctionOffset[{}] = {}", local_index, func_offset);
+                    self.function_offset_hint.insert(local_index, func_offset);
                 }
                 OutputFunction::IndirectCallShim { input_func_id, .. } => {
                     let indirect_index = self
@@ -1279,17 +1278,19 @@ impl<'a> ModuleEmitState<'a> {
         //     len: uleb(_),
         //     // ---- offsets must be relative to this address
         //     count: uleb(function_count),
-        //     // ---- offsets are relative to this address, since we don't predict function_count
+        //     // ---- offsets above are relative to this address, since we don't predict function_count
         //     bytes: [u8; section.byte_len()],
         // }
         let offset_before_section = self.output_module.len();
-        let byte_len = section.byte_len();
+        let content_len = section.byte_len();
         self.output_module.section(&section);
-        let offset_after_section = self.output_module.len();
+        let offset_before_content = self.output_module.len() - content_len;
 
-        let mut target_offset = offset_before_section; // skip id
+        let mut target_offset = offset_before_section;
+        target_offset += 1; // skip id byte (constant 0xA)
         target_offset += encoded_uleb_len(&self.output_module.as_slice()[target_offset..]);
-        self.function_header_len = offset_after_section - byte_len - target_offset;
+        self.function_header_len = offset_before_content - target_offset;
+        tracing::trace!("function_header_len = {}", self.function_header_len);
         Ok(())
     }
 

@@ -15,7 +15,6 @@ use super::Result;
 
 struct DwarfRelocTarget<'m, 'a> {
     module: &'m ModuleEmitState<'a>,
-    enable_tombstone_hack: bool,
 }
 
 const RELOC_TO_UNDEF_ADDRESS: Option<usize> = Some(reloc::SENTINEL_UNDEF);
@@ -56,9 +55,6 @@ impl RelocTarget for DwarfRelocTarget<'_, '_> {
             reloc @ RelocDetails::GlobalIndex(_) => return self.module.reloc_value(reloc),
             _ => bail!("unexpected reloc in debug section: {:?}", reloc),
         };
-        if self.enable_tombstone_hack && self.module.is_main() {
-            return Ok(Some(0));
-        }
         Ok(reloc)
     }
 }
@@ -73,10 +69,7 @@ fn write_relocate_dwarf_section<'a, S: Section<DwarfReader<'a>>>(
         // We emit empty sections
         return Ok(vec![]);
     }
-    let target = DwarfRelocTarget {
-        module,
-        enable_tombstone_hack: S::id() == gimli::SectionId::DebugLine,
-    };
+    let target = DwarfRelocTarget { module };
     let reloc_data = RelocInfo::get_relocated_data(&module.input_module, input_range, &target)?;
     module.output_module.section(&CustomSection {
         name: S::section_name().into(),
@@ -89,15 +82,14 @@ pub fn emit_debug_info(module: &mut ModuleEmitState<'_>) -> Result<()> {
     let crate::read::DwarfState::Inline(input_dwarf) = &module.input_module.dwarf else {
         return Ok(());
     };
-    // if !module.is_main() {
-    //     return Ok(());
-    // }
-    let mut w: std::io::BufWriter<std::io::Stdout> = std::io::BufWriter::new(std::io::stdout());
-    let mut error_writer = ErrorWriter {
-        inner: std::sync::Mutex::new((&mut w, 0)),
-    };
-    validate_info(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
-    tracing::trace!("original debug info passed validation!");
+    let mut error_writer = ErrorWriter::new(std::io::BufWriter::new(std::io::stdout()));
+    if cfg!(debug_assertions) && module.is_main() {
+        validate_info(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
+        validate_line_progs(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
+        if !error_writer.check_valid_and_reset() {
+            tracing::warn!("original debug info didn't pass validation!");
+        }
+    }
 
     let mut validate = gimli::DwarfSections::default();
     let debug_info = write_relocate_dwarf_section(module, &input_dwarf.debug_info)?;
@@ -124,11 +116,19 @@ pub fn emit_debug_info(module: &mut ModuleEmitState<'_>) -> Result<()> {
     validate.debug_aranges =
         write_relocate_dwarf_section(module, &input_dwarf.debug_aranges)?.into();
     validate.debug_names = write_relocate_dwarf_section(module, &input_dwarf.debug_names)?.into();
-    validate_info(
-        &mut error_writer,
-        validate.borrow(|v| gimli::EndianSlice::new(&v[..], gimli::LittleEndian)),
-    );
-    tracing::trace!("transformed debug info passed validation!");
+    if cfg!(debug_assertions) {
+        validate_info(
+            &mut error_writer,
+            validate.borrow(|v| gimli::EndianSlice::new(&v[..], gimli::LittleEndian)),
+        );
+        validate_line_progs(
+            &mut error_writer,
+            validate.borrow(|v| gimli::EndianSlice::new(&v[..], gimli::LittleEndian)),
+        );
+        if !error_writer.check_valid_and_reset() {
+            bail!("transformed debug info didn't pass validation!");
+        }
+    }
     Ok(())
 }
 
@@ -140,16 +140,105 @@ struct UnitSummary {
     global_die_references: Vec<(gimli::UnitOffset, gimli::DebugInfoOffset)>,
 }
 
-struct ErrorWriter<W: std::io::Write + Send> {
+struct ErrorWriter<W> {
     inner: std::sync::Mutex<(W, usize)>,
 }
-
-impl<W: std::io::Write + Send> ErrorWriter<W> {
-    #[allow(clippy::needless_pass_by_value)]
-    fn error(&self, s: String) {
+impl<W> ErrorWriter<W> {
+    fn new(w: W) -> Self {
+        Self {
+            inner: std::sync::Mutex::new((w, 0)),
+        }
+    }
+    fn check_valid_and_reset(&mut self) -> bool {
         let mut lock = self.inner.lock().unwrap();
-        writeln!(&mut lock.0, "DWARF error: {}", s).unwrap();
+        std::mem::take(&mut lock.1) == 0
+    }
+}
+
+impl<W: std::io::Write + Send> std::io::Write for ErrorWriter<W> {
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        let mut lock = self.inner.lock().unwrap();
+        writeln!(&mut lock.0, "DWARF error: {}", args)?;
         lock.1 += 1;
+        Ok(())
+    }
+
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut lock = self.inner.lock().unwrap();
+        let len = lock.0.write(buf)?;
+        lock.1 += 1;
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut lock = self.inner.lock().unwrap();
+        lock.0.flush()
+    }
+}
+
+fn validate_line_progs<W, R>(w: &mut ErrorWriter<W>, dwarf: gimli::Dwarf<R>)
+where
+    W: std::io::Write + Send,
+    R: gimli::Reader<Offset = usize>,
+{
+    use std::io::Write;
+    let mut line_prog_offsets = vec![];
+    for unit in dwarf.units() {
+        let unit = unit.and_then(|unit| dwarf.unit(unit));
+        let unit = match unit {
+            Ok(unit) => unit,
+            Err(err) => {
+                let _ = writeln!(w, "error when reading unit: {err}");
+                continue;
+            }
+        };
+        let address_size = unit.address_size();
+        let comp_dir = &unit.comp_dir;
+        let comp_name = &unit.name;
+        let mut entries = unit.entries();
+        while let Some(die) = entries.next_dfs().transpose() {
+            let die = match die {
+                Ok(die) => die,
+                Err(err) => {
+                    let _ = writeln!(w, "error reading die: {err}");
+                    continue;
+                }
+            };
+            for attr in die.attrs() {
+                if let gimli::AttributeValue::DebugLineRef(dlp_offset) = attr.value() {
+                    line_prog_offsets.push((
+                        dlp_offset,
+                        address_size,
+                        comp_dir.clone(),
+                        comp_name.clone(),
+                    ));
+                }
+            }
+        }
+    }
+    for (offset, address_size, comp_dir, comp_name) in line_prog_offsets {
+        let program = dwarf
+            .debug_line
+            .program(offset, address_size, comp_dir, comp_name);
+        let program = match program {
+            Ok(program) => program,
+            Err(err) => {
+                tracing::error!("error reading program 0x{:x}: {err}", offset.0);
+                continue;
+            }
+        };
+        let _ = writeln!(
+            w,
+            "Starting line number program 0x{:x} {:?}",
+            offset.0,
+            program.header()
+        );
+        let mut rows = program.rows();
+        while let Some(row) = rows.next_row().transpose() {
+            if let Err(err) = row {
+                let _ = write!(w, "invalid line prog: {err}");
+            }
+        }
     }
 }
 
@@ -158,6 +247,7 @@ where
     W: std::io::Write + Send,
     R: gimli::Reader<Offset = usize>,
 {
+    use std::io::Write;
     let debug_info = &dwarf.debug_info;
     let debug_abbrev = &dwarf.debug_abbrev;
 
@@ -167,10 +257,11 @@ where
     loop {
         let u = match units_iter.next() {
             Err(err) => {
-                w.error(format!(
+                let _ = writeln!(
+                    w,
                     "Can't read unit header at offset {:#x}, stopping reading units: {}",
                     last_offset, err
-                ));
+                );
                 break;
             }
             Ok(None) => break,
@@ -190,10 +281,7 @@ where
         let abbrevs = match unit.abbreviations(debug_abbrev) {
             Ok(abbrevs) => abbrevs,
             Err(err) => {
-                w.error(format!(
-                    "Invalid abbrevs for unit {:#x}: {}",
-                    unit_offset.0, &err
-                ));
+                let _ = writeln!(w, "Invalid abbrevs for unit {:#x}: {}", unit_offset.0, &err);
                 return ret;
             }
         };
@@ -203,10 +291,11 @@ where
             let entry_offset = entries.next_offset();
             let abbrev = match entries.read_abbreviation() {
                 Err(err) => {
-                    w.error(format!(
+                    let _ = writeln!(
+                        w,
                         "Invalid DIE for unit {:#x} at DIE {:#x}: {}",
                         unit_offset.0, entry_offset.0, &err
-                    ));
+                    );
                     return ret;
                 }
                 Ok(None) => continue,
@@ -217,10 +306,11 @@ where
             for spec in abbrev.attributes() {
                 let attr = match entries.read_attribute(*spec) {
                     Err(err) => {
-                        w.error(format!(
+                        let _ = writeln!(
+                            w,
                             "Invalid attribute for unit {:#x} at DIE {:#x}: {}",
                             unit_offset.0, entry_offset.0, &err
-                        ));
+                        );
                         return ret;
                     }
                     Ok(attr) => attr,
@@ -243,10 +333,11 @@ where
         // Check intra-unit references
         for (from, to) in unit_refs {
             if ret.die_offsets.binary_search(&to).is_err() {
-                w.error(format!(
+                let _ = writeln!(
+                    w,
                     "Invalid intra-unit reference in unit {:#x} from DIE {:#x} to {:#x}",
                     unit_offset.0, from.0, to.0
-                ));
+                );
             }
         }
 
@@ -265,8 +356,8 @@ where
                     if i > 0 {
                         &processed_units[i - 1]
                     } else {
-                        w.error(format!("Invalid cross-unit reference in unit {:#x} from DIE {:#x} to global DIE {:#x}: no unit found",
-                                        summary.offset.0, from.0, to.0));
+                        let _ = writeln!(w, "Invalid cross-unit reference in unit {:#x} from DIE {:#x} to global DIE {:#x}: no unit found",
+                                        summary.offset.0, from.0, to.0);
                         continue;
                     }
                 }
@@ -276,8 +367,8 @@ where
             }
             let to_offset = gimli::UnitOffset(to.0 - u.offset.0);
             if u.die_offsets.binary_search(&to_offset).is_err() {
-                w.error(format!("Invalid cross-unit reference in unit {:#x} from DIE {:#x} to global DIE {:#x}: unit at {:#x} contains no DIE {:#x}",
-                                summary.offset.0, from.0, to.0, u.offset.0, to_offset.0));
+                let _ = writeln!(w, "Invalid cross-unit reference in unit {:#x} from DIE {:#x} to global DIE {:#x}: unit at {:#x} contains no DIE {:#x}",
+                                summary.offset.0, from.0, to.0, u.offset.0, to_offset.0);
             }
         }
     };
