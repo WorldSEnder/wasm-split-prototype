@@ -135,18 +135,10 @@ pub type InputOffset = usize;
 pub use crate::reloc::SymbolIndex;
 
 // We use our own struct here instead of a simple slice to track input positions and ranges
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct DwarfReader<'a> {
     data: &'a [u8],
     input_position: usize,
-}
-impl Default for DwarfReader<'_> {
-    fn default() -> Self {
-        Self {
-            data: &[],
-            input_position: 0,
-        }
-    }
 }
 impl Deref for DwarfReader<'_> {
     type Target = [u8];
@@ -306,16 +298,12 @@ impl<'a> gimli::Reader for DwarfReader<'a> {
     }
 }
 
+#[derive(Default)]
 pub enum DwarfState<'a> {
+    #[default]
     None,
-    Inline(DwarfSections<DwarfReader<'a>>),
+    Inline(Box<DwarfSections<DwarfReader<'a>>>),
     External,
-}
-
-impl Default for DwarfState<'_> {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl<'a> From<DwarfParseState<'a>> for DwarfState<'a> {
@@ -328,22 +316,18 @@ impl<'a> From<DwarfParseState<'a>> for DwarfState<'a> {
     }
 }
 
+#[derive(Default)]
 enum DwarfParseState<'a> {
+    #[default]
     Undecided,
-    Inline(DwarfSections<DwarfReader<'a>>),
+    Inline(Box<DwarfSections<DwarfReader<'a>>>),
     External,
-}
-
-impl Default for DwarfParseState<'_> {
-    fn default() -> Self {
-        Self::Undecided
-    }
 }
 
 impl<'a> DwarfParseState<'a> {
     fn as_internal(&mut self) -> Option<&mut DwarfSections<DwarfReader<'a>>> {
         if let Self::Undecided = self {
-            *self = Self::Inline(DwarfSections::default());
+            *self = Self::Inline(Default::default());
         }
         match self {
             Self::Inline(sections) => Some(sections),

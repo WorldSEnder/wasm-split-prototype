@@ -29,8 +29,8 @@ impl RelocTarget for DwarfRelocTarget<'_, '_> {
                     .module
                     .dep_to_local_index
                     .get(&DepNode::Function(details.index));
-                let local_offset = local_def
-                    .and_then(|local_def| self.module.function_offset_hint.get(&local_def));
+                let local_offset =
+                    local_def.and_then(|local_def| self.module.function_offset_hint.get(local_def));
                 match local_offset {
                     Some(offset) => Some(self.module.function_header_len + offset),
                     None => RELOC_TO_TOMBSTONE_ADDRESS,
@@ -75,7 +75,7 @@ fn write_relocate_dwarf_section<'a, S: Section<DwarfReader<'a>>>(
         return Ok(vec![]);
     }
     let target = DwarfRelocTarget { module };
-    let reloc_data = RelocInfo::get_relocated_data(&module.input_module, input_range, &target)?;
+    let reloc_data = RelocInfo::get_relocated_data(module.input_module, input_range, &target)?;
     module.output_module.section(&CustomSection {
         name: S::section_name().into(),
         data: (&reloc_data).into(),
@@ -89,8 +89,8 @@ pub fn emit_debug_info(module: &mut ModuleEmitState<'_>) -> Result<()> {
     };
     let mut error_writer = ErrorWriter::new(std::io::BufWriter::new(std::io::stderr()));
     if module.emit_state.input_options.strict_tests && module.is_main() {
-        validate_info(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
-        validate_line_progs(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
+        validate_info(&mut error_writer, input_dwarf.borrow(|v| *v));
+        validate_line_progs(&mut error_writer, input_dwarf.borrow(|v| *v));
         if !error_writer.check_valid_and_reset() {
             tracing::warn!("original debug info didn't pass validation!");
         }
@@ -299,7 +299,7 @@ where
         let abbrevs = match unit.abbreviations(debug_abbrev) {
             Ok(abbrevs) => abbrevs,
             Err(err) => {
-                let _ = writeln!(w, "Invalid abbrevs for unit {:#x}: {}", unit_offset.0, &err);
+                let _ = writeln!(w, "Invalid abbrevs for unit {:#x}: {err}", unit_offset.0);
                 return ret;
             }
         };
@@ -311,8 +311,8 @@ where
                 Err(err) => {
                     let _ = writeln!(
                         w,
-                        "Invalid DIE for unit {:#x} at DIE {:#x}: {}",
-                        unit_offset.0, entry_offset.0, &err
+                        "Invalid DIE for unit {:#x} at DIE {:#x}: {err}",
+                        unit_offset.0, entry_offset.0,
                     );
                     return ret;
                 }
@@ -326,8 +326,8 @@ where
                     Err(err) => {
                         let _ = writeln!(
                             w,
-                            "Invalid attribute for unit {:#x} at DIE {:#x}: {}",
-                            unit_offset.0, entry_offset.0, &err
+                            "Invalid attribute for unit {:#x} at DIE {:#x}: {err}",
+                            unit_offset.0, entry_offset.0,
                         );
                         return ret;
                     }
