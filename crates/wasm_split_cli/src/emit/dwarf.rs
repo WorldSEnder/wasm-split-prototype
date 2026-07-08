@@ -17,42 +17,41 @@ struct DwarfRelocTarget<'m, 'a> {
     module: &'m ModuleEmitState<'a>,
 }
 
-const RELOC_TO_UNDEF_ADDRESS: Option<usize> = Some(reloc::SENTINEL_UNDEF);
+const RELOC_TO_TOMBSTONE_ADDRESS: Option<usize> = Some(reloc::SENTINEL_UNDEF);
 
 impl RelocTarget for DwarfRelocTarget<'_, '_> {
     const SENTINEL_UNDEF: bool = true;
     fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>> {
         let reloc = match reloc {
-            RelocDetails::FunctionOffset(details)
-                if let Some(&local_def) = self
+            RelocDetails::GlobalIndex(_) => return self.module.reloc_value(reloc),
+            RelocDetails::FunctionOffset(details) => {
+                let local_def = self
                     .module
                     .dep_to_local_index
-                    .get(&DepNode::Function(details.index)) =>
-            {
-                match self.module.function_offset_hint.get(&local_def) {
-                    Some(&offset) => Some(self.module.function_header_len + offset),
-                    None => RELOC_TO_UNDEF_ADDRESS,
+                    .get(&DepNode::Function(details.index));
+                let local_offset = local_def
+                    .and_then(|local_def| self.module.function_offset_hint.get(&local_def));
+                match local_offset {
+                    Some(offset) => Some(self.module.function_header_len + offset),
+                    None => RELOC_TO_TOMBSTONE_ADDRESS,
                 }
             }
-            RelocDetails::FunctionOffset(_) => RELOC_TO_UNDEF_ADDRESS,
             RelocDetails::MemoryAddr(DataDetails {
                 definition: None, ..
-            }) => return Ok(None),
-            RelocDetails::MemoryAddr(
-                details @ DataDetails {
-                    definition: Some(symbol),
-                    ..
-                },
-            ) if let Ok(address) = self
+            }) => return Ok(None), // undefined symbols don't get relocated
+            RelocDetails::MemoryAddr(DataDetails {
+                definition: Some(symbol),
+                symbol_index,
+                ..
+            }) => match self
                 .module
                 .emit_state
                 .data_relocations
-                .find_relocated_address(details.symbol_index, symbol) =>
+                .find_relocated_address(symbol_index, symbol)
             {
-                address
-            }
-            RelocDetails::MemoryAddr(_) => RELOC_TO_UNDEF_ADDRESS,
-            reloc @ RelocDetails::GlobalIndex(_) => return self.module.reloc_value(reloc),
+                Ok(address) => address,
+                _ => RELOC_TO_TOMBSTONE_ADDRESS,
+            },
             _ => bail!("unexpected reloc in debug section: {:?}", reloc),
         };
         Ok(reloc)
