@@ -600,27 +600,39 @@ impl RelocInfo<'_> {
         reloc_base_to_data_off: usize,
         relocation: &RelocationEntry,
     ) -> Result<()> {
+        let fixup;
         // TODO(MSRV): -1i32.cast_unsigned() since rust 1.87
-        if relocation.index == (-1i32 as u32) {
+        let relocation = if relocation.index == (-1i32 as u32) {
+            fixup = reloc_target.fixup_reloc_entry(relocation)?;
+            &fixup
+        } else {
+            relocation
+        };
+        let relocated = if relocation.index == (-1i32 as u32) {
             // We have found a relocation against a symbol that isn't in the symbol table.
             // This most likely means that we will miss out on correct relocations.
             // We must handle this though, as some compilers will emit relocations in the debug section
             // against non-public symbols and use index -1 for those.
-            // Should we try and recover the function offset from some internal code map? Would be
-            // more effort to compute and keep up to date. We also need to read the current value
-            // from `data` and use that to recover the function index.
+            ensure!(
+                T::SENTINEL_UNDEF,
+                "Invalid relocation {relocation:?} with tombstone symbol couldn't be fixed"
+            );
             self.invalid_reloc_warn.get_or_init(|| {
                 tracing::warn!(
                     "Skipping relocation {relocation:?} with tombstone symbol (others omitted)"
                 );
             });
-            return Ok(());
-        }
+            // Since we can't ensure that the relocation target can survive unchanged, relocate
+            // to a tombstone address.
+            Some(SENTINEL_UNDEF)
+        } else {
+            let details = self.expand_relocation(relocation)?;
+            reloc_target.reloc_value(details)?
+        };
         let relocation_range = relocation.relocation_range()?;
         let target = &mut data[(relocation_range.start - reloc_base_to_data_off)
             ..(relocation_range.end - reloc_base_to_data_off)];
         let ty = relocation.ty;
-        let relocated = reloc_target.reloc_value(self.expand_relocation(relocation)?)?;
         let Some(value) = relocated else {
             return Ok(());
         };
@@ -676,6 +688,12 @@ pub enum RelocDetails<'a> {
 pub const SENTINEL_UNDEF: usize = usize::MAX;
 pub trait RelocTarget {
     const SENTINEL_UNDEF: bool = false;
+    /// Fixup a relocation entry with an invalid symbol. If this fixup fails,
+    /// we warn and relocate to a tombstone address or error if tombstones
+    /// are not enabled for this relocation context.
+    fn fixup_reloc_entry(&self, entry: &RelocationEntry) -> Result<RelocationEntry> {
+        Ok(entry.clone())
+    }
     fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>>;
 }
 
