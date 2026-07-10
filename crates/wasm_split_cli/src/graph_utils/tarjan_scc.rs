@@ -67,78 +67,6 @@ impl<Node> TarjanSccResult<Node> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::collections::{HashMap, HashSet};
-
-    use crate::graph_utils::tarjan_scc::SccEvent;
-
-    use super::TarjanSccResult;
-
-    #[test]
-    fn test_small_graph() {
-        let mut searcher = TarjanSccResult::new();
-        let graph = HashMap::from([
-            (0, HashSet::from([1, 2])),
-            (1, HashSet::from([2])),
-            (2, HashSet::from([1, 5])),
-            (3, HashSet::from([5])),
-            (5, HashSet::from([6])),
-            (6, HashSet::from([7])),
-            (7, HashSet::from([5])),
-            (99, HashSet::from([100])),
-            (100, HashSet::from([99])),
-        ]);
-        let roots = searcher.explore([0, 3], &graph, &HashSet::new());
-
-        assert_eq!(
-            HashSet::from([0, 1, 2, 3, 5, 6, 7]),
-            searcher.fully_explored.keys().cloned().collect(),
-        );
-        let mut scc_graph = HashMap::new();
-        let it = searcher.into_topsort();
-        let mut it = it.iter();
-        'graph: loop {
-            let mut component = vec![];
-            loop {
-                match it.next() {
-                    None => break 'graph,
-                    Some(&SccEvent::Member { node: _node }) => {
-                        component.push(_node);
-                    }
-                    Some(&SccEvent::Next {
-                        this,
-                        ref out_edges,
-                        ..
-                    }) => {
-                        component.sort();
-                        scc_graph.insert(component, (this, out_edges.clone()));
-                        break;
-                    }
-                }
-            }
-        }
-        let root_scc = scc_graph
-            .get(&[0][..])
-            .expect("to find a component for [0]");
-        let inner_12 = scc_graph
-            .get(&[1, 2][..])
-            .expect("to find a component for [1, 2]");
-        let inner_567 = scc_graph
-            .get(&[5, 6, 7][..])
-            .expect("to find a component for [5, 6, 7]");
-        let inner_3 = scc_graph
-            .get(&[3][..])
-            .expect("to find a component for [3]");
-        assert!(root_scc.1.contains(&inner_12.0));
-        assert!(!root_scc.1.contains(&inner_567.0));
-        assert!(inner_12.1.contains(&inner_567.0));
-        assert!(inner_3.1.contains(&inner_567.0));
-
-        assert_eq!(HashSet::from([root_scc.0, inner_3.0]), roots);
-    }
-}
-
 enum WorkItem<Node> {
     Explore {
         vertex: Node,
@@ -314,5 +242,77 @@ impl<'r, Node: Copy + Eq + Hash> TarjanState<'r, Node> {
         } else {
             par_state.lowlink = lowlink.min(par_state.lowlink);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use crate::graph_utils::tarjan_scc::SccEvent;
+
+    use super::TarjanSccResult;
+
+    #[test]
+    fn test_small_graph() {
+        let mut searcher = TarjanSccResult::new();
+        let graph = HashMap::from([
+            (0, HashSet::from([1, 2])),
+            (1, HashSet::from([2])),
+            (2, HashSet::from([1, 5])),
+            (3, HashSet::from([5])),
+            (5, HashSet::from([6])),
+            (6, HashSet::from([7])),
+            (7, HashSet::from([5])),
+            (99, HashSet::from([100])),
+            (100, HashSet::from([99])),
+        ]);
+        let roots = searcher.explore([0, 3], &graph, &HashSet::new());
+
+        assert_eq!(
+            HashSet::from([0, 1, 2, 3, 5, 6, 7]),
+            searcher.fully_explored.keys().cloned().collect(),
+        );
+        let mut scc_graph = HashMap::new();
+        let it = searcher.into_topsort();
+        let mut it = it.iter();
+        'graph: loop {
+            let mut component = vec![];
+            loop {
+                match it.next() {
+                    None => break 'graph,
+                    Some(&SccEvent::Member { node: _node }) => {
+                        component.push(_node);
+                    }
+                    Some(&SccEvent::Next {
+                        this,
+                        ref out_edges,
+                        ..
+                    }) => {
+                        component.sort();
+                        scc_graph.insert(component, (this, out_edges.clone()));
+                        break;
+                    }
+                }
+            }
+        }
+        let root_scc = scc_graph
+            .get(&[0][..])
+            .expect("to find a component for [0]");
+        let inner_12 = scc_graph
+            .get(&[1, 2][..])
+            .expect("to find a component for [1, 2]");
+        let inner_567 = scc_graph
+            .get(&[5, 6, 7][..])
+            .expect("to find a component for [5, 6, 7]");
+        let inner_3 = scc_graph
+            .get(&[3][..])
+            .expect("to find a component for [3]");
+        assert!(root_scc.1.contains(&inner_12.0));
+        assert!(!root_scc.1.contains(&inner_567.0));
+        assert!(inner_12.1.contains(&inner_567.0));
+        assert!(inner_3.1.contains(&inner_567.0));
+
+        assert_eq!(HashSet::from([root_scc.0, inner_3.0]), roots);
     }
 }

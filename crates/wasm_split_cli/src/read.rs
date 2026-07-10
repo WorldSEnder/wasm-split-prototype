@@ -262,7 +262,7 @@ impl<'a> gimli::Reader for DwarfReader<'a> {
     }
 
     fn split(&mut self, len: Self::Offset) -> gimli::Result<Self> {
-        if !(len <= self.data.len()) {
+        if len > self.data.len() {
             return Err(gimli::Error::UnexpectedEof(self.offset_id()));
         }
         let (prefix, more) = self.data.split_at(len);
