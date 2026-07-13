@@ -15,8 +15,8 @@ use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
 use wasm_encoder::{reencode::Reencode, ConstExpr, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
-    BinaryReader, Data, DataKind, DefinedDataSymbol, ExternalKind, Operator,
-    ProducersSectionReader, RelocationType, SegmentFlags, SymbolInfo, TypeRef,
+    Data, DataKind, DefinedDataSymbol, ExternalKind, Operator, RelocationType, SegmentFlags,
+    SymbolInfo, TypeRef,
 };
 
 pub(crate) struct EmitState<'a> {
@@ -536,10 +536,10 @@ impl DataEmitInfo {
         &self,
         symbol_index: usize,
         data: &DefinedDataSymbol,
-    ) -> Option<usize> {
+    ) -> Result<Option<usize>, ()> {
         if data.size == 0 {
             // zero-sized symbols are not relocated
-            return None;
+            return Ok(None);
         }
         let segment_idx = data.index as usize;
         let DataSegmentEmitInfo::Ranges {
@@ -551,17 +551,17 @@ impl DataEmitInfo {
         } = &self.per_segment[segment_idx]
         else {
             // If just copied, then its not relocated
-            return None;
+            return Ok(None);
         };
-        let &(range_index, offset_in_range) = range_lookup
-            .get(&symbol_index)
-            .expect("to find a data relocation index");
+        let Some(&(range_index, offset_in_range)) = range_lookup.get(&symbol_index) else {
+            return Err(());
+        };
         let range = &ranges[range_index];
         let mut address = *base_address;
         address += per_output_offset[&range.in_module];
         address += range.in_module_offset;
         address += offset_in_range;
-        Some(address)
+        Ok(Some(address))
     }
 }
 
@@ -579,19 +579,21 @@ pub struct OutputExport<'a> {
     pub index: u32,
 }
 
+type ModuleFuncId = usize;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum OutputFunction {
     DefinedFromInput {
         input_func_id: InputFuncId,
-        local_index: usize,
+        local_index: ModuleFuncId,
     },
     IndirectCallShim {
         input_func_id: InputFuncId,
-        shim_index: usize,
+        shim_index: ModuleFuncId,
     },
     LocalShim {
         input_func_id: InputFuncId,
-        shim_index: usize,
+        shim_index: ModuleFuncId,
     },
 }
 
@@ -607,7 +609,10 @@ struct ModuleEmitState<'a> {
     defined_functions: Vec<OutputFunction>,
 
     dep_to_local_index: HashMap<DepNode, usize>,
-    local_shims: HashMap<InputFuncId, usize>,
+    local_shims: HashMap<InputFuncId, ModuleFuncId>,
+
+    function_header_len: usize,
+    function_offset_hint: HashMap<ModuleFuncId, usize>,
 }
 
 impl RelocTarget for ModuleEmitState<'_> {
@@ -622,10 +627,18 @@ impl RelocTarget for ModuleEmitState<'_> {
                 let Some(symbol) = details.definition else {
                     return Ok(None);
                 };
-                Ok(self
+                let Ok(address) = self
                     .emit_state
                     .data_relocations
-                    .find_relocated_address(details.symbol_index, symbol))
+                    .find_relocated_address(details.symbol_index, symbol)
+                else {
+                    bail!(
+                        "Dependency analysis error: \
+                        No output address for data symbol {symbol:?} \
+                        referenced by relocation."
+                    );
+                };
+                Ok(address)
             }
             RelocDetails::TableIndex(details) => {
                 let input_func_id = details.index;
@@ -656,8 +669,8 @@ impl RelocTarget for ModuleEmitState<'_> {
                 else {
                     bail!(
                         "Dependency analysis error: \
-                             No output function for input function {input_func_id} \
-                             referenced by relocation."
+                        No output function for input function {input_func_id} \
+                        referenced by relocation."
                     );
                 };
                 Ok(Some(output_func_id))
@@ -682,9 +695,12 @@ impl RelocTarget for ModuleEmitState<'_> {
                 }
                 Ok(None)
             }
+            _ => bail!("unexpected relocation {reloc:?} in code/data section"),
         }
     }
 }
+
+mod dwarf;
 
 impl<'a> ModuleEmitState<'a> {
     fn new(
@@ -879,6 +895,8 @@ impl<'a> ModuleEmitState<'a> {
             exports,
             dep_to_local_index,
             local_shims,
+            function_header_len: 0,
+            function_offset_hint: Default::default(),
         }
     }
 
@@ -891,7 +909,15 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate(&mut self) -> Result<()> {
-        // Encode type section
+        // Encode sections. These must occur in order
+        // most custom sections at the end. The wasm standard doesn't specify a (partial) order, but llvm does
+        // reference: https://github.com/llvm/llvm-project/blob/b5fa9eee6798b678fc7cb5f2b42a977932b708f9/llvm/lib/Object/WasmObjectFile.cpp#L2212-L2220
+        // type < dylink
+        // data < linking
+        // linking < reloc, name
+        // name < producers
+        // producers < target_features
+        // we don't emit dylink, linking, reloc at this point.
         self.generate_type_section()?;
         self.generate_import_section();
         self.generate_function_section();
@@ -904,10 +930,12 @@ impl<'a> ModuleEmitState<'a> {
         self.generate_data_count_section();
         self.generate_code_section()?;
         self.generate_data_section()?;
-        self.generate_wasm_bindgen_sections();
+        // our chosen order thus is: name -> producers -> target_features
         self.generate_name_section()?;
-        self.generate_target_features_section();
         self.generate_producers_section()?;
+        self.generate_target_features_section();
+        self.generate_debug_sections()?;
+        self.generate_wasm_bindgen_sections();
         Ok(())
     }
 
@@ -1210,7 +1238,10 @@ impl<'a> ModuleEmitState<'a> {
                     .parse_function_body(&mut section, body)
                     .with_context(|| format!("re-encoding no-reloc func {}", input_func_id))?;
                 }
-                OutputFunction::DefinedFromInput { input_func_id, .. } => {
+                OutputFunction::DefinedFromInput {
+                    input_func_id,
+                    local_index,
+                } => {
                     let input_func = &self.input_module.defined_funcs
                         [input_func_id - self.input_module.imported_funcs.len()];
                     let relocated_def = self
@@ -1222,6 +1253,10 @@ impl<'a> ModuleEmitState<'a> {
                             )
                         })?;
                     section.raw(&relocated_def);
+                    let offset_after = section.byte_len();
+                    let func_offset = offset_after - relocated_def.len();
+                    tracing::trace!("FunctionOffset[{}] = {}", local_index, func_offset);
+                    self.function_offset_hint.insert(local_index, func_offset);
                 }
                 OutputFunction::IndirectCallShim { input_func_id, .. } => {
                     let indirect_index = self
@@ -1247,7 +1282,26 @@ impl<'a> ModuleEmitState<'a> {
                 }
             }
         }
+        // We need to adjust the offsets by the header of the section.
+        // The section gets written as
+        // struct {
+        //     id: const(10u8),
+        //     len: uleb(_),
+        //     // ---- offsets must be relative to this address
+        //     count: uleb(function_count),
+        //     // ---- offsets above are relative to this address, since we don't predict function_count
+        //     bytes: [u8; section.byte_len()],
+        // }
+        let offset_before_section = self.output_module.len();
+        let content_len = section.byte_len();
         self.output_module.section(&section);
+        let offset_before_content = self.output_module.len() - content_len;
+
+        let mut target_offset = offset_before_section;
+        target_offset += 1; // skip id byte (constant 0xA)
+        target_offset += encoded_uleb_len(&self.output_module.as_slice()[target_offset..]);
+        self.function_header_len = offset_before_content - target_offset;
+        tracing::trace!("function_header_len = {}", self.function_header_len);
         Ok(())
     }
 
@@ -1421,46 +1475,35 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_wasm_bindgen_sections(&mut self) {
-        for custom in self.input_module.custom_sections.iter() {
-            if self.is_main() && custom.name == "__wasm_bindgen_unstable" {
-                self.output_module.section(&wasm_encoder::CustomSection {
-                    name: custom.name.into(),
-                    data: custom.data.into(),
-                });
-            }
+        if !self.is_main() {
+            return;
+        }
+        for custom in &self.input_module.wasm_bindgen_unstable {
+            self.output_module.section(&wasm_encoder::CustomSection {
+                name: custom.name().into(),
+                data: custom.data().into(),
+            });
         }
     }
 
     fn generate_target_features_section(&mut self) {
-        for custom in self.input_module.custom_sections.iter() {
-            if custom.name == "target_features" {
-                self.output_module.section(&wasm_encoder::CustomSection {
-                    name: custom.name.into(),
-                    data: custom.data.into(),
-                });
-            }
+        if let Some(custom) = self.input_module.target_features.as_ref() {
+            self.output_module.section(&wasm_encoder::CustomSection {
+                name: custom.name().into(),
+                data: custom.data().into(),
+            });
         }
     }
 
     fn generate_producers_section(&mut self) -> Result<()> {
         let mut producers = ProducersSection::new();
         let mut produced_by = ProducersField::new();
-        const PRODUCERS_NAME: &str = "producers";
         const PROCESSED_BY_FIELD_NAME: &str = "processed-by";
 
         if self.is_main() {
             // copy the section from input wasm, but insert ourselves
-            if let Some(input_producers) = self
-                .input_module
-                .custom_sections
-                .iter()
-                .find(|section| section.name == PRODUCERS_NAME)
-            {
-                let fields = ProducersSectionReader::new(BinaryReader::new(
-                    input_producers.data,
-                    input_producers.data_offset,
-                ))?;
-                for input_field in fields.into_iter() {
+            if let Some(fields) = self.input_module.producers.as_ref() {
+                for input_field in fields.clone().into_iter() {
                     let input_field = input_field?;
                     let mut field = ProducersField::new();
                     for entry in input_field.values.into_iter() {
@@ -1479,6 +1522,25 @@ impl<'a> ModuleEmitState<'a> {
         producers.field(PROCESSED_BY_FIELD_NAME, &produced_by);
         self.output_module.section(&producers);
         Ok(())
+    }
+
+    fn generate_debug_sections(&mut self) -> Result<()> {
+        if !self.emit_state.input_options.emit_dwarf {
+            return Ok(());
+        }
+        dwarf::emit_debug_info(self)
+    }
+}
+
+/// Seek the length of a uleb that is encoded at the start of the passed buffer
+fn encoded_uleb_len(bytes: &[u8]) -> usize {
+    let mut pos = 0;
+    loop {
+        let last_byte = (bytes[pos] & 0x80) == 0;
+        pos += 1;
+        if last_byte {
+            return pos;
+        }
     }
 }
 

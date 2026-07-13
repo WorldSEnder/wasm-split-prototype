@@ -1,24 +1,25 @@
 use std::{
+    cell::OnceCell,
     collections::{HashMap, HashSet},
     ops::Range,
 };
 
-use eyre::{anyhow, bail, Result};
+use eyre::{anyhow, bail, ensure, Result};
 use tracing::trace;
 use wasmparser::{
-    BinaryReader, CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Export,
-    ExternalKind, Linking, LinkingSectionReader, Payload, RelocAddendKind, RelocSectionReader,
-    RelocationEntry, RelocationType, Segment, SymbolFlags, SymbolInfo,
+    CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Export, ExternalKind,
+    KnownCustom, Linking, Payload, RelocAddendKind, RelocationEntry, RelocationType, Segment,
+    SymbolFlags, SymbolInfo,
 };
 
 use crate::{
     magic_constants,
-    read::{GlobalId, InputFuncId, InputModule, InputOffset, TableId, TagId},
+    read::{GlobalId, InputFuncId, InputModule, InputOffset, SectionId, TableId, TagId},
     util::{find_subrange, shift_range},
 };
 
 // An offset (index) into the bytes of the input module
-pub type SectionIndex = usize;
+pub type SectionIndex = SectionId;
 pub type SymbolIndex = usize;
 
 #[derive(Default)]
@@ -30,70 +31,88 @@ pub struct RelocInfoParser<'a> {
 }
 
 impl<'a> RelocInfoParser<'a> {
-    fn visit_custom(&mut self, custom: &CustomSectionReader<'a>) -> Result<()> {
-        if custom.name() == "linking" {
-            self.has_linking_section = true;
-            let reader =
-                LinkingSectionReader::new(BinaryReader::new(custom.data(), custom.data_offset()))?;
-            let reader = reader.subsections();
-            for subsection in reader {
-                let subsection = subsection?;
-                if let Linking::SegmentInfo(segments) = subsection {
-                    assert!(self.info.segments.is_empty(), "duplicate segments info");
-                    self.info.segments = segments.into_iter().collect::<Result<_, _>>()?;
-                    continue;
-                }
-                if let Linking::SymbolTable(map) = subsection {
-                    assert!(self.info.symbols.is_empty(), "duplicate symbol table");
-                    self.info.symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
-                    for sym in &self.info.symbols {
-                        #[allow(clippy::single_match)] // other special cases might follow
-                        match *sym {
-                            SymbolInfo::Table {
-                                name: Some("__indirect_function_table"),
-                                index,
-                                ..
-                            } => {
-                                self.indirect_function_table = Some(index as TableId);
-                            }
-                            _ => {}
+    fn visit_linking(&mut self, subsection: Linking<'a>) -> Result<()> {
+        match subsection {
+            Linking::SegmentInfo(segments) => {
+                ensure!(self.info.segments.is_empty(), "duplicate segments info");
+                self.info.segments = segments.into_iter().collect::<Result<_, _>>()?;
+                return Ok(());
+            }
+            Linking::SymbolTable(map) => {
+                ensure!(self.info.symbols.is_empty(), "duplicate symbol table");
+                self.info.symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
+                for sym in &self.info.symbols {
+                    #[allow(clippy::single_match)] // other special cases might follow
+                    match *sym {
+                        SymbolInfo::Table {
+                            name: Some("__indirect_function_table"),
+                            index,
+                            ..
+                        } => {
+                            self.indirect_function_table = Some(index as TableId);
                         }
+                        _ => {}
                     }
                 }
             }
-        } else if custom.name().starts_with("reloc.") {
-            let reader =
-                RelocSectionReader::new(BinaryReader::new(custom.data(), custom.data_offset()))?;
-            let mut reloc_entries = reader
-                .entries()
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
-            // We need to slices of entries when we search for a specific offset
-            // We *might* be fine with assuming that the entries are already sorted, but a single pass to correct this
-            // doesn't cost a lot of performance.
-            reloc_entries.sort_unstable_by_key(|entry| entry.offset);
-            self.info
-                .relocs
-                .insert(reader.section_index() as SectionIndex, reloc_entries);
+            _ => {}
         }
         Ok(())
     }
-    pub fn visit_payload(&mut self, payload: &Payload<'a>) -> Result<()> {
-        let section_index = self.info.section_ranges.len();
-        if let Some((_, section_range)) = payload.as_section() {
-            self.info.section_ranges.push(section_range);
+    fn visit_custom(&mut self, custom: &CustomSectionReader<'a>) -> Result<bool> {
+        match custom.as_known() {
+            KnownCustom::Linking(reader) => {
+                self.has_linking_section = true;
+                for subsection in reader.subsections() {
+                    let () = self.visit_linking(subsection?)?;
+                }
+                Ok(true)
+            }
+            KnownCustom::Reloc(reader) => {
+                let mut reloc_entries = reader
+                    .entries()
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()?;
+                // We need to slices of entries when we search for a specific offset
+                // We *might* be fine with assuming that the entries are already sorted, but a single pass to correct this
+                // doesn't cost a lot of performance.
+                reloc_entries.sort_unstable_by_key(|entry| entry.offset);
+                self.info
+                    .relocs
+                    .insert(reader.section_index() as SectionIndex, reloc_entries);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+    pub fn visit_payload(&mut self, payload: &Payload<'a>) -> Result<bool> {
+        let section_index = self.info.relocatable_ranges.len();
+        if let Some((_, mut section_range)) = payload.as_section() {
+            if let Payload::CustomSection(custom) = payload {
+                // Not sure where this is specified, and it might even be wrong.
+                // https://github.com/WebAssembly/tool-conventions/blob/main/Linking.md#relocation-sections says:
+                // > offset: relative to the relevant section's contents: offset zero is immediately after the id and size of the section
+                // well, the data offset comes after the name of the custom section, not "immediately after the id and size".
+                // alas, llvm seems to generate relocations relative to data offset though.
+                section_range.start = custom.data_offset();
+            }
+            self.info.relocatable_ranges.push(section_range);
         }
         match payload {
             Payload::DataSection(_) => {
                 self.info.data_section_index = section_index;
+                Ok(true)
             }
             Payload::CodeSectionStart { .. } => {
                 self.info.code_section_index = section_index;
+                Ok(true)
             }
-            Payload::CustomSection(reader) => self.visit_custom(reader)?,
-            _ => {}
-        };
-        Ok(())
+            Payload::CustomSection(reader) => {
+                self.info.custom_sections.insert(section_index);
+                self.visit_custom(reader)
+            }
+            _ => Ok(false),
+        }
     }
     pub fn finish(self, module: &InputModule<'a>) -> Result<RelocInfo<'a>> {
         let mut info = self.info;
@@ -309,8 +328,12 @@ fn reconstruct_global_symbols(reloc_info: &mut RelocInfo<'_>, module: &InputModu
 
 #[derive(Default)]
 pub struct RelocInfo<'a> {
-    pub section_ranges: Vec<Range<InputOffset>>,
+    // The relocatable range within each section. The start offset is the base from which
+    // the relocation entry is offset from.
+    pub relocatable_ranges: Vec<Range<InputOffset>>,
     pub segments: Vec<Segment<'a>>,
+    pub custom_sections: HashSet<SectionId>,
+    invalid_reloc_warn: OnceCell<()>,
 
     pub code_section_index: SectionIndex,
     pub data_section_index: SectionIndex,
@@ -365,14 +388,14 @@ impl RelocInfo<'_> {
             trace!(%section, "Reloc section <<<<<<<<<<<<<<<<<<<<<<<<");
         }
     }
-    pub fn section_offset(&self, section: SectionIndex) -> InputOffset {
-        self.section_ranges[section].start
+    pub fn reloc_base(&self, section: SectionIndex) -> InputOffset {
+        self.relocatable_ranges[section].start
     }
-    pub fn data_section_offset(&self) -> InputOffset {
-        self.section_offset(self.data_section_index)
+    pub fn data_section_reloc_base(&self) -> InputOffset {
+        self.reloc_base(self.data_section_index)
     }
-    pub fn code_section_offset(&self) -> InputOffset {
-        self.section_offset(self.code_section_index)
+    pub fn code_section_reloc_base(&self) -> InputOffset {
+        self.reloc_base(self.code_section_index)
     }
     pub fn iter_section_relocs(&self, section: SectionIndex) -> &'_ [RelocationEntry] {
         self.relocs
@@ -394,18 +417,18 @@ impl RelocInfo<'_> {
         impl Iterator<Item = &RelocationEntry> + use<'_>,
     ) {
         let target_sections = find_subrange(
-            &self.section_ranges,
+            &self.relocatable_ranges,
             |section_range| section_range.end >= range.end,
             |section_range| section_range.start < range.end,
         );
         let section = target_sections.start;
-        let section_range = &self.section_ranges[section];
+        let section_range = &self.relocatable_ranges[section];
+        let reloc_base = section_range.start;
         assert!(
             section_range.start <= range.start && range.end <= section_range.end,
             "range to rellocate should be fully contained in one section"
         );
-        let section_subrange =
-            (range.start - section_range.start)..(range.end - section_range.start);
+        let section_subrange = (range.start - reloc_base)..(range.end - reloc_base);
 
         let section_relocs = self.iter_section_relocs(section);
         let reloc_range = find_subrange(
@@ -414,7 +437,7 @@ impl RelocInfo<'_> {
             |reloc| (reloc.offset as usize) < section_subrange.end,
         );
 
-        (section_range.start, section_relocs[reloc_range].iter())
+        (reloc_base, section_relocs[reloc_range].iter())
     }
 
     pub fn get_relocated_data(
@@ -425,8 +448,9 @@ impl RelocInfo<'_> {
         let this = &module.reloc_info;
         let mut data = Vec::from(&module.raw[range.clone()]);
         let (reloc_base, relocs) = this.get_relocations_for_range(&range);
+        let reloc_base_to_data_off = range.start - reloc_base;
         for relocation in relocs {
-            this.apply_relocation(target, &mut data, range.start, reloc_base, relocation)?;
+            this.apply_relocation(target, &mut data, reloc_base_to_data_off, relocation)?;
         }
         Ok(data)
     }
@@ -434,6 +458,9 @@ impl RelocInfo<'_> {
     pub fn expand_relocation(&self, relocation: &RelocationEntry) -> Result<RelocDetails<'_>> {
         use wasmparser::RelocationType::*;
         let symbol_index = relocation.index as usize;
+        if symbol_index > self.symbols.len() {
+            bail!("Found {relocation:?} with invalid symbol index?");
+        }
         let symbol = &self.symbols[symbol_index];
         let ty = relocation.ty;
         match ty {
@@ -527,13 +554,38 @@ impl RelocInfo<'_> {
                 _symbol_idx: symbol_index,
                 _symbol: *symbol,
             }),
-            wasmparser::RelocationType::SectionOffsetI32
-            | wasmparser::RelocationType::FunctionOffsetI32
+            wasmparser::RelocationType::FunctionOffsetI32
             | wasmparser::RelocationType::FunctionOffsetI64 => {
-                bail!(
-                    "unhandled relocation ty {:?} in module relocation",
-                    relocation.ty
+                let wasmparser::SymbolInfo::Func { flags, index, name } = *symbol else {
+                    bail!("Expected a func symbol as target of a FUNCTION_OFFSET relocation, got {symbol:?}");
+                };
+                Ok(RelocDetails::FunctionOffset(SymbolDetails {
+                    _symbol_index: symbol_index,
+                    _flags: flags,
+                    index: index as InputFuncId,
+                    _name: name,
+                }))
+            }
+            wasmparser::RelocationType::SectionOffsetI32 => {
+                let wasmparser::SymbolInfo::Section { flags, section } = *symbol else {
+                    bail!("Expected a section symbol as target of a SECTION_OFFSET relocation, got {symbol:?}");
+                };
+                let section = section as SectionId;
+                // If the reloc points to a section with semantic context (such as data/code), we expect to relocate against a symbol,
+                // not by offset. It is used e.g. to point to DIE in debug_info sections. Why this happens via offset and not by some
+                // kind of "symbol" "inside" that custom section with an associated range similar to data symbols is a question I can
+                // not answer.
+                // NOTE: it seems newer compiler versions do not bother to emit this in any case.
+                ensure!(
+                    self.custom_sections.contains(&section),
+                    "Expect a SECTION_OFFSET relocation to point into a custom section"
                 );
+                Ok(RelocDetails::SectionOffset(SymbolDetails {
+                    _symbol_index: symbol_index,
+                    index: section,
+                    _flags: flags,
+                    _name: None,
+                }))
             } // [relocate data segments]
               // TODO: there is no relocation for data segment indices. As such, we'd have to parse the opcodes to find
               // references to passive and declarative data segments. The solution: only handling active segments
@@ -541,35 +593,56 @@ impl RelocInfo<'_> {
         }
     }
 
-    fn apply_relocation(
+    fn apply_relocation<T: RelocTarget>(
         &self,
-        reloc_target: &impl RelocTarget,
+        reloc_target: &T,
         data: &mut [u8],
-        data_offset: InputOffset,
-        reloc_base: InputOffset,
+        reloc_base_to_data_off: usize,
         relocation: &RelocationEntry,
     ) -> Result<()> {
+        // TODO(MSRV): -1i32.cast_unsigned() since rust 1.87
+        let relocated = if relocation.index == (-1i32 as u32) {
+            // We have found a relocation against a symbol that isn't in the symbol table.
+            // This most likely means that we will miss out on correct relocations.
+            // We must handle this though, as some compilers will emit relocations in the debug section
+            // against non-public symbols and use index -1 for those.
+            let fixup = reloc_target.fixup_reloc_entry(relocation)?;
+            if fixup.is_none_or(|addr| addr == SENTINEL_UNDEF) {
+                self.invalid_reloc_warn.get_or_init(|| {
+                    tracing::warn!(
+                        "Skipping relocation {relocation:?} with tombstone symbol (others omitted)"
+                    );
+                });
+            }
+            fixup
+        } else {
+            let details = self.expand_relocation(relocation)?;
+            reloc_target.reloc_value(details)?
+        };
         let relocation_range = relocation.relocation_range()?;
-        let target = &mut data[(reloc_base + relocation_range.start - data_offset)
-            ..(reloc_base + relocation_range.end - data_offset)];
+        let target = &mut data[(relocation_range.start - reloc_base_to_data_off)
+            ..(relocation_range.end - reloc_base_to_data_off)];
         let ty = relocation.ty;
-        let relocated = reloc_target.reloc_value(self.expand_relocation(relocation)?)?;
         let Some(value) = relocated else {
             return Ok(());
         };
-        // handle overflow maybe? Not sure if wrapping would be correct
-        let value: i64 = value.try_into().expect("relocated value too big");
         debug_assert!(
             relocation.addend == 0 || ty.addend_kind() != RelocAddendKind::None,
             "relocation {relocation:?} without addend should have addend == 0, not {}",
             relocation.addend,
         );
-        let value = value + relocation.addend;
-        encode_for_ty(ty)(value, target);
+        let () = encode_for_ty(
+            ty,
+            value,
+            relocation.addend as isize,
+            target,
+            T::SENTINEL_UNDEF,
+        )?;
         Ok(())
     }
 }
 
+#[derive(Debug)]
 pub struct SymbolDetails<'a, Idx> {
     pub _symbol_index: usize,
     pub index: Idx,
@@ -577,6 +650,7 @@ pub struct SymbolDetails<'a, Idx> {
     pub _name: Option<&'a str>,
 }
 
+#[derive(Debug)]
 pub struct DataDetails<'a> {
     pub symbol_index: usize,
     pub _flags: SymbolFlags,
@@ -584,6 +658,7 @@ pub struct DataDetails<'a> {
     pub definition: Option<&'a DefinedDataSymbol>,
 }
 
+#[derive(Debug)]
 pub enum RelocDetails<'a> {
     TypeIndex {
         _symbol_idx: usize,
@@ -596,9 +671,24 @@ pub enum RelocDetails<'a> {
     TableNumber(SymbolDetails<'a, TableId>),
     GlobalIndex(SymbolDetails<'a, GlobalId>),
     TagIndex(SymbolDetails<'a, TagId>),
+    FunctionOffset(SymbolDetails<'a, InputFuncId>),
+    SectionOffset(SymbolDetails<'a, SectionId>),
 }
 
+pub const SENTINEL_UNDEF: usize = usize::MAX;
 pub trait RelocTarget {
+    const SENTINEL_UNDEF: bool = false;
+    /// Fixup a relocation entry with an invalid symbol. If this fixup fails,
+    /// we warn and relocate to a tombstone address or error if tombstones
+    /// are not enabled for this relocation context.
+    fn fixup_reloc_entry(&self, entry: &RelocationEntry) -> Result<Option<usize>> {
+        // assert: entry.index == (-1i32 as u32)
+        ensure!(
+            Self::SENTINEL_UNDEF,
+            "Invalid relocation {entry:?} with tombstone symbol couldn't be fixed"
+        );
+        Ok(Some(SENTINEL_UNDEF))
+    }
     fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>>;
 }
 
@@ -650,47 +740,65 @@ fn encode_u64(value: u64, buf: &mut [u8; 8]) {
     *buf = value.to_le_bytes();
 }
 
-fn encode_for_ty(ty: RelocationType) -> fn(i64, &mut [u8]) {
+fn encode_for_ty(
+    ty: RelocationType,
+    value: usize,
+    addend: isize,
+    target: &mut [u8],
+    allow_undef: bool,
+) -> Result<()> {
     use RelocationType::*;
+    let resolved = if allow_undef && value == SENTINEL_UNDEF {
+        Some(SENTINEL_UNDEF)
+    } else {
+        value.checked_add_signed(addend)
+    };
+    let Some(resolved) = resolved else {
+        bail!("reloc {ty:?} <{value:x}{addend:+}> overflows")
+    };
+    macro_rules! try_into_value {
+        ($resolved:ident as $t:ty, $msg:literal) => {
+            match $resolved {
+                SENTINEL_UNDEF if allow_undef => -1isize as $t,
+                resolved if let Ok(resolved) = resolved.try_into() => resolved,
+                resolved => bail!("{}: {resolved:x}", $msg),
+            }
+        };
+    }
     match ty {
         TableIndexI32 | MemoryAddrI32 | FunctionOffsetI32 | SectionOffsetI32 | GlobalIndexI32
-        | FunctionIndexI32 | MemoryAddrLocrelI32 => |value, target| {
-            encode_u32(
-                value.try_into().expect("invalid value for I32 relocation"),
-                target.try_into().unwrap(),
-            )
-        },
+        | FunctionIndexI32 | MemoryAddrLocrelI32 => {
+            let resolved = try_into_value!(resolved as u32, "invalid value for I32 relocation");
+            encode_u32(resolved, target.try_into().unwrap());
+            Ok(())
+        }
         FunctionIndexLeb | MemoryAddrLeb | TypeIndexLeb | GlobalIndexLeb | EventIndexLeb
-        | TableNumberLeb => |value, target| {
-            encode_leb128_u32_5byte(
-                value.try_into().expect("invalid value for leb relocation"),
-                target.try_into().unwrap(),
-            );
-        },
+        | TableNumberLeb => {
+            let resolved = try_into_value!(resolved as u32, "invalid value for leb relocation");
+            encode_leb128_u32_5byte(resolved, target.try_into().unwrap());
+            Ok(())
+        }
         TableIndexSleb | MemoryAddrSleb | MemoryAddrRelSleb | TableIndexRelSleb
-        | MemoryAddrTlsSleb => |value, target| {
-            encode_leb128_i32_5byte(
-                value.try_into().expect("invalid value for sleb relocation"),
-                target.try_into().unwrap(),
-            );
-        },
-        FunctionOffsetI64 | MemoryAddrI64 | TableIndexI64 => |value, target| {
-            encode_u64(
-                value.try_into().expect("invalid value for I64 relocation"),
-                target.try_into().unwrap(),
-            );
-        },
-        MemoryAddrLeb64 => |value, target| {
-            encode_leb128_u64_10byte(
-                value
-                    .try_into()
-                    .expect("invalid value for leb64 relocation"),
-                target.try_into().unwrap(),
-            );
-        },
+        | MemoryAddrTlsSleb => {
+            let resolved = try_into_value!(resolved as i32, "invalid value for sleb relocation");
+            encode_leb128_i32_5byte(resolved, target.try_into().unwrap());
+            Ok(())
+        }
+        FunctionOffsetI64 | MemoryAddrI64 | TableIndexI64 => {
+            let resolved = try_into_value!(resolved as u64, "invalid value for I64 relocation");
+            encode_u64(resolved, target.try_into().unwrap());
+            Ok(())
+        }
+        MemoryAddrLeb64 => {
+            let resolved = try_into_value!(resolved as u64, "invalid value for leb64 relocation");
+            encode_leb128_u64_10byte(resolved, target.try_into().unwrap());
+            Ok(())
+        }
         MemoryAddrRelSleb64 | TableIndexSleb64 | TableIndexRelSleb64 | MemoryAddrTlsSleb64
-        | MemoryAddrSleb64 => |value, target| {
-            encode_leb128_i64_10byte(value, target.try_into().unwrap());
-        },
+        | MemoryAddrSleb64 => {
+            let resolved = try_into_value!(resolved as i64, "invalid value for sleb64 relocation");
+            encode_leb128_i64_10byte(resolved, target.try_into().unwrap());
+            Ok(())
+        }
     }
 }

@@ -47,6 +47,8 @@ pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
                 RelocDetails::TableNumber(details) => Some(DepNode::Table(details.index)),
                 RelocDetails::GlobalIndex(details) => Some(DepNode::Global(details.index)),
                 RelocDetails::TagIndex(details) => Some(DepNode::Tag(details.index)),
+                RelocDetails::FunctionOffset(details) => Some(DepNode::Function(details.index)),
+                RelocDetails::SectionOffset(_) => None,
             };
             if let Some(target) = target {
                 self.add_dep(a, target);
@@ -146,7 +148,7 @@ fn iter_functions_with_relocs<'m>(
     module: &'m InputModule,
 ) -> impl Iterator<Item = Result<(InputFuncId, &'m RelocationEntry)>> {
     let code_relocs = module.reloc_info.iter_code_relocs();
-    let code_section_offset = module.reloc_info.code_section_offset();
+    let code_section_offset = module.reloc_info.code_section_reloc_base();
     let mut function_index = 0;
     code_relocs.map(move |entry| {
         let reloc_file_range = shift_range(entry.relocation_range()?, code_section_offset);
@@ -275,7 +277,7 @@ macro_rules! emit_iter_err {
 fn iter_data_dependencies<'m>(
     module: &'m InputModule,
 ) -> impl Iterator<Item = Result<DataDependency<'m>>> {
-    let data_section_offset = module.reloc_info.data_section_offset();
+    let data_section_offset = module.reloc_info.data_section_reloc_base();
     let mut data_relocs = module.reloc_info.iter_data_relocs().peekable();
     let mut data_symbols = module.reloc_info.data_symbols.iter().peekable();
 

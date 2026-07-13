@@ -122,6 +122,7 @@ fn wasm_split_cli(target: &Path, dir: &Path) -> Result<(PathBuf, Report)> {
         split_opts.main_module = "./wasm-bindgen-test";
         split_opts.verbose = true;
         split_opts.strict_tests = true;
+        split_opts.emit_dwarf = true;
         split_opts
     })?;
     let time_taken = Instant::now().duration_since(start_time);

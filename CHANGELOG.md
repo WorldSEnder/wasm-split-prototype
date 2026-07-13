@@ -1,3 +1,9 @@
+## wasm_split_cli vfuture
+
+- Experimental support to emit debug sections. By default enabled via environment variable
+  `WASM_SPLIT_CLI_ENABLE_DWARF`. The current setup duplicates the DWARF information into
+  all output modules, which can lead to large split files.
+
 ## wasm_split_helpers v0.2.3
 
 - Propagate `debug_assertions` to the CLI with a new marker in the hidden `#[link_section]`.

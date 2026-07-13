@@ -10,9 +10,17 @@ fn lazy() -> u32 {
     42
 }
 
+fn run_computation(a: u32, b: u32) -> u32 {
+    // this function is longer than necessary to allow more debugger targets :)
+    dbg!(a, b);
+    let c = a + b;
+    dbg!(c);
+    c
+}
+
 #[wasm_split(split)]
-fn args_test((a, b): (u32, u32), _: &str) -> u32 {
-    a + b
+pub fn args_test((a, b): (u32, u32), _: &str) -> u32 {
+    run_computation(a, b)
 }
 
 #[wasm_split(
