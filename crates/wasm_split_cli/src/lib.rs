@@ -43,7 +43,7 @@ pub struct Options<'a> {
     /// Default: false
     pub verbose: bool,
     /// Switch to transform and emit `.debug_` sections.
-    /// 
+    ///
     /// This option is experimental.
     /// Default: `true` if the `WASM_SPLIT_CLI_ENABLE_DWARF` environment variable is non-empty.
     pub emit_dwarf: bool,
@@ -61,7 +61,8 @@ impl<'wasm> Options<'wasm> {
             link_name: "./__wasm_split.js",
             main_module: "./main.js",
             verbose: false,
-            emit_dwarf: std::env::var_os("WASM_SPLIT_CLI_ENABLE_DWARF").is_some_and(|v| !v.is_empty()),
+            emit_dwarf: std::env::var_os("WASM_SPLIT_CLI_ENABLE_DWARF")
+                .is_some_and(|v| !v.is_empty()),
             strict_tests: false,
         }
     }
