@@ -1521,6 +1521,9 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_debug_sections(&mut self) -> Result<()> {
+        if !self.emit_state.input_options.emit_dwarf {
+            return Ok(())
+        }
         dwarf::emit_debug_info(self)
     }
 }
