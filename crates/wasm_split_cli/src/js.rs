@@ -11,6 +11,7 @@ use crate::{
 type PrefetchMap = HashMap<String, Vec<String>>;
 pub struct LinkModuleWriter<'p> {
     input_module: &'p InputModule<'p>,
+    input_options: &'p crate::Options<'p>,
     program_info: &'p SplitProgramInfo,
     javascript: String,
     prefetch_map: PrefetchMap,
@@ -21,6 +22,7 @@ impl<'p> LinkModuleWriter<'p> {
         Self {
             program_info,
             input_module: emit_state.input(),
+            input_options: emit_state.input_options(),
             javascript: String::new(),
             prefetch_map: HashMap::new(),
         }
@@ -29,11 +31,23 @@ impl<'p> LinkModuleWriter<'p> {
         self.program_info.canary_export_name()
     }
     fn write_main_import(&mut self, mod_path: &str) -> Result<()> {
-        Ok(writeln!(
-            &mut self.javascript,
-            r#"import {{ initSync }} from "{}";"#,
-            mod_path
-        )?)
+        match self.input_options.target {
+            crate::OutputTarget::Web => writeln!(
+                &mut self.javascript,
+                r#"import {{ initSync }} from "{}";
+function getMainExports() {{ return initSync(undefined, undefined); }}
+"#,
+                mod_path
+            )?,
+            crate::OutputTarget::Bundler => writeln!(
+                &mut self.javascript,
+                r#"import * as __wasm from "{}";
+function getMainExports() {{ return __wasm }}
+"#,
+                mod_path
+            )?,
+        }
+        Ok(())
     }
     fn write_get_shared_imports(&mut self, main_shares: &str) -> Result<()> {
         let canary_props = if self.input_module.options.debug_assertions {
@@ -47,8 +61,7 @@ impl<'p> LinkModuleWriter<'p> {
 function getSharedImports() {{
     if (sharedImports === undefined) {{
         sharedImports = {{ __wasm_split: {{ {canary_props} }} }};
-        const mainExports = initSync(undefined, undefined);
-        const {{ {main_shares} }} = mainExports;
+        const {{ {main_shares} }} = getMainExports();
         Object.assign(sharedImports.__wasm_split, {{ {main_shares} }});
     }}
     return sharedImports;

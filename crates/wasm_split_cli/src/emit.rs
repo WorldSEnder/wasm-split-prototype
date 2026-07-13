@@ -93,8 +93,11 @@ impl<'a> EmitState<'a> {
         })
     }
 
-    pub(crate) fn input(&self) -> &InputModule<'_> {
+    pub(crate) fn input(&self) -> &'a InputModule<'a> {
         self.input_module
+    }
+    pub(crate) fn input_options(&self) -> &'a crate::Options<'a> {
+        self.input_options
     }
 
     fn get_indirect_function_table_type(&self) -> wasmparser::TableType {

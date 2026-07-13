@@ -17,6 +17,12 @@ mod split_point;
 mod util;
 
 #[non_exhaustive]
+pub enum OutputTarget {
+    Web,
+    Bundler,
+}
+
+#[non_exhaustive]
 pub struct Options<'a> {
     /// The input wasm to split
     pub input_wasm: &'a [u8],
@@ -34,7 +40,13 @@ pub struct Options<'a> {
     ///
     /// Default: `"./__wasm_split.js"`
     pub link_name: &'a str,
-    /// From where will `initSync` be imported from?
+    /// Output target
+    /// 
+    /// Default: Web
+    pub target: OutputTarget,
+    /// The meaning of this depends on the target:
+    /// - for web, this is that module path from where `initSync` will be imported from
+    /// - for bundler this is the module path to the wasm module
     ///
     /// Default: `"./main.js"`
     pub main_module: &'a str,
@@ -60,6 +72,7 @@ impl<'wasm> Options<'wasm> {
             main_out_path: Path::new("wasm_split/main.wasm"),
             link_name: "./__wasm_split.js",
             main_module: "./main.js",
+            target: OutputTarget::Web,
             verbose: false,
             emit_dwarf: std::env::var_os("WASM_SPLIT_CLI_ENABLE_DWARF")
                 .is_some_and(|v| !v.is_empty()),
