@@ -632,7 +632,11 @@ impl RelocTarget for ModuleEmitState<'_> {
                     .data_relocations
                     .find_relocated_address(details.symbol_index, symbol)
                 else {
-                    panic!("couldn't find a data relocation index")
+                    bail!(
+                        "Dependency analysis error: \
+                        No output address for data symbol {symbol:?} \
+                        referenced by relocation."
+                    );
                 };
                 Ok(address)
             }
@@ -665,8 +669,8 @@ impl RelocTarget for ModuleEmitState<'_> {
                 else {
                     bail!(
                         "Dependency analysis error: \
-                             No output function for input function {input_func_id} \
-                             referenced by relocation."
+                        No output function for input function {input_func_id} \
+                        referenced by relocation."
                     );
                 };
                 Ok(Some(output_func_id))
