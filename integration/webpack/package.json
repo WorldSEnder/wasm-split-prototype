@@ -5,12 +5,13 @@
   "scripts": {
     "build": "rimraf dist pkg && webpack",
     "start": "rimraf dist pkg && webpack serve --open",
-    "test": "cargo test && wasm-pack test --headless"
+    "test": "npm run build && mochapack --webpack-config webpack.config-test.js js/*.test.js"
   },
   "devDependencies": {
     "chalk": "^2.4.1",
-    "command-exists": "^1.2.7",
-    "copy-webpack-plugin": "^5.0.3",
+    "copy-webpack-plugin": "^14.0.0",
+    "mocha": "^9.0.0",
+    "mochapack": "^2.1.5",
     "rimraf": "^3.0.0",
     "stream-json": "^3.5.0",
     "watchpack": "^2.1.1",

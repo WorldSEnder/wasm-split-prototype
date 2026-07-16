@@ -13,8 +13,7 @@ function wrapAsyncCb(callee) {
         }
     }
 }
-function makeLoad(fetchOpts, deps) {
-    const fetcher = makeFetch(fetchOpts);
+function makeLoad(fetcher, deps) {
     const loader = async () => {
         const parallelStuff = deps.map(d => d());
         const instantiate = fetcher();

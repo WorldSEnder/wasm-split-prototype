@@ -10,7 +10,8 @@ module.exports = {
   },
   output: {
     path: dist,
-    filename: "[name].js"
+    filename: "[name].js",
+    clean: true,
   },
   devServer: {
     static: {
@@ -21,9 +22,11 @@ module.exports = {
     },
   },
   plugins: [
-    new CopyPlugin([
-      path.resolve(__dirname, "static")
-    ]),
+    new CopyPlugin({
+      patterns: [
+        { from: path.resolve(__dirname, "static"), to: dist },
+      ]
+    }),
 
     new WasmPackPlugin({
       crateDirectory: path.resolve(__dirname, "../simple"),
@@ -31,5 +34,6 @@ module.exports = {
   ],
   experiments: {
     asyncWebAssembly: true,
+    sourceImport: true,
   }
 };

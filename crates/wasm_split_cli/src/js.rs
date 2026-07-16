@@ -74,12 +74,10 @@ function getSharedImports() {{
     fn write_runtime(&mut self) -> Result<()> {
         self.javascript
             .push_str(include_str!("./snippets/split_wasm.js"));
-        self.javascript
-            .push_str(if self.input_module.options.debug_assertions {
-                include_str!("./snippets/makeFetch.web.debug.js")
-            } else {
-                include_str!("./snippets/makeFetch.web.js")
-            });
+        if self.input_module.options.debug_assertions {
+            self.javascript
+                .push_str(include_str!("./snippets/instantiate.debug.js"));
+        }
         Ok(())
     }
     fn write_export_const(&mut self, name: &str, def: &impl std::fmt::Display) -> Result<()> {
@@ -88,20 +86,36 @@ function getSharedImports() {{
             "export const {name} = {def};"
         )?)
     }
-    fn fetch_opts<'pth>(&self, empty: bool, file_path: impl 'pth + std::fmt::Display) -> String {
+    fn fetcher<'pth>(&self, empty: bool, file_path: impl 'pth + std::fmt::Display) -> String {
         if empty {
-            "undefined".to_string()
+            return "() => async (_imp) => ({})".to_string();
+        }
+        let wrap = if self.input_module.options.debug_assertions {
+            "debugWrap"
         } else {
-            // Note: the expression returned from here should:
-            // - allow lazily fetching the wasm module (no top-level import)
-            // - allow bundlers and downstream code to recognize it as an expression to a path ("relocate" the import)
-            // TODO: try other syntax for different targets:
-            // - `import.source(<file_path>)`
-            // - `URL.resolve(<file_path)` (support is not as good as for new URL)
+            ""
+        };
+        // Note: the expression returned from here should:
+        // - allow lazily fetching the wasm module (no top-level import)
+        // - allow bundlers and downstream code to recognize it as an expression to a path ("relocate" the import)
+        match self.input_options.target {
             // Note: we use the form `new URL(<string literal>, import.meta.url)` which is understood by some
             // bundlers as syntax that can get rewritten if the path from where the file gets fetched is changed
             // (for example due to attaching a has of its contents).
-            format!("new URL({}, import.meta.url)", file_path)
+            crate::OutputTarget::Web(_) => format!(
+                r#"() => {{
+    const src = fetch(new URL({file_path}, import.meta.url));
+    return async (imports) => {wrap}(WebAssembly.instantiateStreaming(src, imports));
+}}
+"#
+            ),
+            crate::OutputTarget::Bundler(_) => format!(
+                r#"() => {{
+    const module = import.source({file_path});
+    return async (imports) => {wrap}(new WebAssembly.Instance(await module, imports));
+}}
+"#
+            ),
         }
     }
     fn write_loaders(&mut self, program: &SplitProgramInfo) -> Result<()> {
@@ -115,10 +129,10 @@ function getSharedImports() {{
             let var_name = format!("__chunk_{module_index}");
             let splits_dbg = splits.iter().cloned().collect::<Vec<_>>().join(", ");
             writeln!(&mut self.javascript, "/* {splits_dbg} */")?;
-            let fetch_opts = self.fetch_opts(is_empty, format_args!("\"./{file_name}.wasm\""));
+            let fetcher = self.fetcher(is_empty, format_args!("\"./{file_name}.wasm\""));
             writeln!(
                 &mut self.javascript,
-                "const {var_name} = makeLoad({fetch_opts}, []);"
+                "const {var_name} = makeLoad({fetcher}, []);"
             )?;
             for split in splits {
                 split_deps
@@ -145,7 +159,7 @@ function getSharedImports() {{
             let loader_name = identifier.loader_name();
             let deps = split_deps.remove(split).unwrap_or_default();
             let deps = deps.join(", ");
-            let fetch_opts = self.fetch_opts(is_empty, format_args!("\"./{file_name}.wasm\""));
+            let fetch_opts = self.fetcher(is_empty, format_args!("\"./{file_name}.wasm\""));
             self.write_export_const(
                 &loader_name,
                 &format_args!("wrapAsyncCb(makeLoad({fetch_opts}, [{deps}]))"),
