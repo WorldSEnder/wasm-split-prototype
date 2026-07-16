@@ -1,11 +1,11 @@
 {
   "author": "You <you@example.com>",
-  "name": "wasms-split-webpack-template",
+  "name": "wasm-split-webpack-template",
   "version": "0.1.0",
   "scripts": {
     "build": "rimraf dist pkg && webpack",
     "start": "rimraf dist pkg && webpack serve --open",
-    "test": "npm run build && mochapack --webpack-config webpack.config-test.js js/*.test.js"
+    "test": "rimraf dist pkg && webpack build --config webpack.config-test.js && mochapack --webpack-config webpack.config-test.js js/*.test.js"
   },
   "devDependencies": {
     "chalk": "^2.4.1",
