@@ -1,0 +1,22 @@
+{
+  "author": "You <you@example.com>",
+  "name": "wasms-split-webpack-template",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "rimraf dist pkg && webpack",
+    "start": "rimraf dist pkg && webpack serve --open",
+    "test": "cargo test && wasm-pack test --headless"
+  },
+  "devDependencies": {
+    "chalk": "^2.4.1",
+    "command-exists": "^1.2.7",
+    "copy-webpack-plugin": "^5.0.3",
+    "rimraf": "^3.0.0",
+    "stream-json": "^3.5.0",
+    "watchpack": "^2.1.1",
+    "webpack": "^5.108.4",
+    "webpack-cli": "^7.2.1",
+    "webpack-dev-server": "^6.0.0",
+    "which": "^2.0.2"
+  }
+}

@@ -32,17 +32,15 @@ impl<'p> LinkModuleWriter<'p> {
     }
     fn write_main_import(&mut self, mod_path: &str) -> Result<()> {
         match self.input_options.target {
-            crate::OutputTarget::Web => writeln!(
+            crate::OutputTarget::Web(_) => writeln!(
                 &mut self.javascript,
                 r#"import {{ initSync }} from "{}";
-function getMainExports() {{ return initSync(undefined, undefined); }}
 "#,
                 mod_path
             )?,
-            crate::OutputTarget::Bundler => writeln!(
+            crate::OutputTarget::Bundler(_) => writeln!(
                 &mut self.javascript,
                 r#"import * as __wasm from "{}";
-function getMainExports() {{ return __wasm }}
 "#,
                 mod_path
             )?,
@@ -55,13 +53,17 @@ function getMainExports() {{ return __wasm }}
         } else {
             String::new()
         };
+        let main_exports = match self.input_options.target {
+            crate::OutputTarget::Web(_) => "initSync(undefined, undefined)",
+            crate::OutputTarget::Bundler(_) => "__wasm",
+        };
         Ok(write!(
             &mut self.javascript,
             r#"let sharedImports = undefined;
 function getSharedImports() {{
     if (sharedImports === undefined) {{
         sharedImports = {{ __wasm_split: {{ {canary_props} }} }};
-        const {{ {main_shares} }} = getMainExports();
+        const {{ {main_shares} }} = {main_exports};
         Object.assign(sharedImports.__wasm_split, {{ {main_shares} }});
     }}
     return sharedImports;
