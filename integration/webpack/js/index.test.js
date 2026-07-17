@@ -7,8 +7,11 @@ function assert(value, msg = undefined) {
 
 describe('Simple', () => {
     it('should load', async () => {
+        await import('./index');
+    })
+    it('should compute', async () => {
         const { call_args_test } = await import('./index');
         const result = await call_args_test(10, 20);
-        assert(30 == 30, 'it should compute the result');
+        assert(result == 30, 'the sum of 10 + 20 should be 30');
     })
 })
