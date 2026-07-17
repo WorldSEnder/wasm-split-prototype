@@ -316,7 +316,7 @@ fn reconstruct_global_symbols(reloc_info: &mut RelocInfo<'_>, module: &InputModu
                     usize::try_from(value).context("a valid address should fit into a usize")?
                 }
                 _ => {
-                    bail!("expected a constant initializer expression for an exported data symbol")
+                    bail!("expected a constant initializer expression for an exported data symbol");
                 }
             };
             // could decode the symbol's address from the data-segment base address here too. Trust that this is correct
@@ -754,14 +754,16 @@ fn encode_for_ty(
         value.checked_add_signed(addend)
     };
     let Some(resolved) = resolved else {
-        bail!("reloc {ty:?} <{value:x}{addend:+}> overflows")
+        bail!("reloc {ty:?} <{value:x}{addend:+}> overflows");
     };
     macro_rules! try_into_value {
         ($resolved:ident as $t:ty, $msg:literal) => {
             match $resolved {
                 SENTINEL_UNDEF if allow_undef => -1isize as $t,
                 resolved if let Ok(resolved) = resolved.try_into() => resolved,
-                resolved => bail!("{}: {resolved:x}", $msg),
+                resolved => {
+                    bail!("{}: {resolved:x}", $msg);
+                }
             }
         };
     }

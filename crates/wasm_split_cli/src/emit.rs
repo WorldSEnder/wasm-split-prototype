@@ -78,7 +78,10 @@ impl<'a> EmitState<'a> {
             .map(|name| name.as_ref())
             .collect::<HashSet<_>>();
         if unique_names.len() != shared_names.len() {
-            bail!("Failed to generate unique names for some exports. This is a bug in wasm-split, please report this as an issue.")
+            bail!(
+                "Failed to generate unique names for some exports. \
+                This is a bug in wasm-split, please report this as an issue."
+            );
         }
 
         Ok(EmitState {
@@ -662,7 +665,7 @@ impl RelocTarget for ModuleEmitState<'_> {
                 Ok(Some(index))
             }
             RelocDetails::RelTableIndex(_details) => {
-                bail!("Unsupported relocation type: relative table index")
+                bail!("Unsupported relocation type: relative table index");
             }
             RelocDetails::FunctionIndex(details) => {
                 let input_func_id = details.index;
@@ -680,25 +683,27 @@ impl RelocTarget for ModuleEmitState<'_> {
             }
             RelocDetails::TableNumber(details) => {
                 if !self.is_main() && details.index != self.input_module.reloc_info.indirect_table {
-                    bail!("Relocation of tables not supported in split modules.")
+                    bail!("Relocation of tables not supported in split modules.");
                 }
                 // TODO: check that table indices do not get confused by the generate logic below
                 Ok(Some(0))
             }
             RelocDetails::GlobalIndex(details) => {
                 if !self.is_main() && details.index != self.input_module.reloc_info.stack_pointer {
-                    bail!("Relocation of globals not supported in split modules.")
+                    bail!("Relocation of globals not supported in split modules.");
                 }
                 // TODO: check that global indices do not get confused by the generate logic below
                 Ok(Some(0))
             }
             RelocDetails::TagIndex(_details) => {
                 if !self.is_main() {
-                    bail!("Exception handling in split modules not supported yet")
+                    bail!("Exception handling in split modules not supported yet");
                 }
                 Ok(None)
             }
-            _ => bail!("unexpected relocation {reloc:?} in code/data section"),
+            _ => {
+                bail!("unexpected relocation {reloc:?} in code/data section");
+            }
         }
     }
 }
@@ -1046,7 +1051,9 @@ impl<'a> ModuleEmitState<'a> {
                             })
                         }
                         _ => {
-                            bail!("Expected a i32/i64.const expression for an exported data symbol")
+                            bail!(
+                                "Expected a i32/i64.const expression for an exported data symbol"
+                            );
                         }
                     };
                 let fake_reloc = wasmparser::RelocationEntry {
@@ -1126,7 +1133,7 @@ impl<'a> ModuleEmitState<'a> {
                         .get(&DepNode::Function(input_func_id))
                 });
                 let Some(&output_func_id) = output_func_id else {
-                    bail!("No output function corresponding to input function {input_func_id:?}")
+                    bail!("No output function corresponding to input function {input_func_id:?}");
                 };
                 Ok(output_func_id as u32)
             })

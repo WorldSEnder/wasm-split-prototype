@@ -70,7 +70,9 @@ impl RelocTarget for DwarfRelocTarget<'_, '_> {
                 let _ = details;
                 None
             }
-            _ => bail!("unexpected reloc in debug section: {:?}", reloc),
+            _ => {
+                bail!("unexpected reloc in debug section: {:?}", reloc);
+            }
         };
         Ok(reloc)
     }
