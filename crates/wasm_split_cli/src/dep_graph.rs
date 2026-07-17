@@ -161,7 +161,7 @@ fn iter_functions_with_relocs<'m>(
         );
         function_index += found_index;
         if function_index >= module.defined_funcs.len() {
-            bail!("Invalid relocation entry {entry:?}, no function contains its relocation range")
+            bail!("Invalid relocation entry {entry:?}, no function contains its relocation range");
         }
         let func_index = module.imported_funcs.len() + function_index;
         Ok((func_index, entry))

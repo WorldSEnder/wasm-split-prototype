@@ -3,6 +3,9 @@
 - Experimental support to emit debug sections. By default enabled via environment variable
   `WASM_SPLIT_CLI_ENABLE_DWARF`. The current setup duplicates the DWARF information into
   all output modules, which can lead to large split files.
+- Support for webpack bundled output with target `bundler`. You must enable the `sourceImport`
+  experiment in webpack to consume the output, see also source-phase-imports which is a
+  - currently stage 3 - TC39 proposal.
 
 ## wasm_split_helpers v0.2.3
 

@@ -650,11 +650,13 @@ fn read_wasm_split_section(rdr: BinaryReader<'_>, options: &mut Options) -> Resu
     let subsections = Subsections::<WasmSplitSubsection>::new(rdr);
     for subsection in subsections {
         match subsection? {
-            WasmSplitSubsection::Version(WsReadVersion::Unknown) => bail!(
-                r#"Input file was linked with a `wasm_split_helpers` version that is not recognized by this tool. \
+            WasmSplitSubsection::Version(WsReadVersion::Unknown) => {
+                bail!(
+                    r#"Input file was linked with a `wasm_split_helpers` version that is not recognized by this tool. \
                 Please upgrade your `wasm_split_cli` version and ensure you have the latest version of the relevant \
                 build tools installed."#
-            ),
+                );
+            }
             WasmSplitSubsection::Version(WsReadVersion::Known(WsVersion::Version1)) => {
                 // No additional information at the moment
             }

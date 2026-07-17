@@ -11,62 +11,13 @@ mod emit;
 mod graph_utils;
 mod js;
 mod magic_constants;
+mod options;
 mod read;
 mod reloc;
 mod split_point;
 mod util;
 
-#[non_exhaustive]
-pub struct Options<'a> {
-    /// The input wasm to split
-    pub input_wasm: &'a [u8],
-    /// Where to put javascript wrappers, split wasm modules.
-    ///
-    /// Default: `Path::new("wasm_split")`
-    pub output_dir: &'a Path,
-    /// Where to put the main module that has to be post-processed by wasm-bindgen.
-    /// Usually a path in `output_dir`.
-    ///
-    /// Default: `Path::new("wasm_split/main.wasm")`
-    pub main_out_path: &'a Path,
-    /// Module path of the created link file, relative to the output dir.
-    /// The wasm will use this path to import the loader functions for the split chunks.
-    ///
-    /// Default: `"./__wasm_split.js"`
-    pub link_name: &'a str,
-    /// From where will `initSync` be imported from?
-    ///
-    /// Default: `"./main.js"`
-    pub main_module: &'a str,
-    /// Verbosely output additional information about processing.
-    ///
-    /// Default: false
-    pub verbose: bool,
-    /// Switch to transform and emit `.debug_` sections.
-    ///
-    /// This option is experimental.
-    /// Default: `true` if the `WASM_SPLIT_CLI_ENABLE_DWARF` environment variable is non-empty.
-    pub emit_dwarf: bool,
-    /// Enables explicit tests for assumptions we make about the input wasm file during integration testing.
-    #[doc(hidden)]
-    pub strict_tests: bool,
-}
-
-impl<'wasm> Options<'wasm> {
-    pub fn new(input_wasm: &'wasm [u8]) -> Self {
-        Self {
-            input_wasm,
-            output_dir: Path::new("wasm_split"),
-            main_out_path: Path::new("wasm_split/main.wasm"),
-            link_name: "./__wasm_split.js",
-            main_module: "./main.js",
-            verbose: false,
-            emit_dwarf: std::env::var_os("WASM_SPLIT_CLI_ENABLE_DWARF")
-                .is_some_and(|v| !v.is_empty()),
-            strict_tests: false,
-        }
-    }
-}
+pub use options::*;
 
 #[non_exhaustive]
 pub struct SplitWasm {

@@ -1,0 +1,5 @@
+install:
+    npm ci --include=dev
+
+all-tests: install
+    npm run-script test

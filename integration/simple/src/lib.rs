@@ -23,6 +23,13 @@ pub fn args_test((a, b): (u32, u32), _: &str) -> u32 {
     run_computation(a, b)
 }
 
+// This function is also called from the webpack integration
+// hence publically exposed
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub async fn call_args_test(a: u32, b: u32) -> u32 {
+    args_test((a, b), "foobar").await
+}
+
 #[wasm_split(
     split,
     return_wrapper(let future = _ ; { future.await } -> u32)

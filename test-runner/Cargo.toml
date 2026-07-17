@@ -7,10 +7,11 @@ version = "0.2.105"
 authors = []
 edition = "2024"
 publish = false
+default-run = "wasm-split-test-runner"
 
 [dependencies]
 # this MUST be the same bindgen version as used on the tested artifact
-wasm-bindgen-cli = { version = "=0.2.126", artifact = ["bin:wasm-bindgen-test-runner"] }
+wasm-bindgen-cli = { version = "=0.2.126", artifact = ["bin:wasm-bindgen-test-runner", "bin:wasm-bindgen"] }
 wasm_split_cli_support = { path = "../crates/wasm_split_cli" }
 eyre = "0.6.12"
 tempfile = "3.27.0"
@@ -19,3 +20,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_with = "3.21.0"
 sha2 = "0.11.0"
+exec = "0.3"
+
+[[bin]]
+name = "wasm-bindgen-cli-wrapper"
+
+[[bin]]
+name = "wasm-split-test-runner"

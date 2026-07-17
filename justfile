@@ -1,5 +1,7 @@
 set positional-arguments
 
+mod webpack './integration/webpack/justfile'
+
 [working-directory: 'integration']
 test-integrations toolchain="":
     cargo ${1:+"$1"} test --target wasm32-unknown-unknown --workspace
@@ -13,7 +15,7 @@ test-cli:
     cargo test -p wasm_split_helpers
     cargo test -p wasm_split_cli_support --all-features
 
-all-tests: test-all-integrations test-cli
+all-tests: test-all-integrations test-cli webpack::all-tests
 
 fmt-check:
     cargo fmt --all --check

@@ -347,6 +347,7 @@ version = "0.1.0"
 dependencies = [
  "tokio",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm_split_helpers",
 ]
