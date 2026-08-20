@@ -201,10 +201,12 @@ impl DwarfReader<'_> {
 }
 impl<'a> From<CustomSectionReader<'a>> for DwarfReader<'a> {
     fn from(custom: CustomSectionReader<'a>) -> Self {
-        DwarfReader {
+        let rdr = DwarfReader {
             data: custom.data(),
             data_range: custom.data_range(),
-        }
+        };
+        assert!(rdr.data.len() == (rdr.data_range.end - rdr.data_range.start) as usize);
+        rdr
     }
 }
 impl<'a> gimli::Reader for DwarfReader<'a> {
@@ -216,7 +218,8 @@ impl<'a> gimli::Reader for DwarfReader<'a> {
     }
 
     fn len(&self) -> Self::Offset {
-        (self.data_range.end - self.data_range.start) as usize
+        debug_assert!(self.data.len() == (self.data_range.end - self.data_range.start) as usize);
+        self.data.len()
     }
 
     fn empty(&mut self) {
@@ -262,14 +265,15 @@ impl<'a> gimli::Reader for DwarfReader<'a> {
         }
         let (prefix, more) = self.data.split_at(len);
         let mid = self.data_range.start + len as u64;
+        let split = Self {
+            data: prefix,
+            data_range: self.data_range.start..mid,
+        };
         *self = Self {
             data: more,
             data_range: mid..self.data_range.end,
         };
-        Ok(Self {
-            data: prefix,
-            data_range: self.data_range.start..mid,
-        })
+        Ok(split)
     }
 
     fn to_slice(&self) -> gimli::Result<std::borrow::Cow<'_, [u8]>> {
