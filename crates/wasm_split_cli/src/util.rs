@@ -44,7 +44,7 @@ pub fn exponential_partition_point<T>(slice: &[T], eventually_false: impl Fn(&T)
     skipped + to_test.partition_point(eventually_false)
 }
 
-pub fn shift_range(range: Range<usize>, offset: usize) -> Range<usize> {
+pub fn shift_range(range: Range<u64>, offset: u64) -> Range<u64> {
     let start = range.start.min(range.end);
     let new_end = range
         .end
@@ -55,6 +55,22 @@ pub fn shift_range(range: Range<usize>, offset: usize) -> Range<usize> {
     // so `start` does not need to check for overflow.
     let new_start = start + offset;
     new_start..new_end
+}
+
+pub fn wasm_data_len(data: &wasmparser::Data<'_>) -> u64 {
+    let len_u64 = u64::try_from(data.data.len()).unwrap();
+    debug_assert!(data.range.end >= len_u64);
+    len_u64
+}
+
+pub fn wasm_data_start(data: &wasmparser::Data<'_>) -> u64 {
+    data.range.end - wasm_data_len(data)
+}
+
+pub fn wasm_reloc_range(reloc: &wasmparser::RelocationEntry) -> Range<u64> {
+    let start = u64::from(reloc.offset);
+    let len = reloc.ty.extent() as u64;
+    start..start + len
 }
 
 #[cfg(test)]
