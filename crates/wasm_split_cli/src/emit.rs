@@ -10,6 +10,7 @@ use crate::{
     read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::{SplitModuleIdentifier, SplitProgramInfo},
+    util::{wasm_data_len, wasm_data_start},
 };
 use eyre::{anyhow, bail, Context, Result};
 use tracing::{trace, warn};
@@ -281,10 +282,10 @@ impl IndirectFunctionEmitInfo {
 
 #[derive(Debug)]
 struct LateDataRange {
-    input_range: Range<usize>,
+    input_range: Range<u64>,
     in_module: usize,
-    data_align: usize, // power of 2
-    in_module_offset: usize,
+    data_align: u64, // power of 2
+    in_module_offset: u64,
 }
 
 #[derive(Debug)]
@@ -294,12 +295,12 @@ enum DataSegmentEmitInfo {
     FromInputOnlyIn(usize),
     Ranges {
         // some reloc information
-        base_address: usize,
-        per_output_offset: HashMap<usize, usize>,
+        base_address: u64,
+        per_output_offset: HashMap<usize, u64>,
         // the output segment is formed by concatenating all these segment
         ranges: Vec<LateDataRange>,
         // symbol index -> (index in 'ranges', offset in range)
-        range_lookup: HashMap<usize, (usize, usize)>,
+        range_lookup: HashMap<usize, (usize, u64)>,
         // we re-order ranges to put data with larger alignment up front (this saves padding bytes).
         // since indices are stored in the range_lookup map, we can't do this in-place and maintain a separate order here.
         range_emit_order: Vec<usize>,
@@ -319,8 +320,8 @@ impl DataEmitInfo {
             Ranges {
                 ranges: Vec<LateDataRange>,
                 // symbol -> (index in ranges, offset in range)
-                range_lookup: HashMap<usize, (usize, usize)>,
-                base_address: usize,
+                range_lookup: HashMap<usize, (usize, u64)>,
+                base_address: u64,
             },
         }
         let mut per_segment = input_module
@@ -332,28 +333,32 @@ impl DataEmitInfo {
                 // We duplicate all passive segments (there shouldn't be any except in multi-threading?)
                 // because we don't have relocation to identify which function uses which passive data
                 // for initialization. Hence we try to preserve indices as best as possible.
-                DataKind::Passive => DataSegmentAnalysis::FromInputInAll,
+                DataKind::Passive => Ok(DataSegmentAnalysis::FromInputInAll),
                 DataKind::Active { offset_expr, .. } => {
                     let segment_info = &input_module.reloc_info.segments[segment_idx];
                     if segment_info.flags.contains(SegmentFlags::TLS) {
-                        return DataSegmentAnalysis::FromInputInAll;
+                        return Ok(DataSegmentAnalysis::FromInputInAll);
                     }
                     let address = match offset_expr.get_operators_reader().read().unwrap() {
-                        wasmparser::Operator::I32Const { value } => value as usize,
-                        wasmparser::Operator::I64Const { value } => value as usize,
+                        wasmparser::Operator::I32Const { value } => u64::try_from(value).map_err(|_| i64::from(value)),
+                        wasmparser::Operator::I64Const { value } => u64::try_from(value).map_err(|_| value),
                         op => {
                             warn!("Non-constant operator {op:?} found to specify a memory's base address. Putting it into main.");
-                            return DataSegmentAnalysis::FromInputOnlyIn(0);
+                            return Ok(DataSegmentAnalysis::FromInputOnlyIn(0));
                         }
                     };
-                    DataSegmentAnalysis::Ranges {
+                    let address = match address {
+                        Ok(addr) => addr,
+                        Err(value) => { bail!("Invalid base address found: {value}"); },
+                    };
+                    Ok(DataSegmentAnalysis::Ranges {
                         ranges: vec![],
                         range_lookup: HashMap::new(),
                         base_address: address,
-                    }
+                    })
                 }
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Now go through all data symbols
         for (module_index, (_, module)) in program_info.output_modules.iter().enumerate() {
@@ -406,12 +411,12 @@ impl DataEmitInfo {
                         "data symbol in passive range should not have gotted included in this pass"
                     );
                 };
-                let data_len = def_data.size as usize;
-                let data_offset = def_data.offset as usize;
+                let data_len = u64::from(def_data.size);
+                let data_offset = u64::from(def_data.offset);
                 let data_range = data_offset..data_offset + data_len;
 
                 let in_segment = &input_module.data_segments[segment_index];
-                if data_range.end > in_segment.data.len() {
+                if data_range.end > wasm_data_len(in_segment) {
                     unreachable!(
                         "Found data symbol {:?} that extends past the input module's data \
                         bytes: {data_range:?} not in range for data segment of length {}",
@@ -421,15 +426,15 @@ impl DataEmitInfo {
                 }
 
                 let segment_align =
-                    1usize << input_module.reloc_info.segments[segment_index].alignment;
+                    1u64 << input_module.reloc_info.segments[segment_index].alignment;
 
                 let mut data_align = segment_align;
                 if data_offset != 0 {
                     // TODO: .isolate_least_significant_one()
-                    data_align = data_align.min(1usize << data_offset.trailing_zeros());
+                    data_align = data_align.min(1 << data_offset.trailing_zeros());
                 }
                 debug_assert!(data_len != 0, "zero-sized symbols handled previously");
-                data_align = data_align.min(1usize << data_len.trailing_zeros());
+                data_align = data_align.min(1 << data_len.trailing_zeros());
 
                 let mut has_merged = false;
                 let range_idx = ranges.len();
@@ -456,7 +461,7 @@ impl DataEmitInfo {
                         input_range: data_range,
                         in_module: module_index,
                         data_align,
-                        in_module_offset: usize::MAX, // filled in later
+                        in_module_offset: u64::MAX, // filled in later
                     });
                     range_lookup.insert(symbol_index, (range_idx, 0));
                 }
@@ -477,7 +482,7 @@ impl DataEmitInfo {
                     base_address,
                 } => {
                     let segment_alignment =
-                        1usize << input_module.reloc_info.segments[segment_index].alignment;
+                        1u64 << input_module.reloc_info.segments[segment_index].alignment;
 
                     let mut range_emit_order: Vec<_> = (0..ranges.len()).collect();
                     range_emit_order.sort_by_key(|&range_idx| {
@@ -490,11 +495,11 @@ impl DataEmitInfo {
                         let range = &mut ranges[range_idx];
                         let module_len = per_module_size.entry(range.in_module).or_insert(0);
                         let data_range = range.input_range.clone();
-                        let data_offset = usize::next_multiple_of(*module_len, range.data_align);
+                        let data_offset = u64::next_multiple_of(*module_len, range.data_align);
 
                         // allocate it in that module
                         range.in_module_offset = data_offset;
-                        *module_len = data_offset + data_range.len();
+                        *module_len = data_offset + (data_range.end - data_range.start);
                     }
 
                     // check that range_lookup completely covers the (non-zero) data segment?
@@ -507,7 +512,7 @@ impl DataEmitInfo {
                     let mut per_module_size = per_module_size.into_iter().collect::<Vec<_>>();
                     per_module_size.sort_by_key(|&(m, _)| m);
                     let mut per_output_offset = HashMap::new();
-                    let mut data_offset: usize = 0;
+                    let mut data_offset: u64 = 0;
                     for &(module, module_size) in &per_module_size {
                         data_offset = data_offset.next_multiple_of(segment_alignment);
                         per_output_offset.insert(module, data_offset);
@@ -525,8 +530,8 @@ impl DataEmitInfo {
                     // If we could move other active segments to different base addresses, this segment getting longer
                     // would not be a problem. Since we can't guarantee this at this point though, don't risk it.
                     // Overlapping segments *will* overwrite data!
-                    if segment_len > input_module.data_segments[segment_index].data.len() {
-                        let overlength = segment_len - input_module.data_segments[segment_index].data.len();
+                    if segment_len > wasm_data_len(&input_module.data_segments[segment_index]) {
+                        let overlength = segment_len - wasm_data_len(&input_module.data_segments[segment_index]);
                         trace!("{ranges:?}");
                         warn!("Overlong segment {segment_index} by {overlength} after relocation, putting it in main module.");
                         DataSegmentEmitInfo::FromInputOnlyIn(0)
@@ -542,7 +547,7 @@ impl DataEmitInfo {
         &self,
         symbol_index: usize,
         data: &DefinedDataSymbol,
-    ) -> Result<Option<usize>, ()> {
+    ) -> Result<Option<u64>, ()> {
         if data.size == 0 {
             // zero-sized symbols are not relocated
             return Ok(None);
@@ -622,7 +627,7 @@ struct ModuleEmitState<'a> {
 }
 
 impl RelocTarget for ModuleEmitState<'_> {
-    fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>> {
+    fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<u64>> {
         match reloc {
             RelocDetails::TypeIndex { .. } => {
                 // We don't relocate types, we just copy them over
@@ -662,7 +667,7 @@ impl RelocTarget for ModuleEmitState<'_> {
                 // TODO: we could assert that we are indeed relocating a data segment here.
                 // an improved analysis of data segments could perhaps avoid this case entirely
                 // and restore the assertion that the referenced function is reachable.
-                Ok(Some(index))
+                Ok(Some(index as u64))
             }
             RelocDetails::RelTableIndex(_details) => {
                 bail!("Unsupported relocation type: relative table index");
@@ -679,7 +684,7 @@ impl RelocTarget for ModuleEmitState<'_> {
                         referenced by relocation."
                     );
                 };
-                Ok(Some(output_func_id))
+                Ok(Some(output_func_id as u64))
             }
             RelocDetails::TableNumber(details) => {
                 if !self.is_main() && details.index != self.input_module.reloc_info.indirect_table {
@@ -1038,15 +1043,15 @@ impl<'a> ModuleEmitState<'a> {
                 .symbol_as_global
                 .get(&global_idx)
             {
-                let (reloc_type, conv_reloc_value): (RelocationType, fn(usize) -> ConstExpr) =
+                let (reloc_type, conv_reloc_value): (RelocationType, fn(u64) -> ConstExpr) =
                     match global_expr.get_operators_reader().read() {
                         Ok(Operator::I32Const { value: _ }) => {
-                            (RelocationType::MemoryAddrI32, |val: usize| {
+                            (RelocationType::MemoryAddrI32, |val: u64| {
                                 ConstExpr::i32_const(val.try_into().unwrap())
                             })
                         }
                         Ok(Operator::I64Const { value: _ }) => {
-                            (RelocationType::MemoryAddrI64, |val: usize| {
+                            (RelocationType::MemoryAddrI64, |val: u64| {
                                 ConstExpr::i64_const(val.try_into().unwrap())
                             })
                         }
@@ -1318,7 +1323,7 @@ impl<'a> ModuleEmitState<'a> {
     fn get_relocated_segment_data(&self, data: &Data<'_>) -> Result<Vec<u8>> {
         // Note: `data.range` includes the segment header.
         let range_end = data.range.end;
-        let range_start = range_end - data.data.len();
+        let range_start = wasm_data_start(data);
         self.get_relocated_data(range_start..range_end)
     }
 
@@ -1327,11 +1332,10 @@ impl<'a> ModuleEmitState<'a> {
         let mut section = wasm_encoder::DataSection::new();
         for (segment_idx, segment) in data_reloc.per_segment.iter().enumerate() {
             let input_data = &self.input_module.data_segments[segment_idx];
-            let input_range_end = input_data.range.end;
-            let input_range_start = input_range_end - input_data.data.len();
+            let input_range_start = wasm_data_start(input_data);
 
             let mut data: Vec<u8>;
-            let addr_offset: Option<usize>;
+            let addr_offset: Option<u64>;
             match segment {
                 DataSegmentEmitInfo::FromInputInAll => {
                     addr_offset = None;
@@ -1368,7 +1372,7 @@ impl<'a> ModuleEmitState<'a> {
                         let data_range = &range.input_range;
                         let input_range = (input_range_start + data_range.start)
                             ..(input_range_start + data_range.end);
-                        data.resize(range.in_module_offset, 0); // pad with zeroes
+                        data.resize(range.in_module_offset as usize, 0); // pad with zeroes
                         data.extend(self.get_relocated_data(input_range)?);
                     }
                 }
@@ -1384,7 +1388,7 @@ impl<'a> ModuleEmitState<'a> {
                     let offset = match addr_offset {
                         None => offset_expr.clone().try_into().unwrap(),
                         Some(module_offset) => {
-                            if module_offset <= i32::MAX as usize {
+                            if module_offset <= i32::MAX as u64 {
                                 wasm_encoder::ConstExpr::i32_const(module_offset as i32)
                             } else {
                                 wasm_encoder::ConstExpr::i64_const(module_offset as i64)

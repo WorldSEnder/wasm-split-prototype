@@ -15,7 +15,7 @@ use wasmparser::{
 use crate::{
     magic_constants,
     read::{GlobalId, InputFuncId, InputModule, InputOffset, SectionId, TableId, TagId},
-    util::{find_subrange, shift_range},
+    util::{find_subrange, shift_range, wasm_reloc_range},
 };
 
 // An offset (index) into the bytes of the input module
@@ -220,17 +220,17 @@ fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Ve
         let data_segment = data_segments
             .get(symbol.index as usize)
             .ok_or_else(|| anyhow!("Invalid data segment index in symbol: {:?}", symbol))?;
-        let symbol_range = shift_range(0..symbol.size as usize, symbol.offset as usize);
-        if symbol_range.end > data_segment.data.len() {
+        let symbol_range = shift_range(0..u64::from(symbol.size), u64::from(symbol.offset));
+        let data_start = data_segment.range.end - data_segment.data.len() as u64;
+        if symbol_range.end > data_segment.range.end - data_start {
             bail!(
                 "Invalid symbol {symbol:?} for data segment of size {:?}",
                 data_segment.data.len()
             );
         }
-        let data_offset = data_segment.range.end - data_segment.data.len();
         data_symbols.push(DataSymbol {
             symbol_index,
-            range: shift_range(symbol_range, data_offset),
+            range: shift_range(symbol_range, data_start),
         });
     }
     // We assume that these are sorted by range start later on
@@ -433,8 +433,8 @@ impl RelocInfo<'_> {
         let section_relocs = self.iter_section_relocs(section);
         let reloc_range = find_subrange(
             section_relocs,
-            |reloc| (reloc.offset as usize) >= section_subrange.start,
-            |reloc| (reloc.offset as usize) < section_subrange.end,
+            |reloc| u64::from(reloc.offset) >= section_subrange.start,
+            |reloc| u64::from(reloc.offset) < section_subrange.end,
         );
 
         (reloc_base, section_relocs[reloc_range].iter())
@@ -446,7 +446,7 @@ impl RelocInfo<'_> {
         target: &impl RelocTarget,
     ) -> Result<Vec<u8>> {
         let this = &module.reloc_info;
-        let mut data = Vec::from(&module.raw[range.clone()]);
+        let mut data = Vec::from(&module.raw[range.start as usize..range.end as usize]);
         let (reloc_base, relocs) = this.get_relocations_for_range(&range);
         let reloc_base_to_data_off = range.start - reloc_base;
         for relocation in relocs {
@@ -597,7 +597,7 @@ impl RelocInfo<'_> {
         &self,
         reloc_target: &T,
         data: &mut [u8],
-        reloc_base_to_data_off: usize,
+        reloc_base_to_data_off: u64,
         relocation: &RelocationEntry,
     ) -> Result<()> {
         // TODO(MSRV): -1i32.cast_unsigned() since rust 1.87
@@ -619,9 +619,9 @@ impl RelocInfo<'_> {
             let details = self.expand_relocation(relocation)?;
             reloc_target.reloc_value(details)?
         };
-        let relocation_range = relocation.relocation_range()?;
-        let target = &mut data[(relocation_range.start - reloc_base_to_data_off)
-            ..(relocation_range.end - reloc_base_to_data_off)];
+        let relocation_range = wasm_reloc_range(relocation);
+        let target = &mut data[(relocation_range.start - reloc_base_to_data_off) as usize
+            ..(relocation_range.end - reloc_base_to_data_off) as usize];
         let ty = relocation.ty;
         let Some(value) = relocated else {
             return Ok(());
@@ -631,13 +631,7 @@ impl RelocInfo<'_> {
             "relocation {relocation:?} without addend should have addend == 0, not {}",
             relocation.addend,
         );
-        let () = encode_for_ty(
-            ty,
-            value,
-            relocation.addend as isize,
-            target,
-            T::SENTINEL_UNDEF,
-        )?;
+        let () = encode_for_ty(ty, value, relocation.addend, target, T::SENTINEL_UNDEF)?;
         Ok(())
     }
 }
@@ -675,13 +669,13 @@ pub enum RelocDetails<'a> {
     SectionOffset(SymbolDetails<'a, SectionId>),
 }
 
-pub const SENTINEL_UNDEF: usize = usize::MAX;
+pub const SENTINEL_UNDEF: u64 = u64::MAX;
 pub trait RelocTarget {
     const SENTINEL_UNDEF: bool = false;
     /// Fixup a relocation entry with an invalid symbol. If this fixup fails,
     /// we warn and relocate to a tombstone address or error if tombstones
     /// are not enabled for this relocation context.
-    fn fixup_reloc_entry(&self, entry: &RelocationEntry) -> Result<Option<usize>> {
+    fn fixup_reloc_entry(&self, entry: &RelocationEntry) -> Result<Option<u64>> {
         // assert: entry.index == (-1i32 as u32)
         ensure!(
             Self::SENTINEL_UNDEF,
@@ -689,7 +683,7 @@ pub trait RelocTarget {
         );
         Ok(Some(SENTINEL_UNDEF))
     }
-    fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>>;
+    fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<u64>>;
 }
 
 fn encode_leb128_u32_5byte(mut value: u32, buf: &mut [u8; 5]) {
@@ -742,8 +736,8 @@ fn encode_u64(value: u64, buf: &mut [u8; 8]) {
 
 fn encode_for_ty(
     ty: RelocationType,
-    value: usize,
-    addend: isize,
+    value: u64,
+    addend: i64,
     target: &mut [u8],
     allow_undef: bool,
 ) -> Result<()> {
@@ -760,6 +754,7 @@ fn encode_for_ty(
         ($resolved:ident as $t:ty, $msg:literal) => {
             match $resolved {
                 SENTINEL_UNDEF if allow_undef => -1isize as $t,
+                #[allow(irrefutable_let_patterns)]
                 resolved if let Ok(resolved) = resolved.try_into() => resolved,
                 resolved => {
                     bail!("{}: {resolved:x}", $msg);

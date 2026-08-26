@@ -11,7 +11,7 @@ default-run = "wasm-split-test-runner"
 
 [dependencies]
 # this MUST be the same bindgen version as used on the tested artifact
-wasm-bindgen-cli = { version = "=0.2.126", artifact = ["bin:wasm-bindgen-test-runner", "bin:wasm-bindgen"] }
+wasm-bindgen-cli = { version = "=0.2.127", artifact = ["bin:wasm-bindgen-test-runner", "bin:wasm-bindgen"] }
 wasm_split_cli_support = { path = "../crates/wasm_split_cli" }
 eyre = "0.6.12"
 tempfile = "3.27.0"

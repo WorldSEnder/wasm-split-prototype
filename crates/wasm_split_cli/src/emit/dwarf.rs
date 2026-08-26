@@ -18,12 +18,12 @@ struct DwarfRelocTarget<'m, 'a> {
     module: &'m ModuleEmitState<'a>,
 }
 
-const RELOC_TO_TOMBSTONE_ADDRESS: Option<usize> = Some(reloc::SENTINEL_UNDEF);
+const RELOC_TO_TOMBSTONE_ADDRESS: Option<u64> = Some(reloc::SENTINEL_UNDEF);
 
 impl RelocTarget for DwarfRelocTarget<'_, '_> {
     const SENTINEL_UNDEF: bool = true;
 
-    fn fixup_reloc_entry(&self, entry: &wasmparser::RelocationEntry) -> Result<Option<usize>> {
+    fn fixup_reloc_entry(&self, entry: &wasmparser::RelocationEntry) -> Result<Option<u64>> {
         // Should we try and recover the function offset from some internal code map? Would be
         // more effort to compute and keep up to date. We also need to read the current value
         // from `data` and use that to recover the function index.
@@ -33,7 +33,7 @@ impl RelocTarget for DwarfRelocTarget<'_, '_> {
         );
         Ok(RELOC_TO_TOMBSTONE_ADDRESS)
     }
-    fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<usize>> {
+    fn reloc_value(&self, reloc: RelocDetails<'_>) -> Result<Option<u64>> {
         let reloc = match reloc {
             RelocDetails::GlobalIndex(_) => return self.module.reloc_value(reloc),
             RelocDetails::FunctionOffset(details) => {
@@ -44,7 +44,7 @@ impl RelocTarget for DwarfRelocTarget<'_, '_> {
                 let local_offset =
                     local_def.and_then(|local_def| self.module.function_offset_hint.get(local_def));
                 match local_offset {
-                    Some(offset) => Some(self.module.function_header_len + offset),
+                    Some(offset) => Some((self.module.function_header_len + offset) as u64),
                     None => RELOC_TO_TOMBSTONE_ADDRESS,
                 }
             }
@@ -103,8 +103,8 @@ pub fn emit_debug_info(module: &mut ModuleEmitState<'_>) -> Result<()> {
     };
     let mut error_writer = ErrorWriter::new(std::io::BufWriter::new(std::io::stderr()));
     if module.emit_state.input_options.strict_tests && module.is_main() {
-        validate_info(&mut error_writer, input_dwarf.borrow(|v| *v));
-        validate_line_progs(&mut error_writer, input_dwarf.borrow(|v| *v));
+        validate_info(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
+        validate_line_progs(&mut error_writer, input_dwarf.borrow(|v| v.clone()));
         if !error_writer.check_valid_and_reset() {
             tracing::warn!("original debug info didn't pass validation!");
         }

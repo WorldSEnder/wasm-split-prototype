@@ -131,14 +131,14 @@ impl<'a> Names<'a> {
     }
 }
 
-pub type InputOffset = usize;
+pub type InputOffset = u64;
 pub use crate::reloc::SymbolIndex;
 
 // We use our own struct here instead of a simple slice to track input positions and ranges
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct DwarfReader<'a> {
     data: &'a [u8],
-    input_position: usize,
+    data_range: Range<InputOffset>,
 }
 impl Deref for DwarfReader<'_> {
     type Target = [u8];
@@ -174,7 +174,7 @@ impl Debug for DwarfReader<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DwarfReader")
             .field("data", &DebugBytes(self.data))
-            .field("pos", &self.input_position)
+            .field("data_range", &self.data_range)
             .finish()
     }
 }
@@ -185,7 +185,7 @@ impl DwarfReader<'_> {
     fn offset_id_dec(id: u64) -> *const u8 {
         std::ptr::null::<u8>().wrapping_byte_offset(id as isize)
     }
-    fn offset_of_addr(&self, ptr: *const u8) -> Option<usize> {
+    fn offset_of_addr(&self, ptr: *const u8) -> Option<<Self as gimli::Reader>::Offset> {
         let offset = ptr as isize - self.data.as_ptr() as isize;
         // TODO(MSRV): diff.cast_unsigned/diff.strict_cast_unsigned
         if offset >= 0 && offset as usize <= gimli::Reader::len(self) {
@@ -195,16 +195,18 @@ impl DwarfReader<'_> {
         }
     }
     /// range in the input of the byte range
-    pub fn range(&self) -> Range<usize> {
-        self.input_position..self.input_position + self.data.len()
+    pub fn range(&self) -> Range<u64> {
+        self.data_range.clone()
     }
 }
 impl<'a> From<CustomSectionReader<'a>> for DwarfReader<'a> {
     fn from(custom: CustomSectionReader<'a>) -> Self {
-        DwarfReader {
+        let rdr = DwarfReader {
             data: custom.data(),
-            input_position: custom.data_offset(),
-        }
+            data_range: custom.data_range(),
+        };
+        assert!(rdr.data.len() == (rdr.data_range.end - rdr.data_range.start) as usize);
+        rdr
     }
 }
 impl<'a> gimli::Reader for DwarfReader<'a> {
@@ -216,6 +218,7 @@ impl<'a> gimli::Reader for DwarfReader<'a> {
     }
 
     fn len(&self) -> Self::Offset {
+        debug_assert!(self.data.len() == (self.data_range.end - self.data_range.start) as usize);
         self.data.len()
     }
 
@@ -241,12 +244,7 @@ impl<'a> gimli::Reader for DwarfReader<'a> {
 
     fn lookup_offset_id(&self, id: gimli::ReaderOffsetId) -> Option<Self::Offset> {
         let ptr = Self::offset_id_dec(id.0);
-        let offset = ptr as isize - self.data.as_ptr() as isize;
-        if offset >= 0 && offset as usize <= self.len() {
-            Some(offset as usize)
-        } else {
-            None
-        }
+        self.offset_of_addr(ptr)
     }
 
     fn find(&self, byte: u8) -> gimli::Result<Self::Offset> {
@@ -262,18 +260,20 @@ impl<'a> gimli::Reader for DwarfReader<'a> {
     }
 
     fn split(&mut self, len: Self::Offset) -> gimli::Result<Self> {
-        if len > self.data.len() {
+        if len > self.len() {
             return Err(gimli::Error::UnexpectedEof(self.offset_id()));
         }
         let (prefix, more) = self.data.split_at(len);
+        let mid = self.data_range.start + len as u64;
+        let split = Self {
+            data: prefix,
+            data_range: self.data_range.start..mid,
+        };
         *self = Self {
             data: more,
-            input_position: self.input_position + len,
+            data_range: mid..self.data_range.end,
         };
-        Ok(Self {
-            data: prefix,
-            input_position: self.input_position,
-        })
+        Ok(split)
     }
 
     fn to_slice(&self) -> gimli::Result<std::borrow::Cow<'_, [u8]>> {

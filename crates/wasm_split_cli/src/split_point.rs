@@ -153,12 +153,15 @@ fn print_deps(module_name: &str, module: &InputModule, reachable: &HashSet<DepNo
     };
 
     trace!("SPLIT: ============== {module_name}");
-    let mut total_size: usize = 0;
+    let mut total_size: u64 = 0;
     for dep in reachable.iter() {
         if let DepNode::Function(index) = dep {
             let size = index
                 .checked_sub(module.imported_funcs.len())
-                .map(|defined_index| module.defined_funcs[defined_index].body.range().len())
+                .map(|defined_index| {
+                    let body_range = module.defined_funcs[defined_index].body.range();
+                    body_range.end - body_range.start
+                })
                 .unwrap_or_default();
             total_size += size;
             trace!("   {} size={size:?}", format_dep(dep));
