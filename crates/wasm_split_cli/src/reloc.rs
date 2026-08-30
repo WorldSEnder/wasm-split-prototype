@@ -1,5 +1,4 @@
 use std::{
-    cell::OnceCell,
     collections::{HashMap, HashSet},
     ops::Range,
 };
@@ -333,7 +332,7 @@ pub struct RelocInfo<'a> {
     pub relocatable_ranges: Vec<Range<InputOffset>>,
     pub segments: Vec<Segment<'a>>,
     pub custom_sections: HashSet<SectionId>,
-    invalid_reloc_warn: OnceCell<()>,
+    invalid_reloc_warn: std::sync::OnceLock<()>,
 
     pub code_section_index: SectionIndex,
     pub data_section_index: SectionIndex,
