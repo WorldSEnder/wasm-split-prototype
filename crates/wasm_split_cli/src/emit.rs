@@ -1601,13 +1601,18 @@ impl wasm_encoder::reencode::Reencode for FuncReencoder<'_> {
     }
 }
 
-pub fn emit_modules<'info, M>(
+/// Encodes every output module. The modules are independent, so they are
+/// encoded in parallel; the returned vector keeps the `output_modules` order.
+pub fn emit_modules<'info, M: Send>(
     program_info: &'info SplitProgramInfo,
     emit_state: &EmitState,
-    emit_fn: impl Fn(usize, &'info SplitModuleIdentifier, Vec<u8>) -> M,
+    emit_fn: impl Fn(usize, &'info SplitModuleIdentifier, Vec<u8>) -> M + Sync,
 ) -> Result<Vec<M>> {
-    let modules = program_info.output_modules.iter().enumerate();
-    modules
+    use rayon::prelude::*;
+    let modules: Result<Vec<Option<M>>> = program_info
+        .output_modules
+        .par_iter()
+        .enumerate()
         .map(|(output_module_index, (identifier, module))| {
             if module.is_empty {
                 return Ok(None);
@@ -1625,6 +1630,6 @@ pub fn emit_modules<'info, M>(
                 emit_state.output_module.finish(),
             )))
         })
-        .filter_map(|res| res.transpose())
-        .collect()
+        .collect();
+    Ok(modules?.into_iter().flatten().collect())
 }
