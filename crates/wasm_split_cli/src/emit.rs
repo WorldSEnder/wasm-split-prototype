@@ -12,7 +12,7 @@ use crate::{
     split_point::{SplitModuleIdentifier, SplitProgramInfo},
     util::{wasm_data_len, wasm_data_start},
 };
-use eyre::{anyhow, bail, Context, Result};
+use eyre::{bail, Context, Result};
 use tracing::{trace, warn};
 use wasm_encoder::{reencode::Reencode, ConstExpr, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
@@ -374,10 +374,18 @@ impl DataEmitInfo {
                         ..
                     } = input_module.reloc_info.symbols[symbol_index]
                     else {
-                        // Not sure how to emit an *undefined* data symbol
-                        return Some(Err(anyhow!(
-                            "Expected data symbol dep node to ref to defined data symbol"
-                        )));
+                        // An undefined data symbol carries no definition to
+                        // place or relocate. Linkers accept these under
+                        // --allow-undefined (rustc incremental builds can
+                        // leave references to promoted anonymous globals
+                        // whose content-derived names changed), so keep the
+                        // references exactly as the linker resolved them.
+                        if let SymbolInfo::Data { name, .. } =
+                            input_module.reloc_info.symbols[symbol_index]
+                        {
+                            warn!("Undefined data symbol {name:?} in included set; leaving its references unchanged.");
+                        }
+                        return None;
                     };
                     if def_data.size == 0 {
                         // We don't care about zero-sized symbols.
