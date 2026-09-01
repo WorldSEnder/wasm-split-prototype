@@ -375,15 +375,26 @@ impl DataEmitInfo {
                     } = input_module.reloc_info.symbols[symbol_index]
                     else {
                         // An undefined data symbol carries no definition to
-                        // place or relocate. Linkers accept these under
-                        // --allow-undefined (rustc incremental builds can
-                        // leave references to promoted anonymous globals
-                        // whose content-derived names changed), so keep the
-                        // references exactly as the linker resolved them.
+                        // place or relocate. The usual producer is
+                        // rust-lang/rust#81280: an incremental build -
+                        // particularly an interrupted one - reuses an object
+                        // that still references a promoted anonymous global
+                        // (`anon.<hash>.<n>.llvm.<id>`) whose content-derived
+                        // name changed in a recompiled codegen unit. Native
+                        // linkers reject that shape, but wasm-ld accepts it
+                        // under --allow-undefined and resolves the references
+                        // to address 0 - so keep them exactly as the linker
+                        // resolved them rather than failing on a module the
+                        // linker produced.
                         if let SymbolInfo::Data { name, .. } =
                             input_module.reloc_info.symbols[symbol_index]
                         {
-                            warn!("Undefined data symbol {name:?} in included set; leaving its references unchanged.");
+                            warn!(
+                                "Undefined data symbol {name:?} in included set; leaving its \
+                                 references unchanged. This usually comes from an interrupted \
+                                 incremental build (rust-lang/rust#81280); a clean rebuild of \
+                                 the defining crate makes it go away."
+                            );
                         }
                         return None;
                     };
