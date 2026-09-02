@@ -8,6 +8,7 @@ members = [
     "callback-in-split",
     "optimize_splits",
     "static_mut",
+    "undefined_data",
 ]
 resolver = "2"
 
