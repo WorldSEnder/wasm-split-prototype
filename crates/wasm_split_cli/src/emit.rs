@@ -13,7 +13,7 @@ use crate::{
     util::{wasm_data_len, wasm_data_start},
 };
 use eyre::{bail, Context, Result};
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 use wasm_encoder::{reencode::Reencode, ConstExpr, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
     Data, DataKind, DefinedDataSymbol, ExternalKind, Operator, RelocationType, SegmentFlags,
@@ -291,7 +291,8 @@ struct LateDataRange {
     // at an offset congruent to its input start modulo this alignment, so that every symbol in
     // it keeps its alignment.
     data_align: u64,
-    in_module_offset: u64,
+    // offset in the relocated segment, filled in by `layout_ranges`
+    segment_offset: u64,
 }
 
 impl LateDataRange {
@@ -306,61 +307,63 @@ impl LateDataRange {
     }
 }
 
+/// A contiguous run of ranges of one output module, emitted as one data segment.
+#[derive(Debug)]
+struct Fragment {
+    module: usize,
+    // offset in the relocated segment
+    offset: u64,
+    // the ranges, as a range of indices into `RangeLayout::emit_order`
+    ranges: Range<usize>,
+}
+
+#[derive(Debug)]
 struct RangeLayout {
-    // indices into the ranges, in the order they are emitted
-    range_emit_order: Vec<usize>,
-    // output module -> offset of its part in the segment
-    per_output_offset: HashMap<usize, u64>,
+    // indices into the ranges, in the order they are placed in the segment
+    emit_order: Vec<usize>,
+    // in placement order; the fragments of one module are in ascending order
+    fragments: Vec<Fragment>,
     segment_len: u64,
 }
 
-/// Lay out the ranges of one segment: each output module gets a contiguous part of the segment,
-/// and `in_module_offset` of every range is set relative to the part of its module.
+/// Lay out the ranges of one segment.
+///
+/// Ranges are placed by decreasing alignment, so that ordinary ranges (whose length is a
+/// multiple of their alignment) pack without padding no matter which module they belong to.
+/// Every module then emits one data segment per run of its ranges, typically one per alignment
+/// its data uses. Only merged ranges, which must keep their input residue and can have any
+/// length, can still cause padding.
 fn layout_ranges(ranges: &mut [LateDataRange]) -> RangeLayout {
-    let mut range_emit_order: Vec<_> = (0..ranges.len()).collect();
-    range_emit_order.sort_by_key(|&range_idx| {
+    let mut emit_order: Vec<_> = (0..ranges.len()).collect();
+    emit_order.sort_by_key(|&range_idx| {
         let range = &ranges[range_idx];
         (
-            range.in_module,
             std::cmp::Reverse(range.data_align),
+            range.in_module,
             range.input_range.start,
         )
     });
-    // reorder symbols per module
-    let mut per_module_size = HashMap::new();
-    // The first range of a module has the largest alignment (see the sort order above),
-    // which is all the module's part of the segment needs to be aligned to.
-    let mut per_module_align = HashMap::new();
-    for &range_idx in &range_emit_order {
+    let mut fragments: Vec<Fragment> = vec![];
+    let mut segment_len: u64 = 0;
+    for (order_idx, &range_idx) in emit_order.iter().enumerate() {
         let range = &mut ranges[range_idx];
-        let module_len = per_module_size.entry(range.in_module).or_insert(0);
-        per_module_align
-            .entry(range.in_module)
-            .or_insert(range.data_align);
-        let data_range = range.input_range.clone();
-        let data_offset = range.align_offset(*module_len);
-
-        // allocate it in that module
-        range.in_module_offset = data_offset;
-        *module_len = data_offset + (data_range.end - data_range.start);
-    }
-
-    // figure out module offsets. Parts with a larger alignment come first, so that padding is
-    // only needed after a part that mixes alignments.
-    let mut per_module_size = per_module_size.into_iter().collect::<Vec<_>>();
-    per_module_size
-        .sort_by_key(|&(module, _)| (std::cmp::Reverse(per_module_align[&module]), module));
-    let mut per_output_offset = HashMap::new();
-    let mut data_offset: u64 = 0;
-    for &(module, module_size) in &per_module_size {
-        data_offset = data_offset.next_multiple_of(per_module_align[&module]);
-        per_output_offset.insert(module, data_offset);
-        data_offset += module_size;
+        range.segment_offset = range.align_offset(segment_len);
+        segment_len = range.segment_offset + (range.input_range.end - range.input_range.start);
+        match fragments.last_mut() {
+            Some(fragment) if fragment.module == range.in_module => {
+                fragment.ranges.end = order_idx + 1;
+            }
+            _ => fragments.push(Fragment {
+                module: range.in_module,
+                offset: range.segment_offset,
+                ranges: order_idx..order_idx + 1,
+            }),
+        }
     }
     RangeLayout {
-        range_emit_order,
-        per_output_offset,
-        segment_len: data_offset,
+        emit_order,
+        fragments,
+        segment_len,
     }
 }
 
@@ -372,20 +375,43 @@ enum DataSegmentEmitInfo {
     Ranges {
         // some reloc information
         base_address: u64,
-        per_output_offset: HashMap<usize, u64>,
-        // the output segment is formed by concatenating all these segment
+        // the output segments are formed by concatenating runs of these ranges
         ranges: Vec<LateDataRange>,
         // symbol index -> (index in 'ranges', offset in range)
         range_lookup: HashMap<usize, (usize, u64)>,
-        // we re-order ranges to put data with larger alignment up front (this saves padding bytes).
-        // since indices are stored in the range_lookup map, we can't do this in-place and maintain a separate order here.
-        range_emit_order: Vec<usize>,
+        layout: RangeLayout,
     },
 }
 
 #[derive(Debug)]
 struct DataEmitInfo {
     per_segment: Vec<DataSegmentEmitInfo>,
+}
+
+impl DataEmitInfo {
+    /// The fragments of `segment_idx` that `module` emits, in ascending order.
+    fn fragments(&self, segment_idx: usize, module: usize) -> impl Iterator<Item = &Fragment> {
+        let fragments = match &self.per_segment[segment_idx] {
+            DataSegmentEmitInfo::Ranges { layout, .. } => layout.fragments.as_slice(),
+            _ => &[],
+        };
+        fragments
+            .iter()
+            .filter(move |fragment| fragment.module == module)
+    }
+
+    /// Every input segment keeps its index in every output module, holding the module's first
+    /// fragment of it (or nothing). Further fragments are appended after all input segments;
+    /// this lists them as `(input segment, fragment)`, in the order they are appended.
+    fn extra_fragments(&self, module: usize) -> Vec<(usize, &Fragment)> {
+        (0..self.per_segment.len())
+            .flat_map(|segment_idx| {
+                self.fragments(segment_idx, module)
+                    .skip(1)
+                    .map(move |fragment| (segment_idx, fragment))
+            })
+            .collect()
+    }
 }
 
 impl DataEmitInfo {
@@ -400,6 +426,39 @@ impl DataEmitInfo {
                 base_address: u64,
             },
         }
+        // Active segments are initialized in index order. Relocated data is emitted in
+        // additional segments after all input segments, which is only order-preserving when the
+        // input segments do not overlap in memory. wasm-ld never lets them overlap, but a
+        // hand-made input may; keep such segments as they are, in their slots.
+        let segment_extents: Vec<Option<Range<u64>>> = input_module
+            .data_segments
+            .iter()
+            .map(|segment| match &segment.kind {
+                DataKind::Active { offset_expr, .. } => {
+                    match offset_expr.get_operators_reader().read().ok()? {
+                        wasmparser::Operator::I32Const { value } => Some(value as u32 as u64),
+                        wasmparser::Operator::I64Const { value } => Some(value as u64),
+                        _ => None,
+                    }
+                    .map(|base| base..base + wasm_data_len(segment))
+                }
+                DataKind::Passive => None,
+            })
+            .collect();
+        let overlaps_other_segment = |segment_idx: usize| -> bool {
+            let Some(extent) = &segment_extents[segment_idx] else {
+                return false;
+            };
+            segment_extents
+                .iter()
+                .enumerate()
+                .any(|(other_idx, other)| {
+                    other_idx != segment_idx
+                        && other.as_ref().is_some_and(|other| {
+                            extent.start < other.end && other.start < extent.end
+                        })
+                })
+        };
         let mut per_segment = input_module
             .data_segments
             .iter()
@@ -427,6 +486,10 @@ impl DataEmitInfo {
                         Ok(addr) => addr,
                         Err(value) => { bail!("Invalid base address found: {value}"); },
                     };
+                    if overlaps_other_segment(segment_idx) {
+                        warn!("Data segment {segment_idx} overlaps another data segment in memory. Putting it into main.");
+                        return Ok(DataSegmentAnalysis::FromInputOnlyIn(0));
+                    }
                     Ok(DataSegmentAnalysis::Ranges {
                         ranges: vec![],
                         range_lookup: HashMap::new(),
@@ -610,7 +673,7 @@ impl DataEmitInfo {
                     needed_by: program_info.output_modules[module_index].0.clone(),
                     in_module: module_index,
                     data_align,
-                    in_module_offset: u64::MAX, // filled in later
+                    segment_offset: u64::MAX, // filled in later
                 });
                 range_lookup.insert(symbol_index, (range_idx, 0));
             }
@@ -634,12 +697,24 @@ impl DataEmitInfo {
                     // would not be a problem. Since we can't guarantee this at this point though, don't risk it.
                     // Overlapping segments *will* overwrite data!
                     // Instead, as long as the relocated segment is longer than its input, fold the data of the
-                    // smallest module into the main module. That removes the padding between their parts.
-                    // Merged ranges can still need more padding than the input had, so even with all data
-                    // in the main module the segment may not fit; then the whole segment is copied instead.
+                    // smallest module into the main module and try again. That changes the order of the
+                    // ranges and usually reduces the padding that merged ranges need. It is not guaranteed
+                    // to: even with all data in the main module the segment may not fit, and then the whole
+                    // segment is copied instead.
+                    let mut folded_modules = 0usize;
+                    let mut folded_bytes = 0u64;
+                    let mut first_len = None;
                     let layout = loop {
                         let layout = layout_ranges(&mut ranges);
+                        let first_len = *first_len.get_or_insert(layout.segment_len);
                         if layout.segment_len <= input_len {
+                            if folded_modules != 0 {
+                                info!(
+                                    "Relocated data segment {segment_index} was longer than its input \
+                                    ({first_len} > {input_len} bytes): moved {folded_bytes} bytes of \
+                                    {folded_modules} module(s) into the main module to make it fit"
+                                );
+                            }
                             break Some(layout);
                         }
                         let mut per_module_size = HashMap::new();
@@ -658,6 +733,8 @@ impl DataEmitInfo {
                             moving the {size} data bytes of output module {module} into the main module",
                             layout.segment_len - input_len
                         );
+                        folded_modules += 1;
+                        folded_bytes += size;
                         for range in ranges.iter_mut().filter(|range| range.in_module == module) {
                             range.in_module = MAIN_MODULE;
                         }
@@ -670,16 +747,11 @@ impl DataEmitInfo {
                     // So for the moment, don't bother with this sanity analysis.
 
                     match layout {
-                        Some(RangeLayout {
-                            range_emit_order,
-                            per_output_offset,
-                            ..
-                        }) => DataSegmentEmitInfo::Ranges {
+                        Some(layout) => DataSegmentEmitInfo::Ranges {
                             ranges,
                             base_address,
-                            per_output_offset,
                             range_lookup,
-                            range_emit_order,
+                            layout,
                         },
                         None => {
                             trace!("{ranges:?}");
@@ -705,7 +777,6 @@ impl DataEmitInfo {
         let DataSegmentEmitInfo::Ranges {
             ranges,
             base_address,
-            per_output_offset,
             range_lookup,
             ..
         } = &self.per_segment[segment_idx]
@@ -717,11 +788,7 @@ impl DataEmitInfo {
             return Err(());
         };
         let range = &ranges[range_index];
-        let mut address = *base_address;
-        address += per_output_offset[&range.in_module];
-        address += range.in_module_offset;
-        address += offset_in_range;
-        Ok(Some(address))
+        Ok(Some(base_address + range.segment_offset + offset_in_range))
     }
 }
 
@@ -1334,7 +1401,12 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_data_count_section(&mut self) {
-        let data_section_count = self.input_module.data_segments.len();
+        let data_section_count = self.input_module.data_segments.len()
+            + self
+                .emit_state
+                .data_relocations
+                .extra_fragments(self.output_module_index)
+                .len();
         let section = wasm_encoder::DataCountSection {
             count: data_section_count
                 .try_into()
@@ -1476,56 +1548,75 @@ impl<'a> ModuleEmitState<'a> {
         self.get_relocated_data(range_start..range_end)
     }
 
+    /// The data of `fragment`, with the relocations inside applied.
+    fn fragment_data(&self, segment_idx: usize, fragment: &Fragment) -> Result<Vec<u8>> {
+        let DataSegmentEmitInfo::Ranges { ranges, layout, .. } =
+            &self.emit_state.data_relocations.per_segment[segment_idx]
+        else {
+            unreachable!("fragments only exist for relocated segments");
+        };
+        let input_range_start = wasm_data_start(&self.input_module.data_segments[segment_idx]);
+        let mut data = vec![];
+        for &range_idx in &layout.emit_order[fragment.ranges.clone()] {
+            let range = &ranges[range_idx];
+            let input_range = (input_range_start + range.input_range.start)
+                ..(input_range_start + range.input_range.end);
+            data.resize((range.segment_offset - fragment.offset) as usize, 0); // pad with zeroes
+            data.extend(self.get_relocated_data(input_range)?);
+        }
+        Ok(data)
+    }
+
     fn generate_data_section(&mut self) -> Result<()> {
         let data_reloc = &self.emit_state.data_relocations;
         let mut section = wasm_encoder::DataSection::new();
+        // `(input segment, address, data)`; the address is `None` to copy the input's offset
+        let mut segments: Vec<(usize, Option<u64>, Vec<u8>)> = vec![];
+        // Every input segment keeps its index, so that indices in the code stay valid.
         for (segment_idx, segment) in data_reloc.per_segment.iter().enumerate() {
             let input_data = &self.input_module.data_segments[segment_idx];
-            let input_range_start = wasm_data_start(input_data);
-
-            let mut data: Vec<u8>;
-            let addr_offset: Option<u64>;
-            match segment {
+            let (addr_offset, data) = match segment {
                 DataSegmentEmitInfo::FromInputInAll => {
-                    addr_offset = None;
-                    data = self.get_relocated_segment_data(input_data)?;
+                    (None, self.get_relocated_segment_data(input_data)?)
                 }
                 DataSegmentEmitInfo::FromInputOnlyIn(module)
                     if *module == self.output_module_index =>
                 {
-                    addr_offset = None;
-                    data = self.get_relocated_segment_data(input_data)?;
+                    (None, self.get_relocated_segment_data(input_data)?)
                 }
                 DataSegmentEmitInfo::FromInputOnlyIn(_) => {
-                    addr_offset = None;
-                    data = vec![]; // no data, but emit the module to not shift data indices
+                    (None, vec![]) // no data, but emit the segment to not shift data indices
                 }
-                DataSegmentEmitInfo::Ranges {
-                    ranges,
-                    range_emit_order,
-                    per_output_offset,
-                    base_address,
-                    ..
-                } => {
-                    if let Some(module_offset) = per_output_offset.get(&self.output_module_index) {
-                        addr_offset = Some(base_address + *module_offset);
-                    } else {
-                        addr_offset = None;
-                    }
-                    data = vec![];
-                    for &range_idx in range_emit_order {
-                        let range = &ranges[range_idx];
-                        if range.in_module != self.output_module_index {
-                            continue;
-                        }
-                        let data_range = &range.input_range;
-                        let input_range = (input_range_start + data_range.start)
-                            ..(input_range_start + data_range.end);
-                        data.resize(range.in_module_offset as usize, 0); // pad with zeroes
-                        data.extend(self.get_relocated_data(input_range)?);
+                DataSegmentEmitInfo::Ranges { base_address, .. } => {
+                    match data_reloc
+                        .fragments(segment_idx, self.output_module_index)
+                        .next()
+                    {
+                        Some(fragment) => (
+                            Some(base_address + fragment.offset),
+                            self.fragment_data(segment_idx, fragment)?,
+                        ),
+                        None => (None, vec![]),
                     }
                 }
-            }
+            };
+            segments.push((segment_idx, addr_offset, data));
+        }
+        // Further fragments are appended, see `DataEmitInfo::extra_fragments`.
+        for (segment_idx, fragment) in data_reloc.extra_fragments(self.output_module_index) {
+            let DataSegmentEmitInfo::Ranges { base_address, .. } =
+                &data_reloc.per_segment[segment_idx]
+            else {
+                unreachable!("fragments only exist for relocated segments");
+            };
+            segments.push((
+                segment_idx,
+                Some(base_address + fragment.offset),
+                self.fragment_data(segment_idx, fragment)?,
+            ));
+        }
+        for (segment_idx, addr_offset, data) in segments {
+            let input_data = &self.input_module.data_segments[segment_idx];
             match input_data.kind {
                 DataKind::Passive => {
                     section.passive(data);
@@ -1626,9 +1717,23 @@ impl<'a> ModuleEmitState<'a> {
         section.memories(&convert_name_hash_map(&self.input_module.names.memories));
         section.globals(&convert_name_hash_map(&self.input_module.names.globals));
         // elements
-        section.data(&convert_name_hash_map(
-            &self.input_module.names.data_segments,
-        ));
+        {
+            // appended fragments are named after their input segment
+            let mut data_names = self.input_module.names.data_segments.clone();
+            let input_count = self.input_module.data_segments.len();
+            for (i, (segment_idx, _)) in self
+                .emit_state
+                .data_relocations
+                .extra_fragments(self.output_module_index)
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(name) = self.input_module.names.data_segments.get(&segment_idx) {
+                    data_names.insert(input_count + i, name);
+                }
+            }
+            section.data(&convert_name_hash_map(&data_names));
+        }
         // tag
         // fields
         // tags

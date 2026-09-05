@@ -40,11 +40,20 @@
 //! an intermediate set. Asserts that its splits are still accounted for, so
 //! the range does not end up in a chunk one of them never loads.
 //!
-//! `overlong_segment_folds_the_smallest_split_into_main`: alignment padding
-//! between the parts of the modules makes the relocated segment longer than
-//! its input. Asserts that only the smallest split's data moves into main and
-//! the other split keeps its relocated data, instead of the whole segment
-//! being copied into main unrelocated.
+//! `mixed_alignments_pack_without_padding_across_modules`: modules mixing
+//! aligned words with bytes. Asserts that the data packs without padding by
+//! emitting one segment per alignment, that every input segment keeps its
+//! index in the outputs and the extra segments are appended.
+//!
+//! `overlong_segment_folds_the_smallest_split_into_main`: a merged range with
+//! an unaligned start makes the relocated segment longer than its input.
+//! Asserts that only the smallest split's data moves into main and the other
+//! split keeps its relocated data, instead of the whole segment being copied
+//! into main unrelocated.
+//!
+//! `overlapping_input_segments_keep_their_order`: two input segments overlap
+//! in memory, which an appended fragment could reorder. Asserts that both are
+//! kept as they are, in their slots.
 
 use std::borrow::Cow;
 
@@ -997,10 +1006,9 @@ fn chunk_placement_records_every_requiring_split() {
 }
 
 #[test]
-fn overlong_segment_folds_the_smallest_split_into_main() {
+fn mixed_alignments_pack_without_padding_across_modules() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    // Bytes 3 and 16 are not referenced by any symbol, so two bytes are free for padding.
     let data = b"Mab.AAAACCCCBBBB.".to_vec();
     let input = Input {
         data: data.clone(),
@@ -1015,9 +1023,6 @@ fn overlong_segment_folds_the_smallest_split_into_main() {
         ],
         funcs: vec![
             Func(Owner::Main("main_reads"), vec![0]),
-            // The parts of `a` and `b` each mix 4-aligned words with a byte, so the part
-            // following either needs padding: a (9 bytes), pad 3, b (5 bytes), main (1 byte)
-            // needs 18 bytes, one more than the input.
             Func(Owner::Split("a"), vec![1, 2, 3]),
             Func(Owner::Split("b"), vec![4, 5]),
         ],
@@ -1026,25 +1031,173 @@ fn overlong_segment_folds_the_smallest_split_into_main() {
     };
     let output = split(&input);
 
-    // `b`, the smaller split, is folded into main: its word first (largest alignment), then the
-    // bytes by input position. `a` keeps its own relocated part, which now fits.
+    // All words come first, then all bytes, so nothing needs padding: 15 of the 17 input bytes
+    // are used, in module order within each alignment.
+    let split_a = output.split("a");
+    let split_b = output.split("b");
     assert_eq!(
-        single_data_segment(&output.main),
-        (SEGMENT_BASE, b"BBBBMb".to_vec()),
-        "main should hold its own byte and b's data, packed by alignment",
+        data_segments(split_a),
+        vec![
+            (SEGMENT_BASE, b"AAAACCCC".to_vec()),
+            (SEGMENT_BASE + 13, b"a".to_vec())
+        ]
+    );
+    assert_eq!(
+        data_segments(split_b),
+        vec![
+            (SEGMENT_BASE + 8, b"BBBB".to_vec()),
+            (SEGMENT_BASE + 14, b"b".to_vec())
+        ]
+    );
+    assert_eq!(
+        data_segments(&output.main),
+        vec![(SEGMENT_BASE + 12, b"M".to_vec())]
+    );
+    assert_some_function_refers_to(
+        split_a,
+        &[SEGMENT_BASE + 13, SEGMENT_BASE, SEGMENT_BASE + 4],
+    );
+    assert_some_function_refers_to(split_b, &[SEGMENT_BASE + 14, SEGMENT_BASE + 8]);
+    assert_eq!(
+        exported_function_constants(&output.main, "main_reads"),
+        vec![SEGMENT_BASE + 12]
+    );
+
+    // The input's only segment keeps index 0 in every module, holding the module's first
+    // fragment; further fragments are appended, and the data count matches.
+    for (name, module, first, extra) in [
+        ("a", split_a, Some(SEGMENT_BASE), vec![SEGMENT_BASE + 13]),
+        (
+            "b",
+            split_b,
+            Some(SEGMENT_BASE + 8),
+            vec![SEGMENT_BASE + 14],
+        ),
+        (
+            "main",
+            output.main.as_slice(),
+            Some(SEGMENT_BASE + 12),
+            vec![],
+        ),
+    ] {
+        let (segments, count) = all_data_segments(module);
+        assert_eq!(segments.len() as u32, count, "{name}: data count");
+        assert_eq!(
+            segments.len(),
+            1 + extra.len(),
+            "{name}: appended fragments"
+        );
+        assert_eq!(
+            segments[0].as_ref().map(|(addr, _)| *addr),
+            first,
+            "{name}: slot of the input segment"
+        );
+        let appended: Vec<u32> = segments[1..]
+            .iter()
+            .map(|segment| {
+                segment
+                    .as_ref()
+                    .expect("appended fragments are not empty")
+                    .0
+            })
+            .collect();
+        assert_eq!(appended, extra, "{name}: appended fragment addresses");
+    }
+}
+
+#[test]
+fn overlong_segment_folds_the_smallest_split_into_main() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // `whole` (split a) starts at offset 1 and contains a 4-aligned word, so its merged range
+    // must be placed at an offset congruent to 1 modulo 4. Bytes 9..12 are unreferenced.
+    let data = b"MABCDEFGH...BBBB".to_vec();
+    let input = Input {
+        data: data.clone(),
+        alignment: 2,
+        symbols: vec![
+            DataSymbol("main_byte", 0, 1),
+            DataSymbol("whole", 1, 8),
+            DataSymbol("word", 4, 4),
+            DataSymbol("b_word", 12, 4),
+        ],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![0]),
+            Func(Owner::Split("a"), vec![1, 2]),
+            Func(Owner::Split("b"), vec![3]),
+        ],
+        extra_segments: vec![],
+        data_relocs: vec![],
+    };
+    let output = split(&input);
+
+    // Without folding: a's range at 1..9, b's word at 12..16, main's byte at 16: one byte too
+    // long. Folding `b`, the smaller split, into main puts its word first at 0..4, then a's
+    // range at 5..13 and main's byte at 13.
+    assert_eq!(
+        data_segments(&output.main),
+        vec![
+            (SEGMENT_BASE, b"BBBB".to_vec()),
+            (SEGMENT_BASE + 13, b"M".to_vec())
+        ],
+        "main should hold b's word and its own byte",
     );
     assert_eq!(
         exported_function_constants(&output.main, "main_reads"),
-        vec![SEGMENT_BASE + 4]
+        vec![SEGMENT_BASE + 13]
     );
     let split_b = output.split("b");
     assert_eq!(data_segments(split_b), vec![], "b's data moved into main");
-    assert_some_function_refers_to(split_b, &[SEGMENT_BASE + 5, SEGMENT_BASE]);
+    assert_some_function_refers_to(split_b, &[SEGMENT_BASE]);
 
     let split_a = output.split("a");
     let (a_addr, a_bytes) = single_data_segment(split_a);
-    assert_eq!(a_bytes, b"AAAACCCCa");
-    assert_eq!(a_addr % 4, 0, "a's words must stay 4-aligned");
-    assert!(a_addr >= SEGMENT_BASE + 6 && a_addr + 9 <= SEGMENT_BASE + data.len() as u32);
-    assert_some_function_refers_to(split_a, &[a_addr + 8, a_addr, a_addr + 4]);
+    assert_eq!(a_bytes, b"ABCDEFGH");
+    assert_eq!(
+        (a_addr + 3) % 4,
+        0,
+        "the word inside a's range must stay 4-aligned"
+    );
+    assert!(a_addr >= SEGMENT_BASE + 4 && a_addr + 8 <= SEGMENT_BASE + 13);
+    assert_some_function_refers_to(split_a, &[a_addr, a_addr + 3]);
+}
+
+#[test]
+fn overlapping_input_segments_keep_their_order() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Segment 1 at SEGMENT_BASE + 8 overlaps the last byte of segment 0 and is initialized
+    // after it, so that byte must end up as "X". Relocating segment 0 would emit main's "m"
+    // in a segment appended after segment 1.
+    let input = Input {
+        data: b"AAAABBBBm".to_vec(),
+        alignment: 2,
+        symbols: vec![
+            DataSymbol("main_word", 0, 4),
+            DataSymbol("split_word", 4, 4),
+            DataSymbol("main_byte", 8, 1),
+        ],
+        extra_segments: vec![(SEGMENT_BASE + 8, b"X".to_vec(), vec![DataSymbol("x", 0, 1)])],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![0, 2, 3]),
+            Func(Owner::Split("a"), vec![1]),
+        ],
+        data_relocs: vec![],
+    };
+    let output = split(&input);
+
+    assert_eq!(
+        data_segments(&output.main),
+        vec![
+            (SEGMENT_BASE, b"AAAABBBBm".to_vec()),
+            (SEGMENT_BASE + 8, b"X".to_vec())
+        ],
+        "both segments stay as they are, in input order",
+    );
+    assert_eq!(data_segments(output.split("a")), vec![]);
+    assert_some_function_refers_to(output.split("a"), &[SEGMENT_BASE + 4]);
+    assert_eq!(
+        exported_function_constants(&output.main, "main_reads"),
+        vec![SEGMENT_BASE, SEGMENT_BASE + 8, SEGMENT_BASE + 8]
+    );
 }

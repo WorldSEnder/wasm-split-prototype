@@ -6,9 +6,12 @@
   the segment grew past its input and the whole segment was kept in the main module.
   Bytes shared between modules are now emitted once, from the chunk shared by all splits that
   need them or from the main module, keeping the alignment of every symbol in them, and the
-  per-module parts of a segment are only padded to the alignment they actually need. If a
-  relocated segment still does not fit its input, the data of the smallest modules is moved
-  into the main module instead of giving up on the whole segment.
+  data of all modules is placed by decreasing alignment, so that ordinary data needs no
+  padding. Each module emits one data segment per run of its data, typically one per alignment
+  it uses; the input's data segments keep their indices and the additional segments are
+  appended. If a relocated segment still does not fit its input, the data of the smallest
+  modules is moved into the main module instead of giving up on the whole segment, and this
+  is reported at info level.
 - Fix relocations inside a data symbol that is contained in another symbol being attributed to
   the containing symbol. A module that only used the inner symbol could miss the relocation's
   target. This was hidden by the whole-segment fallback above.
