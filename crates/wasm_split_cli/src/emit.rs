@@ -306,6 +306,64 @@ impl LateDataRange {
     }
 }
 
+struct RangeLayout {
+    // indices into the ranges, in the order they are emitted
+    range_emit_order: Vec<usize>,
+    // output module -> offset of its part in the segment
+    per_output_offset: HashMap<usize, u64>,
+    segment_len: u64,
+}
+
+/// Lay out the ranges of one segment: each output module gets a contiguous part of the segment,
+/// and `in_module_offset` of every range is set relative to the part of its module.
+fn layout_ranges(ranges: &mut [LateDataRange]) -> RangeLayout {
+    let mut range_emit_order: Vec<_> = (0..ranges.len()).collect();
+    range_emit_order.sort_by_key(|&range_idx| {
+        let range = &ranges[range_idx];
+        (
+            range.in_module,
+            std::cmp::Reverse(range.data_align),
+            range.input_range.start,
+        )
+    });
+    // reorder symbols per module
+    let mut per_module_size = HashMap::new();
+    // The first range of a module has the largest alignment (see the sort order above),
+    // which is all the module's part of the segment needs to be aligned to.
+    let mut per_module_align = HashMap::new();
+    for &range_idx in &range_emit_order {
+        let range = &mut ranges[range_idx];
+        let module_len = per_module_size.entry(range.in_module).or_insert(0);
+        per_module_align
+            .entry(range.in_module)
+            .or_insert(range.data_align);
+        let data_range = range.input_range.clone();
+        let data_offset = range.align_offset(*module_len);
+
+        // allocate it in that module
+        range.in_module_offset = data_offset;
+        *module_len = data_offset + (data_range.end - data_range.start);
+    }
+
+    // figure out module offsets. Parts with a larger alignment come first, so that padding is
+    // only needed after a part that mixes alignments.
+    let mut per_module_size = per_module_size.into_iter().collect::<Vec<_>>();
+    per_module_size
+        .sort_by_key(|&(module, _)| (std::cmp::Reverse(per_module_align[&module]), module));
+    let mut per_output_offset = HashMap::new();
+    let mut data_offset: u64 = 0;
+    for &(module, module_size) in &per_module_size {
+        data_offset = data_offset.next_multiple_of(per_module_align[&module]);
+        per_output_offset.insert(module, data_offset);
+        data_offset += module_size;
+    }
+    RangeLayout {
+        range_emit_order,
+        per_output_offset,
+        segment_len: data_offset,
+    }
+}
+
 #[derive(Debug)]
 enum DataSegmentEmitInfo {
     // Copy this segment from the input, either in all or a specific output module
@@ -571,29 +629,39 @@ impl DataEmitInfo {
                     range_lookup,
                     base_address,
                 } => {
-                    let mut range_emit_order: Vec<_> = (0..ranges.len()).collect();
-                    range_emit_order.sort_by_key(|&range_idx| {
-                        let range = &ranges[range_idx];
-                        (range.in_module, std::cmp::Reverse(range.data_align), range.input_range.start)
-                    });
-                    // reorder symbols per module
-                    let mut per_module_size = HashMap::new();
-                    // The first range of a module has the largest alignment (see the sort order above),
-                    // which is all the module's part of the segment needs to be aligned to.
-                    let mut per_module_align = HashMap::new();
-                    for &range_idx in &range_emit_order {
-                        let range = &mut ranges[range_idx];
-                        let module_len = per_module_size.entry(range.in_module).or_insert(0);
-                        per_module_align
-                            .entry(range.in_module)
-                            .or_insert(range.data_align);
-                        let data_range = range.input_range.clone();
-                        let data_offset = range.align_offset(*module_len);
-
-                        // allocate it in that module
-                        range.in_module_offset = data_offset;
-                        *module_len = data_offset + (data_range.end - data_range.start);
-                    }
+                    let input_len = wasm_data_len(&input_module.data_segments[segment_index]);
+                    // If we could move other active segments to different base addresses, this segment getting longer
+                    // would not be a problem. Since we can't guarantee this at this point though, don't risk it.
+                    // Overlapping segments *will* overwrite data!
+                    // Instead, as long as the relocated segment is longer than its input, fold the data of the
+                    // smallest module into the main module. That removes the padding between their parts.
+                    // Merged ranges can still need more padding than the input had, so even with all data
+                    // in the main module the segment may not fit; then the whole segment is copied instead.
+                    let layout = loop {
+                        let layout = layout_ranges(&mut ranges);
+                        if layout.segment_len <= input_len {
+                            break Some(layout);
+                        }
+                        let mut per_module_size = HashMap::new();
+                        for range in ranges.iter().filter(|range| range.in_module != MAIN_MODULE) {
+                            *per_module_size.entry(range.in_module).or_insert(0) +=
+                                range.input_range.end - range.input_range.start;
+                        }
+                        let Some((&module, &size)) = per_module_size
+                            .iter()
+                            .min_by_key(|&(&module, &size)| (size, module))
+                        else {
+                            break None;
+                        };
+                        trace!(
+                            "Relocated segment {segment_index} is longer than its input by {}, \
+                            moving the {size} data bytes of output module {module} into the main module",
+                            layout.segment_len - input_len
+                        );
+                        for range in ranges.iter_mut().filter(|range| range.in_module == module) {
+                            range.in_module = MAIN_MODULE;
+                        }
+                    };
 
                     // check that range_lookup completely covers the (non-zero) data segment?
                     // Otherwise there is non-relocated data, which most likely indicates an error.
@@ -601,35 +669,23 @@ impl DataEmitInfo {
                     // Some gaps will exist, introduced by padding for alignment! This padding should be zeroed.
                     // So for the moment, don't bother with this sanity analysis.
 
-                    // figure out module offsets
-                    let mut per_module_size = per_module_size.into_iter().collect::<Vec<_>>();
-                    per_module_size.sort_by_key(|&(m, _)| m);
-                    let mut per_output_offset = HashMap::new();
-                    let mut data_offset: u64 = 0;
-                    for &(module, module_size) in &per_module_size {
-                        data_offset = data_offset.next_multiple_of(per_module_align[&module]);
-                        per_output_offset.insert(module, data_offset);
-                        data_offset += module_size;
-                    }
-                    let segment_len = data_offset;
-
-                    let ranges = DataSegmentEmitInfo::Ranges {
-                        ranges,
-                        base_address,
-                        per_output_offset,
-                        range_lookup,
-                        range_emit_order,
-                    };
-                    // If we could move other active segments to different base addresses, this segment getting longer
-                    // would not be a problem. Since we can't guarantee this at this point though, don't risk it.
-                    // Overlapping segments *will* overwrite data!
-                    if segment_len > wasm_data_len(&input_module.data_segments[segment_index]) {
-                        let overlength = segment_len - wasm_data_len(&input_module.data_segments[segment_index]);
-                        trace!("{ranges:?}");
-                        warn!("Overlong segment {segment_index} by {overlength} after relocation, putting it in main module.");
-                        DataSegmentEmitInfo::FromInputOnlyIn(0)
-                    } else {
-                        ranges
+                    match layout {
+                        Some(RangeLayout {
+                            range_emit_order,
+                            per_output_offset,
+                            ..
+                        }) => DataSegmentEmitInfo::Ranges {
+                            ranges,
+                            base_address,
+                            per_output_offset,
+                            range_lookup,
+                            range_emit_order,
+                        },
+                        None => {
+                            trace!("{ranges:?}");
+                            warn!("Overlong segment {segment_index} after relocation, putting it in main module.");
+                            DataSegmentEmitInfo::FromInputOnlyIn(0)
+                        }
                     }
                 }
             })

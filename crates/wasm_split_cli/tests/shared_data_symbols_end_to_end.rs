@@ -39,6 +39,12 @@
 //! one of the contained symbols belongs to the chunk provisionally chosen for
 //! an intermediate set. Asserts that its splits are still accounted for, so
 //! the range does not end up in a chunk one of them never loads.
+//!
+//! `overlong_segment_folds_the_smallest_split_into_main`: alignment padding
+//! between the parts of the modules makes the relocated segment longer than
+//! its input. Asserts that only the smallest split's data moves into main and
+//! the other split keeps its relocated data, instead of the whole segment
+//! being copied into main unrelocated.
 
 use std::borrow::Cow;
 
@@ -988,4 +994,57 @@ fn chunk_placement_records_every_requiring_split() {
     for split in ["a", "b", "c", "d", "e"] {
         assert_eq!(data_segments(output.split(split)), vec![]);
     }
+}
+
+#[test]
+fn overlong_segment_folds_the_smallest_split_into_main() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Bytes 3 and 16 are not referenced by any symbol, so two bytes are free for padding.
+    let data = b"Mab.AAAACCCCBBBB.".to_vec();
+    let input = Input {
+        data: data.clone(),
+        alignment: 2,
+        symbols: vec![
+            DataSymbol("main_byte", 0, 1),
+            DataSymbol("a_byte", 1, 1),
+            DataSymbol("a_word1", 4, 4),
+            DataSymbol("a_word2", 8, 4),
+            DataSymbol("b_byte", 2, 1),
+            DataSymbol("b_word", 12, 4),
+        ],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![0]),
+            // The parts of `a` and `b` each mix 4-aligned words with a byte, so the part
+            // following either needs padding: a (9 bytes), pad 3, b (5 bytes), main (1 byte)
+            // needs 18 bytes, one more than the input.
+            Func(Owner::Split("a"), vec![1, 2, 3]),
+            Func(Owner::Split("b"), vec![4, 5]),
+        ],
+        extra_segments: vec![],
+        data_relocs: vec![],
+    };
+    let output = split(&input);
+
+    // `b`, the smaller split, is folded into main: its word first (largest alignment), then the
+    // bytes by input position. `a` keeps its own relocated part, which now fits.
+    assert_eq!(
+        single_data_segment(&output.main),
+        (SEGMENT_BASE, b"BBBBMb".to_vec()),
+        "main should hold its own byte and b's data, packed by alignment",
+    );
+    assert_eq!(
+        exported_function_constants(&output.main, "main_reads"),
+        vec![SEGMENT_BASE + 4]
+    );
+    let split_b = output.split("b");
+    assert_eq!(data_segments(split_b), vec![], "b's data moved into main");
+    assert_some_function_refers_to(split_b, &[SEGMENT_BASE + 5, SEGMENT_BASE]);
+
+    let split_a = output.split("a");
+    let (a_addr, a_bytes) = single_data_segment(split_a);
+    assert_eq!(a_bytes, b"AAAACCCCa");
+    assert_eq!(a_addr % 4, 0, "a's words must stay 4-aligned");
+    assert!(a_addr >= SEGMENT_BASE + 6 && a_addr + 9 <= SEGMENT_BASE + data.len() as u32);
+    assert_some_function_refers_to(split_a, &[a_addr + 8, a_addr, a_addr + 4]);
 }
