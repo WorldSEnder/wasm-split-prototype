@@ -7,6 +7,9 @@
   Bytes shared between modules are now emitted once, from the main module, keeping the
   alignment of every symbol in them, and the per-module parts of a segment are only padded
   to the alignment they actually need.
+- Fix relocations inside a data symbol that is contained in another symbol being attributed to
+  the containing symbol. A module that only used the inner symbol could miss the relocation's
+  target. This was hidden by the whole-segment fallback above.
 
 ## wasm-split-cli v0.2.3
 

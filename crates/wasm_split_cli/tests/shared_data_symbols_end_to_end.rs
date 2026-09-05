@@ -16,6 +16,14 @@
 //! `overlapping_symbols_keep_the_strictest_alignment`: a 4-aligned word is
 //! overlapped by a longer, unaligned string. Asserts that the merged bytes
 //! are placed so that the word stays aligned.
+//!
+//! `pointer_inside_a_contained_symbol_pulls_its_target_into_main`: the main
+//! module uses the tail of a split's symbol, and that tail holds a pointer.
+//! Asserts that the pointer's target is available to main.
+//!
+//! `relocation_crossing_an_inner_symbol_belongs_to_the_containing_symbol`: a
+//! pointer straddles the boundary of a symbol nested in another. Asserts that
+//! it is attributed to the containing symbol instead of being rejected.
 
 use std::borrow::Cow;
 
@@ -685,4 +693,91 @@ fn overlapping_symbols_keep_the_strictest_alignment() {
         exported_function_constants(&output.main, "main_reads"),
         vec![main_addr]
     );
+}
+
+#[test]
+fn pointer_inside_a_contained_symbol_pulls_its_target_into_main() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // outer = "ABCD" + pointer; the pointer is the tail that main uses, and it points at target.
+    let mut data = b"ABCD".to_vec();
+    data.extend_from_slice(&[0; 4]); // pointer, written by the builder
+    data.extend_from_slice(&9u32.to_le_bytes());
+    let input = Input {
+        data: data.clone(),
+        alignment: 2,
+        symbols: vec![
+            DataSymbol("outer", 0, 8),
+            DataSymbol("tail", 4, 4),
+            DataSymbol("target", 8, 4),
+        ],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![1]),
+            Func(Owner::Split("a"), vec![0]),
+        ],
+        extra_segments: vec![],
+        data_relocs: vec![(4, 2)],
+    };
+    let output = split(&input);
+
+    // Main reads the pointer, so the target must be there before the split loads: everything
+    // ends up in main, with the pointer relocated to the target's (unchanged) address.
+    let (main_addr, main_bytes) = single_data_segment(&output.main);
+    assert_eq!(main_addr, SEGMENT_BASE);
+    let mut expected = data.clone();
+    expected[4..8].copy_from_slice(&(SEGMENT_BASE + 8).to_le_bytes());
+    assert_eq!(
+        main_bytes, expected,
+        "main must hold outer, its pointer and the target"
+    );
+    assert_eq!(
+        exported_function_constants(&output.main, "main_reads"),
+        vec![SEGMENT_BASE + 4]
+    );
+    let split_a = output.split("a");
+    assert_eq!(
+        data_segments(split_a),
+        vec![],
+        "a shares all its data with main"
+    );
+    assert_some_function_refers_to(split_a, &[SEGMENT_BASE]);
+}
+
+#[test]
+fn relocation_crossing_an_inner_symbol_belongs_to_the_containing_symbol() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // outer = "AB" + pointer + "CD", inner = the last four bytes of outer, so the pointer
+    // straddles inner's start. Only outer contains it, so its target follows outer to main.
+    let mut data = b"AB".to_vec();
+    data.extend_from_slice(&[0; 4]); // pointer, written by the builder
+    data.extend_from_slice(b"CD");
+    data.extend_from_slice(&9u32.to_le_bytes()); // target
+    let input = Input {
+        data: data.clone(),
+        alignment: 2,
+        symbols: vec![
+            DataSymbol("outer", 0, 8),
+            DataSymbol("inner", 4, 4),
+            DataSymbol("target", 8, 4),
+        ],
+        extra_segments: vec![],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![0]),
+            Func(Owner::Split("a"), vec![1]),
+        ],
+        data_relocs: vec![(2, 2)],
+    };
+    let output = split(&input);
+
+    let (main_addr, main_bytes) = single_data_segment(&output.main);
+    assert_eq!(main_addr, SEGMENT_BASE);
+    let mut expected = data.clone();
+    expected[2..6].copy_from_slice(&(SEGMENT_BASE + 8).to_le_bytes());
+    assert_eq!(
+        main_bytes, expected,
+        "main must hold outer, its pointer and the target"
+    );
+    assert_eq!(data_segments(output.split("a")), vec![]);
+    assert_some_function_refers_to(output.split("a"), &[SEGMENT_BASE + 4]);
 }
