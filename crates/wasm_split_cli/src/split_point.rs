@@ -324,7 +324,9 @@ impl SplitModuleIdentifier {
         }
     }
 
-    fn also_in(&mut self, other: &SplitModuleIdentifier) {
+    /// Make this identifier also cover everything that requires `other`: the modules that
+    /// require the result are a superset of those requiring either input.
+    pub(crate) fn also_in(&mut self, other: &SplitModuleIdentifier) {
         let mut needed_by = BTreeSet::new();
         match self {
             SplitModuleIdentifier::Main => return,

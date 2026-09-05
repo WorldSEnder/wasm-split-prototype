@@ -24,6 +24,21 @@
 //! `relocation_crossing_an_inner_symbol_belongs_to_the_containing_symbol`: a
 //! pointer straddles the boundary of a symbol nested in another. Asserts that
 //! it is attributed to the containing symbol instead of being rejected.
+//!
+//! `data_shared_between_splits_is_emitted_from_their_chunk`: split `a` uses a
+//! whole string, splits `a` and `b` both use its tail. Asserts that the whole
+//! string is emitted from the chunk shared by `a` and `b`, not from main.
+//!
+//! `chunk_placement_uses_the_exact_chunk_of_all_requiring_splits`: a split's
+//! symbol contains three symbols shared with other splits, so the merged range
+//! is required by a growing set of splits. Asserts that the range ends up in
+//! the chunk shared by exactly the final set, even though no chunk matched an
+//! intermediate set.
+//!
+//! `chunk_placement_records_every_requiring_split`: like the previous one, but
+//! one of the contained symbols belongs to the chunk provisionally chosen for
+//! an intermediate set. Asserts that its splits are still accounted for, so
+//! the range does not end up in a chunk one of them never loads.
 
 use std::borrow::Cow;
 
@@ -780,4 +795,197 @@ fn relocation_crossing_an_inner_symbol_belongs_to_the_containing_symbol() {
     );
     assert_eq!(data_segments(output.split("a")), vec![]);
     assert_some_function_refers_to(output.split("a"), &[SEGMENT_BASE + 4]);
+}
+
+#[test]
+fn data_shared_between_splits_is_emitted_from_their_chunk() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    let mut data = SHARED.to_vec();
+    data.extend_from_slice(SPLIT_ONLY);
+    data.extend_from_slice(MAIN_ONLY);
+    let main_only_offset = SHARED.len() + SPLIT_ONLY.len();
+    let input = Input {
+        data,
+        alignment: 0,
+        symbols: vec![
+            DataSymbol("shared_full", 0, SHARED.len()),
+            DataSymbol(
+                "shared_tail",
+                SHARED_TAIL_OFFSET,
+                SHARED.len() - SHARED_TAIL_OFFSET,
+            ),
+            DataSymbol("split_only", SHARED.len(), SPLIT_ONLY.len()),
+            DataSymbol("main_only", main_only_offset, MAIN_ONLY.len()),
+        ],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![3]),
+            // `a` uses the whole string, `a` and `b` its tail: the tail is shared by both
+            // splits and lives in their chunk. The whole string overlaps it and must follow.
+            Func(Owner::Split("a"), vec![0, 1]),
+            Func(Owner::Split("b"), vec![1, 2]),
+        ],
+        extra_segments: vec![],
+        data_relocs: vec![],
+    };
+    let output = split(&input);
+    let segment_end = SEGMENT_BASE + input.data.len() as u32;
+
+    // main only holds its own bytes
+    assert_eq!(
+        single_data_segment(&output.main),
+        (SEGMENT_BASE, MAIN_ONLY.to_vec()),
+        "main module should contain exactly its own bytes",
+    );
+    assert_eq!(
+        exported_function_constants(&output.main, "main_reads"),
+        vec![SEGMENT_BASE]
+    );
+
+    // the whole shared string is in the one chunk shared by `a` and `b`
+    let [chunk] = output.chunks.as_slice() else {
+        panic!("expected exactly one chunk, got {}", output.chunks.len());
+    };
+    let (shared_addr, shared_bytes) = single_data_segment(chunk);
+    assert_eq!(shared_bytes, SHARED);
+    let shared_tail_addr = shared_addr + SHARED_TAIL_OFFSET as u32;
+
+    // `a` has no data of its own left, `b` keeps its own bytes
+    let split_a = output.split("a");
+    assert_eq!(data_segments(split_a), vec![], "all of a's data is shared");
+    assert_some_function_refers_to(split_a, &[shared_addr, shared_tail_addr]);
+
+    let split_b = output.split("b");
+    let (split_only_addr, split_only_bytes) = single_data_segment(split_b);
+    assert_eq!(split_only_bytes, SPLIT_ONLY);
+    assert_some_function_refers_to(split_b, &[shared_tail_addr, split_only_addr]);
+
+    // everything stays inside the input segment, without overlaps
+    let mut regions = [
+        (SEGMENT_BASE, MAIN_ONLY.len() as u32),
+        (shared_addr, SHARED.len() as u32),
+        (split_only_addr, SPLIT_ONLY.len() as u32),
+    ];
+    regions.sort();
+    for window in regions.windows(2) {
+        let [(start, len), (next, _)] = window else {
+            unreachable!()
+        };
+        assert!(start + len <= *next, "regions overlap: {regions:?}");
+    }
+    let (last, len) = regions[2];
+    assert!(last + len <= segment_end, "segment grew past its input");
+}
+
+#[test]
+fn chunk_placement_uses_the_exact_chunk_of_all_requiring_splits() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // `outer` (split a) contains `i1` (also b), `i2` (also c) and `i3` (also b, c, e). The
+    // range is therefore required by {a,b}, then {a,b,c}, then {a,b,c,e}. Only the first and
+    // the last set have a chunk; {a,b,c} does not, but its superset {a,b,c,d} (holding `w`)
+    // does. Choosing that superset for the intermediate set must not send the range to main
+    // once `i3` is merged.
+    let data = b"iiiijjjjkkkkWWM.".to_vec();
+    let input = Input {
+        data: data.clone(),
+        alignment: 0,
+        symbols: vec![
+            DataSymbol("outer", 0, 12),
+            DataSymbol("i1", 0, 4),
+            DataSymbol("i2", 4, 4),
+            DataSymbol("i3", 8, 4),
+            DataSymbol("w", 12, 2),
+            DataSymbol("m", 14, 1),
+        ],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![5]),
+            Func(Owner::Split("a"), vec![0, 4]),
+            Func(Owner::Split("b"), vec![1, 3, 4]),
+            Func(Owner::Split("c"), vec![2, 3, 4]),
+            Func(Owner::Split("d"), vec![4]),
+            Func(Owner::Split("e"), vec![3]),
+        ],
+        extra_segments: vec![],
+        data_relocs: vec![],
+    };
+    let output = split(&input);
+
+    assert_eq!(
+        single_data_segment(&output.main),
+        (SEGMENT_BASE, b"M".to_vec()),
+        "main should only hold its own byte",
+    );
+    // the data of each chunk; chunks whose symbols all moved elsewhere have none
+    let chunk_data: Vec<Vec<Vec<u8>>> = output
+        .chunks
+        .iter()
+        .map(|chunk| {
+            data_segments(chunk)
+                .into_iter()
+                .map(|(_, bytes)| bytes)
+                .collect()
+        })
+        .collect();
+    assert!(
+        chunk_data.contains(&vec![b"iiiijjjjkkkk".to_vec()]),
+        "the shared range should be in a chunk of its own, got {chunk_data:?}",
+    );
+    assert!(
+        chunk_data.contains(&vec![b"WW".to_vec()]),
+        "w should be in the {{a,b,c,d}} chunk on its own, got {chunk_data:?}",
+    );
+    for split in ["a", "b", "c", "d", "e"] {
+        assert_eq!(
+            data_segments(output.split(split)),
+            vec![],
+            "{split} shares all its data"
+        );
+    }
+}
+
+#[test]
+fn chunk_placement_records_every_requiring_split() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // `outer` (split a) contains `i1` (also b), `i2` (also c), `i3` (also b, c, d) and `i4`
+    // (also b, c, e). After `i2` the range is required by {a,b,c}, for which the superset chunk
+    // {a,b,c,d} (holding `i3`) is chosen. `i3`'s owner is that very chunk, so `d` must still be
+    // recorded: after `i4` the range is required by {a,b,c,d,e}, which only main satisfies.
+    let data = b"iiiijjjjkkkkllllM".to_vec();
+    let input = Input {
+        data: data.clone(),
+        alignment: 0,
+        symbols: vec![
+            DataSymbol("outer", 0, 16),
+            DataSymbol("i1", 0, 4),
+            DataSymbol("i2", 4, 4),
+            DataSymbol("i3", 8, 4),
+            DataSymbol("i4", 12, 4),
+            DataSymbol("m", 16, 1),
+        ],
+        extra_segments: vec![],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![5]),
+            Func(Owner::Split("a"), vec![0]),
+            Func(Owner::Split("b"), vec![1, 3, 4]),
+            Func(Owner::Split("c"), vec![2, 3, 4]),
+            Func(Owner::Split("d"), vec![3]),
+            Func(Owner::Split("e"), vec![4]),
+        ],
+        data_relocs: vec![],
+    };
+    let output = split(&input);
+
+    assert_eq!(
+        single_data_segment(&output.main),
+        (SEGMENT_BASE, data),
+        "the range is needed by every split, so only main can hold it",
+    );
+    for chunk in &output.chunks {
+        assert_eq!(data_segments(chunk), vec![], "no chunk may hold the range");
+    }
+    for split in ["a", "b", "c", "d", "e"] {
+        assert_eq!(data_segments(output.split(split)), vec![]);
+    }
 }

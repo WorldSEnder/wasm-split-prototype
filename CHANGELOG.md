@@ -4,9 +4,9 @@
   deduplicates and tail-merges strings, so several data symbols can share bytes. When such
   symbols were needed by different output modules, the bytes were copied once per module,
   the segment grew past its input and the whole segment was kept in the main module.
-  Bytes shared between modules are now emitted once, from the main module, keeping the
-  alignment of every symbol in them, and the per-module parts of a segment are only padded
-  to the alignment they actually need.
+  Bytes shared between modules are now emitted once, from the chunk shared by all splits that
+  need them or from the main module, keeping the alignment of every symbol in them, and the
+  per-module parts of a segment are only padded to the alignment they actually need.
 - Fix relocations inside a data symbol that is contained in another symbol being attributed to
   the containing symbol. A module that only used the inner symbol could miss the relocation's
   target. This was hidden by the whole-segment fallback above.

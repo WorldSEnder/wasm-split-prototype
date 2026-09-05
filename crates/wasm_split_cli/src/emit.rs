@@ -283,6 +283,9 @@ impl IndirectFunctionEmitInfo {
 #[derive(Debug)]
 struct LateDataRange {
     input_range: Range<u64>,
+    // the modules whose symbols are in this range, see `SplitModuleIdentifier::also_in`
+    needed_by: SplitModuleIdentifier,
+    // the module emitting this range, which is loaded whenever any of `needed_by` is
     in_module: usize,
     // power of 2, the strictest alignment of the symbols in the range. The range must be placed
     // at an offset congruent to its input start modulo this alignment, so that every symbol in
@@ -384,9 +387,39 @@ impl DataEmitInfo {
         // than its input and forces the *whole* segment into the main module (see below).
         // Instead, the symbols of all modules are sorted by input position and overlapping
         // symbols are merged into one range. A range needed by more than one output module is
-        // emitted from the main module, which is always loaded first. The other modules refer
-        // to its address.
+        // emitted from a module that is loaded whenever any of them is: the chunk shared by
+        // all the splits requiring it, or else the main module. The other modules refer to
+        // its address.
         const MAIN_MODULE: usize = 0;
+        let module_by_identifier: HashMap<&SplitModuleIdentifier, usize> = program_info
+            .output_modules
+            .iter()
+            .enumerate()
+            .map(|(index, (identifier, _))| (identifier, index))
+            .collect();
+        // The output module to emit a range from that is required by `needed_by`.
+        let placement_module = |needed_by: &SplitModuleIdentifier| -> usize {
+            if let Some(&index) = module_by_identifier.get(needed_by) {
+                return index;
+            }
+            let SplitModuleIdentifier::Chunk(needed_by) = needed_by else {
+                return MAIN_MODULE;
+            };
+            // No chunk is shared by exactly these splits: use the smallest one that is loaded
+            // by all of them, if any.
+            program_info
+                .output_modules
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (identifier, _))| match identifier {
+                    SplitModuleIdentifier::Chunk(splits) if splits.is_superset(needed_by) => {
+                        Some((splits.len(), index))
+                    }
+                    _ => None,
+                })
+                .min()
+                .map_or(MAIN_MODULE, |(_, index)| index)
+        };
         let mut included_symbols = Vec::new();
         for (module_index, (_, module)) in program_info.output_modules.iter().enumerate() {
             for symbol in module.included_symbols.iter() {
@@ -495,13 +528,20 @@ impl DataEmitInfo {
                     // The range is placed congruent to its input start modulo its alignment, so
                     // taking the strictest alignment keeps every symbol in it aligned.
                     back.data_align = back.data_align.max(data_align);
-                    if back.in_module != module_index && back.in_module != MAIN_MODULE {
+                    // Track the modules actually needing the range, not the module chosen to
+                    // emit it: the latter may be a superset chunk, which would rule out an exact
+                    // chunk for a later, larger requirement. Record every owner, even one that
+                    // happens to be the module currently chosen: its splits are needed too.
+                    back.needed_by
+                        .also_in(&program_info.output_modules[module_index].0);
+                    let placement = placement_module(&back.needed_by);
+                    if placement != back.in_module {
                         trace!(
                             "data symbol {symbol_index} shares bytes {data_range:?} of segment \
-                            {segment_index} with output module {}, emitting them from the main module",
+                            {segment_index} with output module {}, emitting them from module {placement}",
                             back.in_module
                         );
-                        back.in_module = MAIN_MODULE;
+                        back.in_module = placement;
                     }
                     range_lookup.insert(symbol_index, (range_idx, range_offset));
                 }
@@ -509,6 +549,7 @@ impl DataEmitInfo {
             if !has_merged {
                 ranges.push(LateDataRange {
                     input_range: data_range,
+                    needed_by: program_info.output_modules[module_index].0.clone(),
                     in_module: module_index,
                     data_align,
                     in_module_offset: u64::MAX, // filled in later
