@@ -1,5 +1,13 @@
 ## wasm-split-cli vfuture
 
+- Fix data of split modules staying in the main module for optimized builds. `wasm-ld`
+  deduplicates and tail-merges strings, so several data symbols can share bytes. When such
+  symbols were needed by different output modules, the bytes were copied once per module,
+  the segment grew past its input and the whole segment was kept in the main module.
+  Bytes shared between modules are now emitted once, from the main module, keeping the
+  alignment of every symbol in them, and the per-module parts of a segment are only padded
+  to the alignment they actually need.
+
 ## wasm-split-cli v0.2.3
 
 - Fix breakage from wasm-bindgen 0.128, which changes how casts are generated, leading to

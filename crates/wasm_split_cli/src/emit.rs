@@ -284,8 +284,23 @@ impl IndirectFunctionEmitInfo {
 struct LateDataRange {
     input_range: Range<u64>,
     in_module: usize,
-    data_align: u64, // power of 2
+    // power of 2, the strictest alignment of the symbols in the range. The range must be placed
+    // at an offset congruent to its input start modulo this alignment, so that every symbol in
+    // it keeps its alignment.
+    data_align: u64,
     in_module_offset: u64,
+}
+
+impl LateDataRange {
+    /// The smallest offset `>= from` at which this range keeps the alignment of its symbols.
+    fn align_offset(&self, from: u64) -> u64 {
+        let residue = self.input_range.start % self.data_align;
+        let mut offset = from / self.data_align * self.data_align + residue;
+        if offset < from {
+            offset += self.data_align;
+        }
+        offset
+    }
 }
 
 #[derive(Debug)]
@@ -360,122 +375,145 @@ impl DataEmitInfo {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Now go through all data symbols
+        // Now go through the data symbols of all output modules.
+        //
+        // wasm-ld can place several symbols onto the same bytes: identical constants are
+        // deduplicated and strings are tail-merged when optimizing. These symbols do not
+        // necessarily end up in the same output module. Relocating the symbols of each module
+        // on its own would copy the shared bytes once per module, which makes the segment longer
+        // than its input and forces the *whole* segment into the main module (see below).
+        // Instead, the symbols of all modules are sorted by input position and overlapping
+        // symbols are merged into one range. A range needed by more than one output module is
+        // emitted from the main module, which is always loaded first. The other modules refer
+        // to its address.
+        const MAIN_MODULE: usize = 0;
+        let mut included_symbols = Vec::new();
         for (module_index, (_, module)) in program_info.output_modules.iter().enumerate() {
-            let mut included_symbols = module
-                .included_symbols
-                .iter()
-                .filter_map(|symbol| {
-                    let DepNode::DataSymbol(symbol_index) = *symbol else {
-                        return None;
-                    };
-                    let SymbolInfo::Data {
-                        symbol: Some(def_data),
-                        ..
-                    } = input_module.reloc_info.symbols[symbol_index]
-                    else {
-                        // Undefined data symbol: nothing defines it, so there is
-                        // no definition to place and no address to relocate.
-                        // The linker already resolved every reference to it
-                        // (to 0 under --allow-undefined), and `reloc_value`
-                        // leaves such references untouched, so the symbol
-                        // simply has no place in the emit state. Toolchains
-                        // produce these in the wild, e.g. rustc incremental
-                        // builds whose reused objects still reference renamed
-                        // promoted anonymous globals (rust-lang/rust#81280).
-                        if let SymbolInfo::Data { name, .. } =
-                            input_module.reloc_info.symbols[symbol_index]
-                        {
-                            trace!("undefined data symbol {name:?} in included set; references keep their linker value");
-                        }
-                        return None;
-                    };
-                    if def_data.size == 0 {
-                        // We don't care about zero-sized symbols.
-                        // There are some prominent examples, specifically __heap_base, that lead to a zero-sized
-                        // data symbol in the output. For this example specifically, it sometimes leads to problems
-                        // since it is often outside the range of data defined via segments in the input.
-                        return None;
-                    }
-                    let segment_index = def_data.index as usize;
-                    let DataSegmentAnalysis::Ranges { .. } = &per_segment[segment_index] else {
-                        // Only relocate if in active range
-                        return None;
-                    };
-                    Some(Ok((symbol_index, def_data)))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            // all keys are unique by the inclusion of the symbol index
-            included_symbols.sort_unstable_by_key(|&(sym_index, ref def_data)| {
-                (def_data.index, def_data.offset, sym_index)
-            });
-            for (symbol_index, def_data) in included_symbols {
-                let segment_index = def_data.index as usize;
-                let DataSegmentAnalysis::Ranges {
-                    ranges,
-                    range_lookup,
-                    ..
-                } = &mut per_segment[segment_index]
-                else {
-                    // filtered above. All passive ranges are put into the main module
-                    unreachable!(
-                        "data symbol in passive range should not have gotted included in this pass"
-                    );
+            for symbol in module.included_symbols.iter() {
+                let DepNode::DataSymbol(symbol_index) = *symbol else {
+                    continue;
                 };
-                let data_len = u64::from(def_data.size);
-                let data_offset = u64::from(def_data.offset);
-                let data_range = data_offset..data_offset + data_len;
-
-                let in_segment = &input_module.data_segments[segment_index];
-                if data_range.end > wasm_data_len(in_segment) {
-                    unreachable!(
-                        "Found data symbol {:?} that extends past the input module's data \
-                        bytes: {data_range:?} not in range for data segment of length {}",
-                        input_module.reloc_info.symbols[symbol_index],
-                        in_segment.data.len()
-                    );
-                }
-
-                let segment_align =
-                    1u64 << input_module.reloc_info.segments[segment_index].alignment;
-
-                let mut data_align = segment_align;
-                if data_offset != 0 {
-                    // TODO: .isolate_least_significant_one()
-                    data_align = data_align.min(1 << data_offset.trailing_zeros());
-                }
-                debug_assert!(data_len != 0, "zero-sized symbols handled previously");
-                data_align = data_align.min(1 << data_len.trailing_zeros());
-
-                let mut has_merged = false;
-                let range_idx = ranges.len();
-                if let Some(back) = ranges.last_mut() {
-                    let has_overlap =
-                        back.in_module == module_index && data_offset < back.input_range.end;
-                    if has_overlap {
-                        // we sorted before ingesting, hence the existing range starts earlier
-                        debug_assert!(
-                            back.input_range.start <= data_offset,
-                            "overlapping range goes backwards"
-                        );
-                        let range_offset = data_offset - back.input_range.start;
-                        let range_idx = range_idx - 1; // back of ranges
-
-                        has_merged = true;
-                        // about alignment: we use the fact that llvm merged these symbols as proof that we too, do not have to worry about alignment
-                        back.input_range.end = back.input_range.end.max(data_range.end);
-                        range_lookup.insert(symbol_index, (range_idx, range_offset));
+                let SymbolInfo::Data {
+                    symbol: Some(def_data),
+                    ..
+                } = input_module.reloc_info.symbols[symbol_index]
+                else {
+                    // Undefined data symbol: nothing defines it, so there is
+                    // no definition to place and no address to relocate.
+                    // The linker already resolved every reference to it
+                    // (to 0 under --allow-undefined), and `reloc_value`
+                    // leaves such references untouched, so the symbol
+                    // simply has no place in the emit state. Toolchains
+                    // produce these in the wild, e.g. rustc incremental
+                    // builds whose reused objects still reference renamed
+                    // promoted anonymous globals (rust-lang/rust#81280).
+                    if let SymbolInfo::Data { name, .. } =
+                        input_module.reloc_info.symbols[symbol_index]
+                    {
+                        trace!("undefined data symbol {name:?} in included set; references keep their linker value");
                     }
+                    continue;
+                };
+                if def_data.size == 0 {
+                    // We don't care about zero-sized symbols.
+                    // There are some prominent examples, specifically __heap_base, that lead to a zero-sized
+                    // data symbol in the output. For this example specifically, it sometimes leads to problems
+                    // since it is often outside the range of data defined via segments in the input.
+                    continue;
                 }
-                if !has_merged {
-                    ranges.push(LateDataRange {
-                        input_range: data_range,
-                        in_module: module_index,
-                        data_align,
-                        in_module_offset: u64::MAX, // filled in later
-                    });
-                    range_lookup.insert(symbol_index, (range_idx, 0));
+                let segment_index = def_data.index as usize;
+                let DataSegmentAnalysis::Ranges { .. } = &per_segment[segment_index] else {
+                    // Only relocate if in active range
+                    continue;
+                };
+                included_symbols.push((module_index, symbol_index, def_data));
+            }
+        }
+        // Symbols starting at the same offset are ordered longest first, so that a range always
+        // begins with the symbol that extends furthest. All keys are unique by the inclusion of
+        // the symbol index.
+        included_symbols.sort_unstable_by_key(|&(_, sym_index, ref def_data)| {
+            (
+                def_data.index,
+                def_data.offset,
+                std::cmp::Reverse(def_data.size),
+                sym_index,
+            )
+        });
+        for (module_index, symbol_index, def_data) in included_symbols {
+            let segment_index = def_data.index as usize;
+            let DataSegmentAnalysis::Ranges {
+                ranges,
+                range_lookup,
+                ..
+            } = &mut per_segment[segment_index]
+            else {
+                // filtered above. Passive and TLS segments are copied to every module.
+                unreachable!(
+                    "data symbol in passive range should not have gotted included in this pass"
+                );
+            };
+            let data_len = u64::from(def_data.size);
+            let data_offset = u64::from(def_data.offset);
+            let data_range = data_offset..data_offset + data_len;
+
+            let in_segment = &input_module.data_segments[segment_index];
+            if data_range.end > wasm_data_len(in_segment) {
+                unreachable!(
+                    "Found data symbol {:?} that extends past the input module's data \
+                    bytes: {data_range:?} not in range for data segment of length {}",
+                    input_module.reloc_info.symbols[symbol_index],
+                    in_segment.data.len()
+                );
+            }
+
+            let segment_align = 1u64 << input_module.reloc_info.segments[segment_index].alignment;
+
+            let mut data_align = segment_align;
+            if data_offset != 0 {
+                // TODO: .isolate_least_significant_one()
+                data_align = data_align.min(1 << data_offset.trailing_zeros());
+            }
+            debug_assert!(data_len != 0, "zero-sized symbols handled previously");
+            data_align = data_align.min(1 << data_len.trailing_zeros());
+
+            let mut has_merged = false;
+            let range_idx = ranges.len();
+            if let Some(back) = ranges.last_mut() {
+                let has_overlap = data_offset < back.input_range.end;
+                if has_overlap {
+                    // we sorted before ingesting, hence the existing range starts earlier
+                    debug_assert!(
+                        back.input_range.start <= data_offset,
+                        "overlapping range goes backwards"
+                    );
+                    let range_offset = data_offset - back.input_range.start;
+                    let range_idx = range_idx - 1; // back of ranges
+
+                    has_merged = true;
+                    back.input_range.end = back.input_range.end.max(data_range.end);
+                    // The range is placed congruent to its input start modulo its alignment, so
+                    // taking the strictest alignment keeps every symbol in it aligned.
+                    back.data_align = back.data_align.max(data_align);
+                    if back.in_module != module_index && back.in_module != MAIN_MODULE {
+                        trace!(
+                            "data symbol {symbol_index} shares bytes {data_range:?} of segment \
+                            {segment_index} with output module {}, emitting them from the main module",
+                            back.in_module
+                        );
+                        back.in_module = MAIN_MODULE;
+                    }
+                    range_lookup.insert(symbol_index, (range_idx, range_offset));
                 }
+            }
+            if !has_merged {
+                ranges.push(LateDataRange {
+                    input_range: data_range,
+                    in_module: module_index,
+                    data_align,
+                    in_module_offset: u64::MAX, // filled in later
+                });
+                range_lookup.insert(symbol_index, (range_idx, 0));
             }
         }
         // finally transform them into output form
@@ -492,9 +530,6 @@ impl DataEmitInfo {
                     range_lookup,
                     base_address,
                 } => {
-                    let segment_alignment =
-                        1u64 << input_module.reloc_info.segments[segment_index].alignment;
-
                     let mut range_emit_order: Vec<_> = (0..ranges.len()).collect();
                     range_emit_order.sort_by_key(|&range_idx| {
                         let range = &ranges[range_idx];
@@ -502,11 +537,17 @@ impl DataEmitInfo {
                     });
                     // reorder symbols per module
                     let mut per_module_size = HashMap::new();
+                    // The first range of a module has the largest alignment (see the sort order above),
+                    // which is all the module's part of the segment needs to be aligned to.
+                    let mut per_module_align = HashMap::new();
                     for &range_idx in &range_emit_order {
                         let range = &mut ranges[range_idx];
                         let module_len = per_module_size.entry(range.in_module).or_insert(0);
+                        per_module_align
+                            .entry(range.in_module)
+                            .or_insert(range.data_align);
                         let data_range = range.input_range.clone();
-                        let data_offset = u64::next_multiple_of(*module_len, range.data_align);
+                        let data_offset = range.align_offset(*module_len);
 
                         // allocate it in that module
                         range.in_module_offset = data_offset;
@@ -525,7 +566,7 @@ impl DataEmitInfo {
                     let mut per_output_offset = HashMap::new();
                     let mut data_offset: u64 = 0;
                     for &(module, module_size) in &per_module_size {
-                        data_offset = data_offset.next_multiple_of(segment_alignment);
+                        data_offset = data_offset.next_multiple_of(per_module_align[&module]);
                         per_output_offset.insert(module, data_offset);
                         data_offset += module_size;
                     }
