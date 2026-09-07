@@ -6,6 +6,7 @@ use crate::{
     emit::EmitState,
     read::InputModule,
     split_point::{OutputModuleInfo, SplitModuleIdentifier, SplitProgramInfo},
+    tracing_support::perf_span,
 };
 
 type PrefetchMap = HashMap<String, Vec<String>>;
@@ -204,6 +205,8 @@ pub fn link_module<'p>(
     program_info: &'p SplitProgramInfo,
     emit_state: &'p EmitState,
 ) -> Result<LinkModuleWriter<'p>> {
+    let js_emit_span = perf_span!("emit js");
+    let _emit_span = js_emit_span.enter();
     let mut link_module = LinkModuleWriter::new(program_info, emit_state);
 
     let (_, main_module) = program_info
