@@ -9,6 +9,7 @@ use wasmparser::{FunctionBody, Operator, RelocationEntry};
 use crate::{
     read::{GlobalId, InputFuncId, InputModule, MemoryId, SymbolIndex, TableId, TagId},
     reloc::{DataSymbol, RelocDetails},
+    tracing_support::perf_span,
     util::{shift_range, wasm_reloc_range},
 };
 
@@ -30,6 +31,9 @@ pub struct Dependencies {
 }
 
 pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
+    let perf_span = perf_span!("gather dependencies");
+    let _perf_span = perf_span.enter();
+
     struct Builder<'a, 'm>(DepGraph, &'a InputModule<'m>);
     impl Builder<'_, '_> {
         fn add_dep(&mut self, a: DepNode, b: DepNode) {
@@ -60,12 +64,17 @@ pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
     let mut deps = Builder(DepGraph::new(), module);
     let mut fns_with_relocs = HashSet::<InputFuncId>::new();
 
+    let perf_span = perf_span!("function deps from relocs");
+    let perf_span = perf_span.enter();
     for dep_entry in iter_functions_with_relocs(module) {
         let (func_index, entry) = dep_entry?;
         fns_with_relocs.insert(func_index);
         deps.add_reloc_dep(DepNode::Function(func_index), entry)?;
     }
+    perf_span.exit();
 
+    let perf_span = perf_span!("stub function check");
+    let perf_span = perf_span.enter();
     // See issue #29 for why we detect stub functions that aren't covered by reloc data
     let mut stub_fns = HashSet::<InputFuncId>::new();
     let imported_fns_len = module.imported_funcs.len();
@@ -94,7 +103,10 @@ pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
             );
         }
     }
+    perf_span.exit();
 
+    let perf_span = perf_span!("data dependencies");
+    let perf_span = perf_span.enter();
     for dep_entry in iter_data_dependencies(module) {
         match dep_entry? {
             DataDependency::Reloc(data_symbol, entry) => {
@@ -129,13 +141,17 @@ pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
             }
         }
     }
+    perf_span.exit();
 
+    let perf_span = perf_span!("globals");
+    let perf_span = perf_span.enter();
     for (&global_index, &symbol_index) in &module.reloc_info.symbol_as_global {
         deps.add_dep(
             DepNode::Global(global_index),
             DepNode::DataSymbol(symbol_index),
         );
     }
+    perf_span.exit();
 
     // Global symbols exporting the memory address of a symbol depend on that symbols
     Ok(Dependencies {
