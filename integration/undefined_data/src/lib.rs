@@ -1,28 +1,32 @@
-//! The main module references a data symbol that nothing defines. Linked
-//! under `--allow-undefined`, wasm-ld keeps the symbol in the symbol table
-//! as undefined, resolves every reference to address 0, and leaves a
+//! The main module references a data symbol with weak linkage. This will
+//! resolves every reference to address 0, but will still leaves a
 //! `R_WASM_MEMORY_ADDR_*` relocation against it. The splitter must accept
-//! such a module: an undefined data symbol has no definition to place or
-//! relocate, so its references keep the linker's value.
+//! such a module.
 //!
-//! rustc incremental builds produce this shape in the wild when a reused
-//! object still references a promoted anonymous global whose name changed
-//! (rust-lang/rust#81280).
-//!
-//! Wasm only: a native linker rejects the undefined reference outright.
-#![cfg(target_family = "wasm")]
+//! This is to mock a bug (rust-lang/rust#81280) occuring in the wild. In
+//! this case, rustc incremental builds produce a similar shape. Here, an
+//! undefined reference to a promoted anonymous global whose name changed
+//! gets resolves to address 0 with a linker arg, `--allow-undefined`,
+//! passed to wasm-ld as a workaround.
+#![cfg_attr(has_weak_linkage_needs_feature, feature(linkage))]
 
 use wasm_split_helpers::wasm_split;
 
-extern "C" {
-    static UNDEFINED_DATA: u8;
-}
+#[cfg(has_weak_linkage)]
+pub mod weak {
+    unsafe extern "C" {
+        #[linkage = "extern_weak"]
+        safe static UNDEFINED_DATA: Option<&'static i32>;
+    }
 
-/// The address the linker resolved for the undefined data symbol.
-pub fn undefined_data_address() -> usize {
-    // Taking the address, not reading through it, keeps the relocation
-    // against the undefined symbol without touching address 0.
-    unsafe { core::ptr::addr_of!(UNDEFINED_DATA) as usize }
+    /// The address the linker resolved for the undefined data symbol.
+    pub fn undefined_data_address() -> usize {
+        // Taking the address, not reading through it, keeps the relocation
+        // against the undefined symbol without touching address 0.
+        UNDEFINED_DATA
+            .map(|data| (data as *const i32).addr())
+            .unwrap_or(0)
+    }
 }
 
 #[wasm_split(split)]
@@ -39,10 +43,11 @@ mod tests {
         let _ = wasm_split_helpers::rt::ensure_loaded;
     };
 
+    #[cfg(has_weak_linkage)]
     #[test]
     fn undefined_data_keeps_the_linker_address() {
         assert_eq!(
-            super::undefined_data_address(),
+            super::weak::undefined_data_address(),
             0,
             "an undefined data symbol resolves to address 0 and must not be relocated"
         );

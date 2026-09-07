@@ -13,3 +13,7 @@ wasm_split_helpers.workspace = true
 
 [dev-dependencies]
 wasm-bindgen-test.workspace = true
+
+[build-dependencies]
+autocfg.workspace = true
+rustversion.workspace = true
