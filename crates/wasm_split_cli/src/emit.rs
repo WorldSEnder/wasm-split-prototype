@@ -437,16 +437,23 @@ impl DataEmitInfo {
         // Active segments are initialized in index order. Relocated data is emitted in
         // additional segments after all input segments, which is only order-preserving when the
         // input segments do not overlap in memory. wasm-ld never lets them overlap, but a
-        // hand-made input may; keep such segments as they are, in their slots.
+        // hand-made input may; keep overlapping segments as they are, in their slots. An active
+        // segment with an unknown address may overlap any other active segment; passive
+        // segments have no address at instantiation and do not affect this ordering.
+        let mut active_unknown_address = None;
         let segment_extents: Vec<Option<Range<u64>>> = input_module
             .data_segments
             .iter()
-            .map(|segment| match &segment.kind {
+            .enumerate()
+            .map(|(segment_idx, segment)| match &segment.kind {
                 DataKind::Active { offset_expr, .. } => {
-                    match offset_expr.get_operators_reader().read().ok()? {
-                        wasmparser::Operator::I32Const { value } => Some(value as u32 as u64),
-                        wasmparser::Operator::I64Const { value } => Some(value as u64),
-                        _ => None,
+                    match offset_expr.get_operators_reader().read() {
+                        Ok(wasmparser::Operator::I32Const { value }) => Some(value as u32 as u64),
+                        Ok(wasmparser::Operator::I64Const { value }) => Some(value as u64),
+                        _ => {
+                            active_unknown_address.get_or_insert(segment_idx);
+                            None
+                        }
                     }
                     .map(|base| base..base + wasm_data_len(segment))
                 }
@@ -454,6 +461,9 @@ impl DataEmitInfo {
             })
             .collect();
         let overlaps_other_segment = |segment_idx: usize| -> bool {
+            if active_unknown_address.is_some() {
+                return true;
+            }
             let Some(extent) = &segment_extents[segment_idx] else {
                 return false;
             };
@@ -495,7 +505,11 @@ impl DataEmitInfo {
                         Err(value) => { bail!("Invalid base address found: {value}"); },
                     };
                     if overlaps_other_segment(segment_idx) {
-                        warn!("Data segment {segment_idx} overlaps another data segment in memory. Putting it into main.");
+                        if let Some(other) = active_unknown_address {
+                            warn!("Data segment {segment_idx} may overlap data segment {other} whose base address is not a constant. Putting it into main.");
+                        } else {
+                            warn!("Data segment {segment_idx} overlaps another data segment in memory. Putting it into main.");
+                        }
                         return Ok(DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE));
                     }
                     Ok(DataSegmentAnalysis::Ranges {

@@ -54,13 +54,17 @@
 //! `overlapping_input_segments_keep_their_order`: two input segments overlap
 //! in memory, which an appended fragment could reorder. Asserts that both are
 //! kept as they are, in their slots.
+//!
+//! `unknown_segment_base_keeps_active_data_whole`: a segment with a global base address
+//! may overlap the preceding segment. Asserts that no fragments are appended and main
+//! keeps the preceding segment intact at its input address.
 
 use std::borrow::Cow;
 
 use wasm_encoder::{
     CodeSection, ConstExpr, CustomSection, DataSection, Encode, ExportKind, ExportSection,
-    Function, FunctionSection, ImportSection, Instruction, MemorySection, MemoryType, Module,
-    RefType, TableSection, TableType, TypeSection, ValType,
+    Function, FunctionSection, GlobalSection, GlobalType, ImportSection, Instruction,
+    MemorySection, MemoryType, Module, RefType, TableSection, TableType, TypeSection, ValType,
 };
 use wasmparser::{DataKind, Operator, Parser, Payload};
 
@@ -182,7 +186,7 @@ impl Input {
 
     /// Everything but the linking metadata. The metadata is appended
     /// afterwards, which keeps the code offsets computed from this prefix valid.
-    fn build_module_prefix(&self) -> Vec<u8> {
+    fn build_module_prefix(&self, global_segment_base: bool) -> Vec<u8> {
         let splits = self.splits();
         let mut module = Module::new();
 
@@ -227,6 +231,20 @@ impl Input {
         });
         module.section(&memories);
 
+        if global_segment_base {
+            assert_eq!(self.extra_segments.len(), 1);
+            let mut globals = GlobalSection::new();
+            globals.global(
+                GlobalType {
+                    val_type: ValType::I32,
+                    mutable: false,
+                    shared: false,
+                },
+                &ConstExpr::i32_const(self.extra_segments[0].0 as i32),
+            );
+            module.section(&globals);
+        }
+
         let mut exports = ExportSection::new();
         for (i, Func(owner, _)) in self.funcs.iter().enumerate() {
             let func_index = (splits.len() + i) as u32;
@@ -263,7 +281,12 @@ impl Input {
         }
         data.active(0, &ConstExpr::i32_const(SEGMENT_BASE as i32), bytes);
         for (address, bytes, _) in &self.extra_segments {
-            data.active(0, &ConstExpr::i32_const(*address as i32), bytes.clone());
+            let offset = if global_segment_base {
+                ConstExpr::global_get(0)
+            } else {
+                ConstExpr::i32_const(*address as i32)
+            };
+            data.active(0, &offset, bytes.clone());
         }
         module.section(&data);
 
@@ -271,7 +294,12 @@ impl Input {
     }
 
     fn build_wasm(&self) -> Vec<u8> {
-        let mut wasm = self.build_module_prefix();
+        self.build_wasm_with_segment_base(false)
+    }
+
+    /// Use a global for the extra segments' base address to exercise unknown offsets.
+    fn build_wasm_with_segment_base(&self, global_segment_base: bool) -> Vec<u8> {
+        let mut wasm = self.build_module_prefix(global_segment_base);
         let (code_section_index, immediates) = locate_code_immediates(&wasm);
         let (data_section_index, data_start) = locate_data_segment(&wasm);
         let reloc_symbols: Vec<u32> = self
@@ -446,12 +474,15 @@ struct Output {
 
 fn split(input: &Input) -> Output {
     let wasm = input.build_wasm();
+    split_wasm(&wasm)
+}
 
+fn split_wasm(wasm: &[u8]) -> Output {
     let mut tmp = tempfile::tempdir().expect("create tmpdir");
     tmp.disable_cleanup(true);
     let main_out = tmp.path().join("main.wasm");
 
-    let mut opts = Options::new(&wasm);
+    let mut opts = Options::new(wasm);
     opts.output_dir = tmp.path();
     opts.main_out_path = &main_out;
 
@@ -1199,5 +1230,76 @@ fn overlapping_input_segments_keep_their_order() {
     assert_eq!(
         exported_function_constants(&output.main, "main_reads"),
         vec![SEGMENT_BASE, SEGMENT_BASE + 8, SEGMENT_BASE + 8]
+    );
+}
+
+#[test]
+fn unknown_segment_base_keeps_active_data_whole() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // Fragmenting segment 0 would append main's byte after segment 1 and overwrite its X.
+    let input = Input {
+        data: b"AAAABBBBm".to_vec(),
+        alignment: 2,
+        symbols: vec![
+            DataSymbol("main_word", 0, 4),
+            DataSymbol("split_word", 4, 4),
+            DataSymbol("main_byte", 8, 1),
+        ],
+        extra_segments: vec![(SEGMENT_BASE + 8, b"X".to_vec(), vec![])],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![0, 2]),
+            Func(Owner::Split("a"), vec![1]),
+        ],
+        data_relocs: vec![],
+    };
+    let wasm = input.build_wasm_with_segment_base(true);
+    wasmparser::Validator::new()
+        .validate_all(&wasm)
+        .expect("valid input with a global segment base");
+    let output = split_wasm(&wasm);
+    let input_segment_count = 1 + input.extra_segments.len();
+
+    for (is_main, module) in std::iter::once((true, &output.main))
+        .chain(output.splits.iter().map(|(_, module)| (false, module)))
+        .chain(output.chunks.iter().map(|module| (false, module)))
+    {
+        for payload in Parser::new(0).parse_all(module) {
+            match payload.expect("valid wasm") {
+                Payload::DataCountSection { count, .. } => {
+                    assert_eq!(count as usize, input_segment_count, "data count");
+                }
+                Payload::DataSection(reader) => {
+                    let segments = reader.into_iter().collect::<Result<Vec<_>, _>>().unwrap();
+                    assert_eq!(segments.len(), input_segment_count, "no appended fragments");
+                    let DataKind::Active { offset_expr, .. } = &segments[0].kind else {
+                        panic!("segment 0 stays active");
+                    };
+                    assert!(matches!(
+                        offset_expr.get_operators_reader().read().unwrap(),
+                        Operator::I32Const { value } if value as u32 == SEGMENT_BASE
+                    ));
+                    if is_main {
+                        assert_eq!(segments[0].data, input.data, "segment 0 stays intact");
+                        assert_eq!(segments[1].data, b"X");
+                        let DataKind::Active { offset_expr, .. } = &segments[1].kind else {
+                            panic!("segment 1 stays active");
+                        };
+                        assert!(matches!(
+                            offset_expr.get_operators_reader().read().unwrap(),
+                            Operator::GlobalGet { global_index: 0 }
+                        ));
+                    } else {
+                        assert!(segments.iter().all(|segment| segment.data.is_empty()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_some_function_refers_to(output.split("a"), &[SEGMENT_BASE + 4]);
+    assert_eq!(
+        exported_function_constants(&output.main, "main_reads"),
+        vec![SEGMENT_BASE, SEGMENT_BASE + 8]
     );
 }
