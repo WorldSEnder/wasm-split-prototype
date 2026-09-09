@@ -13,7 +13,7 @@ use crate::{
     util::{wasm_data_len, wasm_data_start},
 };
 use eyre::{bail, Context, Result};
-use tracing::{info, trace, warn};
+use tracing::{trace, warn};
 use wasm_encoder::{reencode::Reencode, ConstExpr, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
     Data, DataKind, DefinedDataSymbol, ExternalKind, Operator, RelocationType, SegmentFlags,
@@ -709,7 +709,7 @@ impl DataEmitInfo {
                         let first_len = *first_len.get_or_insert(layout.segment_len);
                         if layout.segment_len <= input_len {
                             if folded_modules != 0 {
-                                info!(
+                                warn!(
                                     "Relocated data segment {segment_index} was longer than its input \
                                     ({first_len} > {input_len} bytes): moved {folded_bytes} bytes of \
                                     {folded_modules} module(s) into the main module to make it fit"
