@@ -237,7 +237,8 @@ fn wbg_rooting_funs(_dep_graph: &DepGraph, module: &InputModule) -> HashSet<DepN
     // since it is generic (to allow later monomorphization), this function can not be exported.
     // calls to this function are then later rewritten by wasm-bindgen to the inserted import.
     let mut users_must_be_in_main = HashSet::new();
-    let mut _wbg_describe_cast = None;
+    let mut _wbg_describe_cast;
+    let mut _wbg_describe_generic;
     for (import_id, import) in module.imports.iter().enumerate() {
         if import.module != "__wbindgen_placeholder__" || !matches!(import.ty, TypeRef::Func(_)) {
             continue;
@@ -245,6 +246,13 @@ fn wbg_rooting_funs(_dep_graph: &DepGraph, module: &InputModule) -> HashSet<DepN
         if import.name == "__wbindgen_describe_cast" {
             let func_id = module.imported_func_map.get(&import_id).cloned().unwrap();
             _wbg_describe_cast = Some(func_id);
+            users_must_be_in_main.insert(DepNode::Function(func_id));
+        }
+        // Since wasm-bindgen 0.128 casts are instead "generic" to avoid overhead
+        // from monomorphization. Hence, they are described differently
+        if import.name == "__wbindgen_describe_generic_import" {
+            let func_id = module.imported_func_map.get(&import_id).cloned().unwrap();
+            _wbg_describe_generic = Some(func_id);
             users_must_be_in_main.insert(DepNode::Function(func_id));
         }
     }

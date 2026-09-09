@@ -180,7 +180,6 @@ name = "many_shares"
 version = "0.1.0"
 dependencies = [
  "tokio",
- "wasm-bindgen",
  "wasm-bindgen-test",
  "wasm_split_helpers",
 ]
@@ -237,7 +236,6 @@ name = "optimize_splits"
 version = "0.1.0"
 dependencies = [
  "tokio",
- "wasm-bindgen",
  "wasm-bindgen-test",
  "wasm_split_helpers",
 ]
