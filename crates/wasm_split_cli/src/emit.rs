@@ -655,15 +655,6 @@ impl DataEmitInfo {
                     // happens to be the module currently chosen: its splits are needed too.
                     back.needed_by
                         .also_in(&program_info.output_modules[module_index].0);
-                    let placement = placement_module(&back.needed_by);
-                    if placement != back.in_module {
-                        trace!(
-                            "data symbol {symbol_index} shares bytes {data_range:?} of segment \
-                            {segment_index} with output module {}, emitting them from module {placement}",
-                            back.in_module
-                        );
-                        back.in_module = placement;
-                    }
                     range_lookup.insert(symbol_index, (range_idx, range_offset));
                 }
             }
@@ -676,6 +667,21 @@ impl DataEmitInfo {
                     segment_offset: u64::MAX, // filled in later
                 });
                 range_lookup.insert(symbol_index, (range_idx, 0));
+            }
+        }
+        // Derive placement from `needed_by` once all owners are known.
+        for segment in &mut per_segment {
+            if let DataSegmentAnalysis::Ranges { ranges, .. } = segment {
+                for range in ranges {
+                    let placement = placement_module(&range.needed_by);
+                    if placement != range.in_module {
+                        trace!(
+                            "data range {:?} placed in module {placement}",
+                            range.input_range
+                        );
+                    }
+                    range.in_module = placement;
+                }
             }
         }
         // finally transform them into output form
