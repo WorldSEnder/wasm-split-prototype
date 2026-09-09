@@ -20,6 +20,8 @@ use wasmparser::{
     SymbolInfo, TypeRef,
 };
 
+const MAIN_MODULE: usize = 0;
+
 pub(crate) struct EmitState<'a> {
     input_options: &'a crate::Options<'a>,
     input_module: &'a InputModule<'a>,
@@ -479,7 +481,7 @@ impl DataEmitInfo {
                         wasmparser::Operator::I64Const { value } => u64::try_from(value).map_err(|_| value),
                         op => {
                             warn!("Non-constant operator {op:?} found to specify a memory's base address. Putting it into main.");
-                            return Ok(DataSegmentAnalysis::FromInputOnlyIn(0));
+                            return Ok(DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE));
                         }
                     };
                     let address = match address {
@@ -488,7 +490,7 @@ impl DataEmitInfo {
                     };
                     if overlaps_other_segment(segment_idx) {
                         warn!("Data segment {segment_idx} overlaps another data segment in memory. Putting it into main.");
-                        return Ok(DataSegmentAnalysis::FromInputOnlyIn(0));
+                        return Ok(DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE));
                     }
                     Ok(DataSegmentAnalysis::Ranges {
                         ranges: vec![],
@@ -511,7 +513,6 @@ impl DataEmitInfo {
         // emitted from a module that is loaded whenever any of them is: the chunk shared by
         // all the splits requiring it, or else the main module. The other modules refer to
         // its address.
-        const MAIN_MODULE: usize = 0;
         let module_by_identifier: HashMap<&SplitModuleIdentifier, usize> = program_info
             .output_modules
             .iter()
@@ -762,7 +763,7 @@ impl DataEmitInfo {
                         None => {
                             trace!("{ranges:?}");
                             warn!("Overlong segment {segment_index} after relocation, putting it in main module.");
-                            DataSegmentEmitInfo::FromInputOnlyIn(0)
+                            DataSegmentEmitInfo::FromInputOnlyIn(MAIN_MODULE)
                         }
                     }
                 }
@@ -960,7 +961,7 @@ impl<'a> ModuleEmitState<'a> {
                 continue;
             }
             debug_assert!(
-                output_module_index == 0,
+                output_module_index == MAIN_MODULE,
                 "expected a function import to happen in the main module"
             );
             let import = &emit_state.input_module.imports[func_import.import_id];
@@ -1136,7 +1137,7 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn is_main(&self) -> bool {
-        self.output_module_index == 0
+        self.output_module_index == MAIN_MODULE
     }
 
     fn get_relocated_data(&self, range: Range<InputOffset>) -> Result<Vec<u8>> {
