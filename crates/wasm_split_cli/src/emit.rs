@@ -289,9 +289,9 @@ struct LateDataRange {
     needed_by: SplitModuleIdentifier,
     // the module emitting this range, which is loaded whenever any of `needed_by` is
     in_module: usize,
-    // power of 2, the strictest alignment of the symbols in the range. The range must be placed
-    // at an offset congruent to its input start modulo this alignment, so that every symbol in
-    // it keeps its alignment.
+    /// Power of 2, the strictest alignment of the symbols in the range, which may be stricter
+    /// than the alignment of its start. `align_offset` preserves the input start's residue
+    /// modulo this alignment so that every contained symbol keeps its alignment.
     data_align: u64,
     // offset in the relocated segment, filled in by `layout_ranges`
     segment_offset: u64,
@@ -299,6 +299,12 @@ struct LateDataRange {
 
 impl LateDataRange {
     /// The smallest offset `>= from` at which this range keeps the alignment of its symbols.
+    ///
+    /// This is not `from.next_multiple_of(self.data_align)`: a 4-aligned symbol at input
+    /// offset 4 merged with an 8-aligned symbol at offset 8 gives a range starting at 4
+    /// with alignment 8. Placing the range congruent to its input start modulo 8 keeps
+    /// the inner symbol aligned; rounding the range's start up to a multiple of 8 would
+    /// put that symbol at offset 4 modulo 8 and misalign it.
     fn align_offset(&self, from: u64) -> u64 {
         let residue = self.input_range.start % self.data_align;
         let mut offset = from / self.data_align * self.data_align + residue;
@@ -1888,4 +1894,36 @@ pub fn emit_modules<'info, M>(
         })
         .filter_map(|res| res.transpose())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn align_offset_preserves_input_residue() {
+        let mut range = LateDataRange {
+            input_range: 0..16,
+            needed_by: SplitModuleIdentifier::Main,
+            in_module: MAIN_MODULE,
+            data_align: 8,
+            segment_offset: 0,
+        };
+        for from in [0, 1, 4, 5, 8, 12, 13, 16] {
+            assert_eq!(range.align_offset(from), from.next_multiple_of(8));
+        }
+
+        // The inner 8-aligned symbol starts four bytes into the merged range.
+        range.input_range = 4..16;
+        for (from, expected) in [(0, 4), (1, 4), (4, 4), (5, 12), (12, 12), (13, 20)] {
+            let offset = range.align_offset(from);
+            assert_eq!(offset, expected, "from {from}");
+            assert_eq!((offset + 4) % 8, 0, "inner symbol alignment");
+        }
+
+        range.data_align = 1;
+        for from in [0, 1, 4, 5, 12, 13] {
+            assert_eq!(range.align_offset(from), from);
+        }
+    }
 }
