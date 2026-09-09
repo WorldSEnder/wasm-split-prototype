@@ -1,4 +1,4 @@
-## wasm_split_cli vfuture
+## wasm-split-cli vfuture
 
 - Experimental support to emit debug sections. By default enabled via environment variable
   `WASM_SPLIT_CLI_ENABLE_DWARF`. The current setup duplicates the DWARF information into

@@ -7,7 +7,6 @@ edition.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "README.md"
 
 [dependencies]
 eyre = "0.6"
@@ -29,7 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 name = "wasm_split_cli_support"
 
 [[bin]]
-name = "wasm_split_cli"
+name = "wasm-split-cli"
 required-features = ["build-binary"]
 
 [features]

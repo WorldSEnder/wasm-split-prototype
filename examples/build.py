@@ -85,7 +85,7 @@ else:
             "cargo",
             "run",
             "--bin",
-            "wasm_split_cli",
+            "wasm-split-cli",
             "--features",
             "build-binary",
             "--",
@@ -98,7 +98,10 @@ else:
 
     subprocess.run(
         [
-            "wasm-bindgen",
+            "cargo",
+            "run",
+            "--bin",
+            "wasm-bindgen-cli-wrapper",
             os.path.join(split_temp_dir, "main.wasm"),
             "--out-dir",
             pkg_dir,
@@ -107,7 +110,7 @@ else:
             "web",
             "--keep-lld-exports",
         ],
-        cwd=root_dir,
+        cwd=os.path.join(root_dir, "../test-runner"),
         check=True,
     )
 
