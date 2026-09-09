@@ -7,7 +7,6 @@ edition.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "README.md"
 # because we emit unsafe extern blocks/safe extern items
 rust-version = "1.84"
 

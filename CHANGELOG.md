@@ -1,5 +1,8 @@
-## wasm_split_cli vfuture
+## wasm-split-cli vfuture
 
+- Fix breakage from wasm-bindgen 0.128, which changes how casts are generated, leading to
+  descriptor code ending up in the split module instead of main, which isn't discovered
+  by the succeeding wasm-bindgen call.
 - Experimental support to emit debug sections. By default enabled via environment variable
   `WASM_SPLIT_CLI_ENABLE_DWARF`. The current setup duplicates the DWARF information into
   all output modules, which can lead to large split files.

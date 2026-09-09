@@ -7,15 +7,14 @@ edition.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "README.md"
 
 [dependencies]
 eyre = "0.6"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 lazy_static = "1.4"
 regex = "1.12"
-wasm-encoder = { version = "0.257", features = ["wasmparser"] }
-wasmparser = "0.257"
+wasm-encoder = { version = "0.258", features = ["wasmparser"] }
+wasmparser = "0.258"
 # bin-only depdencies
 clap = { version = "4.5", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["fmt"], optional = true }
@@ -29,7 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 name = "wasm_split_cli_support"
 
 [[bin]]
-name = "wasm_split_cli"
+name = "wasm-split-cli"
 required-features = ["build-binary"]
 
 [features]
