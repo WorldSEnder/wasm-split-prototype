@@ -15,6 +15,7 @@ use wasmparser::{
 use crate::{
     magic_constants,
     read::{GlobalId, InputFuncId, InputModule, InputOffset, SectionId, TableId, TagId},
+    tracing_support::perf_span,
     util::{find_subrange, shift_range, wasm_reloc_range},
 };
 
@@ -32,6 +33,8 @@ pub struct RelocInfoParser<'a> {
 
 impl<'a> RelocInfoParser<'a> {
     fn visit_linking(&mut self, subsection: Linking<'a>) -> Result<()> {
+        let perf_span = perf_span!("visit linking section");
+        let _perf_span = perf_span.enter();
         match subsection {
             Linking::SegmentInfo(segments) => {
                 ensure!(self.info.segments.is_empty(), "duplicate segments info");
@@ -69,6 +72,8 @@ impl<'a> RelocInfoParser<'a> {
                 Ok(true)
             }
             KnownCustom::Reloc(reader) => {
+                let perf_span = perf_span!("visit reloc section");
+                let _perf_span = perf_span.enter();
                 let mut reloc_entries = reader
                     .entries()
                     .into_iter()
@@ -135,6 +140,8 @@ fn get_indirect_functions(
     iftable: TableId,
     module: &InputModule,
 ) -> Result<()> {
+    let perf_span = perf_span!("collect indirect functions");
+    let _perf_span = perf_span.enter();
     let mut input_indirect_funcs = HashSet::new();
     for elems in &module.elements {
         let ElementKind::Active {
@@ -204,6 +211,8 @@ pub struct DataSymbol {
 }
 
 fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Vec<DataSymbol>> {
+    let perf_span = perf_span!("get data symbols");
+    let _perf_span = perf_span.enter();
     let mut data_symbols = Vec::new();
     for (symbol_index, info) in symbols.iter().enumerate() {
         let SymbolInfo::Data {
@@ -239,6 +248,8 @@ fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Ve
 }
 
 fn reconstruct_global_symbols(reloc_info: &mut RelocInfo<'_>, module: &InputModule) -> Result<()> {
+    let perf_span = perf_span!("reconstruct global symbols");
+    let _perf_span = perf_span.enter();
     let symbol_as_global = &mut reloc_info.symbol_as_global;
     debug_assert!(
         symbol_as_global.is_empty(),

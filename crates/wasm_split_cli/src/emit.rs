@@ -10,6 +10,7 @@ use crate::{
     read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::{SplitModuleIdentifier, SplitProgramInfo},
+    tracing_support::perf_span,
     util::{wasm_data_len, wasm_data_start},
 };
 use eyre::{bail, Context, Result};
@@ -732,6 +733,11 @@ impl<'a> ModuleEmitState<'a> {
         output_module_index: usize,
         program_info: &'a crate::split_point::SplitProgramInfo,
     ) -> Self {
+        let perf_span = perf_span!(
+            "build module emit state",
+            module_index = output_module_index
+        );
+        let _perf_span = perf_span.enter();
         let (_, output_module_info) = &program_info.output_modules[output_module_index];
 
         let mut num_func_imports = 0;
@@ -933,6 +939,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate(&mut self) -> Result<()> {
+        let perf_span = perf_span!("generate wasm", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         // Encode sections. These must occur in order
         // most custom sections at the end. The wasm standard doesn't specify a (partial) order, but llvm does
         // reference: https://github.com/llvm/llvm-project/blob/b5fa9eee6798b678fc7cb5f2b42a977932b708f9/llvm/lib/Object/WasmObjectFile.cpp#L2212-L2220
@@ -964,6 +972,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_type_section(&mut self) -> Result<()> {
+        let perf_span = perf_span!("type section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         // Simply copy all types.  Unneeded types may be pruned by `wasm-opt`.
         let mut section = wasm_encoder::TypeSection::new();
         for input_func_type in self.input_module.types.iter() {
@@ -979,6 +989,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_import_section(&mut self) {
+        let perf_span = perf_span!("import section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         let mut section = wasm_encoder::ImportSection::new();
         for imp in &self.imports {
             let module = if imp.module == magic_constants::PLACEHOLDER_IMPORT_MODULE {
@@ -1003,6 +1015,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_function_section(&mut self) {
+        let perf_span = perf_span!("function section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         let mut section = wasm_encoder::FunctionSection::new();
         for defined_func in self.defined_functions.iter() {
             let func_ty = match defined_func {
@@ -1018,6 +1032,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_table_section(&mut self) {
+        let perf_span = perf_span!("table section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         if !self.is_main() {
             return;
         }
@@ -1040,6 +1056,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_global_section(&mut self) -> Result<()> {
+        let perf_span = perf_span!("global section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         if !self.is_main() {
             return Ok(());
         }
@@ -1097,6 +1115,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_export_section(&mut self) {
+        let perf_span = perf_span!("export section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         // shared functions are "exported" by placing them in the indirect_function_table.
         // shared globals are always exported from main
         let mut section = wasm_encoder::ExportSection::new();
@@ -1107,6 +1127,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_start_section(&mut self) {
+        let perf_span = perf_span!("start section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         if !self.is_main() {
             return;
         }
@@ -1122,6 +1144,9 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_element_section(&mut self) -> Result<()> {
+        let perf_span = perf_span!("element section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
+
         let indirect_range = &self
             .emit_state
             .indirect_functions
@@ -1241,6 +1266,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_code_section(&mut self) -> Result<()> {
+        let perf_span = perf_span!("code section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         tracing::debug!(
             module = self.output_module_index,
             defined_count = self.defined_functions.len(),
@@ -1339,6 +1366,8 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_data_section(&mut self) -> Result<()> {
+        let perf_span = perf_span!("data section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         let data_reloc = &self.emit_state.data_relocations;
         let mut section = wasm_encoder::DataSection::new();
         for (segment_idx, segment) in data_reloc.per_segment.iter().enumerate() {
@@ -1415,6 +1444,9 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_name_section(&mut self) -> Result<()> {
+        let perf_span = perf_span!("name section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
+
         fn convert_name_map(parser_map: &wasmparser::NameMap<'_>) -> Result<wasm_encoder::NameMap> {
             let mut encoder_map = wasm_encoder::NameMap::new();
             for r in parser_map.clone().into_iter() {
@@ -1553,6 +1585,8 @@ impl<'a> ModuleEmitState<'a> {
         if !self.emit_state.input_options.emit_dwarf {
             return Ok(());
         }
+        let perf_span = perf_span!("debug section", module_index = self.output_module_index);
+        let _perf_span = perf_span.enter();
         dwarf::emit_debug_info(self)
     }
 }
@@ -1620,6 +1654,12 @@ pub fn emit_modules<'info, M>(
     let modules = program_info.output_modules.iter().enumerate();
     modules
         .map(|(output_module_index, (identifier, module))| {
+            let emit_span = perf_span!(
+                "emit module",
+                index = output_module_index,
+                data_size = tracing::field::Empty
+            );
+            let _emit_span = emit_span.enter();
             if module.is_empty {
                 return Ok(None);
             }
@@ -1630,11 +1670,9 @@ pub fn emit_modules<'info, M>(
                 .generate()
                 .with_context(|| format!("Error generating {:?}", identifier))?;
 
-            Ok(Some(emit_fn(
-                output_module_index,
-                identifier,
-                emit_state.output_module.finish(),
-            )))
+            let data = emit_state.output_module.finish();
+            emit_span.record("data_size", data.len());
+            Ok(Some(emit_fn(output_module_index, identifier, data)))
         })
         .filter_map(|res| res.transpose())
         .collect()
