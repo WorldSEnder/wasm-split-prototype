@@ -12,7 +12,7 @@ use crate::{
     split_point::{SplitModuleIdentifier, SplitProgramInfo},
     util::{wasm_data_len, wasm_data_start},
 };
-use eyre::{anyhow, bail, Context, Result};
+use eyre::{bail, Context, Result};
 use tracing::{trace, warn};
 use wasm_encoder::{reencode::Reencode, ConstExpr, EntityType, ProducersField, ProducersSection};
 use wasmparser::{
@@ -374,10 +374,21 @@ impl DataEmitInfo {
                         ..
                     } = input_module.reloc_info.symbols[symbol_index]
                     else {
-                        // Not sure how to emit an *undefined* data symbol
-                        return Some(Err(anyhow!(
-                            "Expected data symbol dep node to ref to defined data symbol"
-                        )));
+                        // Undefined data symbol: nothing defines it, so there is
+                        // no definition to place and no address to relocate.
+                        // The linker already resolved every reference to it
+                        // (to 0 under --allow-undefined), and `reloc_value`
+                        // leaves such references untouched, so the symbol
+                        // simply has no place in the emit state. Toolchains
+                        // produce these in the wild, e.g. rustc incremental
+                        // builds whose reused objects still reference renamed
+                        // promoted anonymous globals (rust-lang/rust#81280).
+                        if let SymbolInfo::Data { name, .. } =
+                            input_module.reloc_info.symbols[symbol_index]
+                        {
+                            trace!("undefined data symbol {name:?} in included set; references keep their linker value");
+                        }
+                        return None;
                     };
                     if def_data.size == 0 {
                         // We don't care about zero-sized symbols.
