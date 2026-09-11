@@ -1,8 +1,12 @@
 ## wasm-split-cli vfuture
 
+## wasm-split-cli v0.2.3
+
 - Fix breakage from wasm-bindgen 0.128, which changes how casts are generated, leading to
   descriptor code ending up in the split module instead of main, which isn't discovered
   by the succeeding wasm-bindgen call.
+- Support weakly linked symbols, which enables a workaround for a long standing compiler
+  bug with incremental compilation. See #59 and rust-lang/rust#81280 for details.
 - Experimental support to emit debug sections. By default enabled via environment variable
   `WASM_SPLIT_CLI_ENABLE_DWARF`. The current setup duplicates the DWARF information into
   all output modules, which can lead to large split files.

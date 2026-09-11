@@ -420,7 +420,6 @@ version = "0.1.0"
 dependencies = [
  "autocfg",
  "rustversion",
- "wasm-bindgen",
  "wasm-bindgen-test",
  "wasm_split_helpers",
 ]

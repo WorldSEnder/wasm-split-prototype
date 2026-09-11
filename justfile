@@ -22,7 +22,7 @@ fmt-check:
     cd integration && cargo fmt --all --check
     cd test-runner && cargo fmt --all --check
 
-#[env("CARGO_BUILD_WARNINGS", "deny")]
+[env("CARGO_BUILD_WARNINGS", "deny")]
 clippy:
     cargo +nightly clippy -- -Dwarnings
     cargo +nightly clippy --target wasm32-unknown-unknown -- -Dwarnings
