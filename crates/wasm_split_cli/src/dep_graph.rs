@@ -305,14 +305,16 @@ fn iter_data_dependencies<'m>(
                 }) {
                     let _ = overlap_candidates.pop();
                 }
-                let &target = emit_iter_err!(overlap_candidates.last().ok_or_else(|| anyhow!(
-                    "Invalid relocation entry {entry:?} not overlapping any data symbols"
+                // The relocation belongs to the smallest symbol that fully contains it. Inner
+                // symbols on the stack may only partially overlap it, in which case it belongs
+                // to the symbol containing them.
+                let target = overlap_candidates.iter().rev().find(|candidate| {
+                    candidate.range.start <= reloc_file_range.start
+                        && reloc_file_range.end <= candidate.range.end
+                });
+                let &target = emit_iter_err!(target.ok_or_else(|| anyhow!(
+                    "Invalid relocation entry {entry:?} not fully contained inside any data symbol"
                 )));
-                if !(target.range.start <= reloc_file_range.start
-                    && reloc_file_range.end <= target.range.end)
-                {
-                    emit_iter_err!(Err(anyhow!("Invalid relocation entry {entry:?} not fully contained inside its data symbol")))
-                }
                 return Some(Ok(DataDependency::Reloc(target, entry)));
             }
         }
@@ -351,6 +353,10 @@ fn iter_data_dependencies<'m>(
 
         // if we reach here, then the next symbol is contained in all items on the stack
         if let Some(container) = container {
+            // Keep the inner symbol as a candidate: relocations inside it must be attributed to
+            // it, the smallest symbol containing them, and not to its container. Otherwise a
+            // module that only needs the inner symbol would miss the relocation's target.
+            overlap_candidates.push(next_symbol);
             return Some(Ok(DataDependency::Containment {
                 container,
                 inner: next_symbol,
