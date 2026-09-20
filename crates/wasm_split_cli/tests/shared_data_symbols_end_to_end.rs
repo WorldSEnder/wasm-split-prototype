@@ -26,10 +26,6 @@
 //! module uses the tail of a split's symbol, and that tail holds a pointer.
 //! Asserts that the pointer's target is available to main.
 //!
-//! `relocation_crossing_an_inner_symbol_belongs_to_the_containing_symbol`: a
-//! pointer straddles the boundary of a symbol nested in another. Asserts that
-//! it is attributed to the containing symbol instead of being rejected.
-//!
 //! `data_shared_between_splits_is_emitted_from_their_chunk`: split `a` uses a
 //! whole string, splits `a` and `b` both use its tail. Asserts that the whole
 //! string is emitted from the chunk shared by `a` and `b`, not from main.
@@ -757,45 +753,6 @@ fn pointer_inside_a_contained_symbol_pulls_its_target_into_main() {
         "a shares all its data with main"
     );
     assert_some_function_refers_to(split_a, &[SEGMENT_BASE]);
-}
-
-#[test]
-fn relocation_crossing_an_inner_symbol_belongs_to_the_containing_symbol() {
-    let _ = tracing_subscriber::fmt::try_init();
-
-    // outer = "AB" + pointer + "CD", inner = the last four bytes of outer, so the pointer
-    // straddles inner's start. Only outer contains it, so its target follows outer to main.
-    let mut data = b"AB".to_vec();
-    data.extend_from_slice(&[0; 4]); // pointer, written by the builder
-    data.extend_from_slice(b"CD");
-    data.extend_from_slice(&9u32.to_le_bytes()); // target
-    let input = Input {
-        data: data.clone(),
-        alignment: 2,
-        symbols: vec![
-            DataSymbol("outer", 0, 8),
-            DataSymbol("inner", 4, 4),
-            DataSymbol("target", 8, 4),
-        ],
-        extra_segments: vec![],
-        funcs: vec![
-            Func(Owner::Main("main_reads"), vec![0]),
-            Func(Owner::Split("a"), vec![1]),
-        ],
-        data_relocs: vec![(2, 2)],
-    };
-    let output = split(&input);
-
-    let (main_addr, main_bytes) = single_data_segment(&output.main);
-    assert_eq!(main_addr, SEGMENT_BASE);
-    let mut expected = data.clone();
-    expected[2..6].copy_from_slice(&(SEGMENT_BASE + 8).to_le_bytes());
-    assert_eq!(
-        main_bytes, expected,
-        "main must hold outer, its pointer and the target"
-    );
-    assert_eq!(data_segments(output.split("a")), vec![]);
-    assert_some_function_refers_to(output.split("a"), &[SEGMENT_BASE + 4]);
 }
 
 #[test]

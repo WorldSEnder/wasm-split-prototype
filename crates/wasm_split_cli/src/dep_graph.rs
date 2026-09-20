@@ -305,16 +305,16 @@ fn iter_data_dependencies<'m>(
                 }) {
                     let _ = overlap_candidates.pop();
                 }
-                // The relocation belongs to the smallest symbol that fully contains it. Inner
-                // symbols on the stack may only partially overlap it, in which case it belongs
-                // to the symbol containing them.
-                let target = overlap_candidates.iter().rev().find(|candidate| {
-                    candidate.range.start <= reloc_file_range.start
-                        && reloc_file_range.end <= candidate.range.end
-                });
-                let &target = emit_iter_err!(target.ok_or_else(|| anyhow!(
-                    "Invalid relocation entry {entry:?} not fully contained inside any data symbol"
+                // The relocation belongs to the innermost symbol containing its start,
+                // and must lie fully inside it.
+                let &target = emit_iter_err!(overlap_candidates.last().ok_or_else(|| anyhow!(
+                    "Invalid relocation entry {entry:?} not overlapping any data symbols"
                 )));
+                if !(target.range.start <= reloc_file_range.start
+                    && reloc_file_range.end <= target.range.end)
+                {
+                    emit_iter_err!(Err(anyhow!("Invalid relocation entry {entry:?} not fully contained inside its data symbol")))
+                }
                 return Some(Ok(DataDependency::Reloc(target, entry)));
             }
         }
