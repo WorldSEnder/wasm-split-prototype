@@ -289,30 +289,12 @@ struct LateDataRange {
     needed_by: SplitModuleIdentifier,
     // the module emitting this range, which is loaded whenever any of `needed_by` is
     in_module: usize,
-    /// Power of 2, the strictest alignment of the symbols in the range, which may be stricter
-    /// than the alignment of its start. `align_offset` preserves the input start's residue
-    /// modulo this alignment so that every contained symbol keeps its alignment.
+    /// Power of 2. The alignment inferred for the range's first symbol, raised only by
+    /// partially overlapping symbols; a contained symbol cannot be aligned stricter than
+    /// its container. The range is placed at a multiple of it.
     data_align: u64,
     // offset in the relocated segment, filled in by `layout_ranges`
     segment_offset: u64,
-}
-
-impl LateDataRange {
-    /// The smallest offset `>= from` at which this range keeps the alignment of its symbols.
-    ///
-    /// This is not `from.next_multiple_of(self.data_align)`: a 4-aligned symbol at input
-    /// offset 4 merged with an 8-aligned symbol at offset 8 gives a range starting at 4
-    /// with alignment 8. Placing the range congruent to its input start modulo 8 keeps
-    /// the inner symbol aligned; rounding the range's start up to a multiple of 8 would
-    /// put that symbol at offset 4 modulo 8 and misalign it.
-    fn align_offset(&self, from: u64) -> u64 {
-        let residue = self.input_range.start % self.data_align;
-        let mut offset = from / self.data_align * self.data_align + residue;
-        if offset < from {
-            offset += self.data_align;
-        }
-        offset
-    }
 }
 
 /// A contiguous run of ranges of one output module, emitted as one data segment.
@@ -336,11 +318,10 @@ struct RangeLayout {
 
 /// Lay out the ranges of one segment.
 ///
-/// Ranges are placed by decreasing alignment, so that ordinary ranges (whose length is a
-/// multiple of their alignment) pack without padding no matter which module they belong to.
-/// Every module then emits one data segment per run of its ranges, typically one per alignment
-/// its data uses. Only merged ranges, which must keep their input residue and can have any
-/// length, can still cause padding.
+/// Ranges are placed by decreasing alignment, then module and input order. Every range
+/// starts at a multiple of its alignment, and linker output gives lengths that are multiples
+/// of it, so no padding arises. Each module emits one segment per run of its ranges.
+/// The overlong check remains as a safety net.
 fn layout_ranges(ranges: &mut [LateDataRange]) -> RangeLayout {
     let mut emit_order: Vec<_> = (0..ranges.len()).collect();
     emit_order.sort_by_key(|&range_idx| {
@@ -355,7 +336,7 @@ fn layout_ranges(ranges: &mut [LateDataRange]) -> RangeLayout {
     let mut segment_len: u64 = 0;
     for (order_idx, &range_idx) in emit_order.iter().enumerate() {
         let range = &mut ranges[range_idx];
-        range.segment_offset = range.align_offset(segment_len);
+        range.segment_offset = segment_len.next_multiple_of(range.data_align);
         segment_len = range.segment_offset + (range.input_range.end - range.input_range.start);
         match fragments.last_mut() {
             Some(fragment) if fragment.module == range.in_module => {
@@ -666,10 +647,18 @@ impl DataEmitInfo {
                     let range_idx = range_idx - 1; // back of ranges
 
                     has_merged = true;
-                    back.input_range.end = back.input_range.end.max(data_range.end);
-                    // The range is placed congruent to its input start modulo its alignment, so
-                    // taking the strictest alignment keeps every symbol in it aligned.
-                    back.data_align = back.data_align.max(data_align);
+                    // Contained symbols (struct fields or merged string suffixes) cannot be
+                    // stricter aligned than their container. Partial overlaps raise the
+                    // alignment; the range start must remain a multiple of it (checked below).
+                    let contained = data_range.end <= back.input_range.end;
+                    if !contained {
+                        warn!(
+                            "data symbol {symbol_index} partially overlaps the symbols before it in segment {segment_index} ({:?} vs {:?}); the linker is not expected to produce this",
+                            data_range, back.input_range
+                        );
+                        back.input_range.end = data_range.end;
+                        back.data_align = back.data_align.max(data_align);
+                    }
                     // Track the modules actually needing the range, not the module chosen to
                     // emit it: the latter may be a superset chunk, which would rule out an exact
                     // chunk for a later, larger requirement. Record every owner, even one that
@@ -720,70 +709,33 @@ impl DataEmitInfo {
                     base_address,
                 } => {
                     let input_len = wasm_data_len(&input_module.data_segments[segment_index]);
-                    // If we could move other active segments to different base addresses, this segment getting longer
-                    // would not be a problem. Since we can't guarantee this at this point though, don't risk it.
-                    // Overlapping segments *will* overwrite data!
-                    // Instead, as long as the relocated segment is longer than its input, fold the data of the
-                    // smallest module into the main module and try again. That changes the order of the
-                    // ranges and usually reduces the padding that merged ranges need. It is not guaranteed
-                    // to: even with all data in the main module the segment may not fit, and then the whole
-                    // segment is copied instead.
-                    let mut folded_modules = 0usize;
-                    let mut folded_bytes = 0u64;
-                    let mut first_len = None;
-                    let layout = loop {
-                        let layout = layout_ranges(&mut ranges);
-                        let first_len = *first_len.get_or_insert(layout.segment_len);
-                        if layout.segment_len <= input_len {
-                            if folded_modules != 0 {
-                                warn!(
-                                    "Relocated data segment {segment_index} was longer than its input \
-                                    ({first_len} > {input_len} bytes): moved {folded_bytes} bytes of \
-                                    {folded_modules} module(s) into the main module to make it fit"
-                                );
-                            }
-                            break Some(layout);
-                        }
-                        let mut per_module_size = HashMap::new();
-                        for range in ranges.iter().filter(|range| range.in_module != MAIN_MODULE) {
-                            *per_module_size.entry(range.in_module).or_insert(0) +=
-                                range.input_range.end - range.input_range.start;
-                        }
-                        let Some((&module, &size)) = per_module_size
-                            .iter()
-                            .min_by_key(|&(&module, &size)| (size, module))
-                        else {
-                            break None;
-                        };
-                        trace!(
-                            "Relocated segment {segment_index} is longer than its input by {}, \
-                            moving the {size} data bytes of output module {module} into the main module",
-                            layout.segment_len - input_len
+                    // Partial overlaps must leave the range start aligned. Keep the segment
+                    // whole in main if they do not, or if the relocated layout is overlong:
+                    // other active segments cannot be moved and must not be overwritten.
+                    if let Some(range) = ranges.iter().find(|r| r.input_range.start % r.data_align != 0) {
+                        warn!(
+                            "Data segment {segment_index}: partially overlapping symbols at {:?} need an alignment of {} that their start does not have. Putting it into main.",
+                            range.input_range, range.data_align
                         );
-                        folded_modules += 1;
-                        folded_bytes += size;
-                        for range in ranges.iter_mut().filter(|range| range.in_module == module) {
-                            range.in_module = MAIN_MODULE;
-                        }
-                    };
-
-                    // check that range_lookup completely covers the (non-zero) data segment?
-                    // Otherwise there is non-relocated data, which most likely indicates an error.
-                    // There might be data symbols that are not included/depended upon anywhere though.
-                    // Some gaps will exist, introduced by padding for alignment! This padding should be zeroed.
-                    // So for the moment, don't bother with this sanity analysis.
-
-                    match layout {
-                        Some(layout) => DataSegmentEmitInfo::Ranges {
-                            ranges,
-                            base_address,
-                            range_lookup,
-                            layout,
-                        },
-                        None => {
+                        DataSegmentEmitInfo::FromInputOnlyIn(MAIN_MODULE)
+                    } else {
+                        // check that range_lookup completely covers the (non-zero) data segment?
+                        // Otherwise there is non-relocated data, which most likely indicates an error.
+                        // There might be data symbols that are not included/depended upon anywhere though.
+                        // Some gaps will exist, introduced by padding for alignment! This padding should be zeroed.
+                        // So for the moment, don't bother with this sanity analysis.
+                        let layout = layout_ranges(&mut ranges);
+                        if layout.segment_len > input_len {
                             trace!("{ranges:?}");
                             warn!("Overlong segment {segment_index} after relocation, putting it in main module.");
                             DataSegmentEmitInfo::FromInputOnlyIn(MAIN_MODULE)
+                        } else {
+                            DataSegmentEmitInfo::Ranges {
+                                ranges,
+                                base_address,
+                                range_lookup,
+                                layout,
+                            }
                         }
                     }
                 }
@@ -1908,36 +1860,4 @@ pub fn emit_modules<'info, M>(
         })
         .filter_map(|res| res.transpose())
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn align_offset_preserves_input_residue() {
-        let mut range = LateDataRange {
-            input_range: 0..16,
-            needed_by: SplitModuleIdentifier::Main,
-            in_module: MAIN_MODULE,
-            data_align: 8,
-            segment_offset: 0,
-        };
-        for from in [0, 1, 4, 5, 8, 12, 13, 16] {
-            assert_eq!(range.align_offset(from), from.next_multiple_of(8));
-        }
-
-        // The inner 8-aligned symbol starts four bytes into the merged range.
-        range.input_range = 4..16;
-        for (from, expected) in [(0, 4), (1, 4), (4, 4), (5, 12), (12, 12), (13, 20)] {
-            let offset = range.align_offset(from);
-            assert_eq!(offset, expected, "from {from}");
-            assert_eq!((offset + 4) % 8, 0, "inner symbol alignment");
-        }
-
-        range.data_align = 1;
-        for from in [0, 1, 4, 5, 12, 13] {
-            assert_eq!(range.align_offset(from), from);
-        }
-    }
 }

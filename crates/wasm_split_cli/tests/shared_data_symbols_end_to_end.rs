@@ -13,9 +13,14 @@
 //! the main module, so nothing was ever relocated into split modules of
 //! release builds (leptos-rs/cargo-leptos#679).
 //!
-//! `overlapping_symbols_keep_the_strictest_alignment`: a 4-aligned word is
-//! overlapped by a longer, unaligned string. Asserts that the merged bytes
-//! are placed so that the word stays aligned.
+//! `contained_symbol_moves_with_its_container`: a contained word moves with its
+//! unaligned container without raising its alignment or moving split data to main.
+//!
+//! `partially_overlapping_symbols_share_one_range`: compatible partial overlaps
+//! share one aligned range and preserve the distance between their symbols.
+//!
+//! `partially_overlapping_symbols_with_incompatible_alignment_keep_the_segment_whole`:
+//! a partial overlap whose start cannot satisfy its alignment stays whole in main.
 //!
 //! `pointer_inside_a_contained_symbol_pulls_its_target_into_main`: the main
 //! module uses the tail of a split's symbol, and that tail holds a pointer.
@@ -44,12 +49,6 @@
 //! aligned words with bytes. Asserts that the data packs without padding by
 //! emitting one segment per alignment, that every input segment keeps its
 //! index in the outputs and the extra segments are appended.
-//!
-//! `overlong_segment_folds_the_smallest_split_into_main`: a merged range with
-//! an unaligned start makes the relocated segment longer than its input.
-//! Asserts that only the smallest split's data moves into main and the other
-//! split keeps its relocated data, instead of the whole segment being copied
-//! into main unrelocated.
 //!
 //! `overlapping_input_segments_keep_their_order`: two input segments overlap
 //! in memory, which an appended fragment could reorder. Asserts that both are
@@ -713,50 +712,6 @@ fn shared_data_symbols_are_emitted_once_and_split_data_is_relocated() {
 }
 
 #[test]
-fn overlapping_symbols_keep_the_strictest_alignment() {
-    let _ = tracing_subscriber::fmt::try_init();
-
-    let input = Input {
-        // four unreferenced bytes leave room for the parts to be aligned
-        data: b"ABCDEFGx....".to_vec(),
-        alignment: 2,
-        symbols: vec![
-            DataSymbol("whole", 0, 7),
-            DataSymbol("word", 0, 4),
-            DataSymbol("main_byte", 7, 1),
-        ],
-        funcs: vec![
-            Func(Owner::Main("main_reads"), vec![2]),
-            Func(Owner::Split("a"), vec![0, 1]),
-        ],
-        extra_segments: vec![],
-        data_relocs: vec![],
-    };
-    let output = split(&input);
-
-    let split_a = output.split("a");
-    let (a_addr, a_bytes) = single_data_segment(split_a);
-    assert_eq!(a_bytes, b"ABCDEFG");
-    assert_eq!(
-        a_addr % 4,
-        0,
-        "the word inside the merged range must stay 4-aligned"
-    );
-    assert_some_function_refers_to(split_a, &[a_addr, a_addr]);
-
-    let (main_addr, main_bytes) = single_data_segment(&output.main);
-    assert_eq!(main_bytes, b"x");
-    assert!(
-        main_addr >= a_addr + 7 || main_addr < a_addr,
-        "parts must not overlap"
-    );
-    assert_eq!(
-        exported_function_constants(&output.main, "main_reads"),
-        vec![main_addr]
-    );
-}
-
-#[test]
 fn pointer_inside_a_contained_symbol_pulls_its_target_into_main() {
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -1137,11 +1092,13 @@ fn mixed_alignments_pack_without_padding_across_modules() {
 }
 
 #[test]
-fn overlong_segment_folds_the_smallest_split_into_main() {
+fn contained_symbol_moves_with_its_container() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    // `whole` (split a) starts at offset 1 and contains a 4-aligned word, so its merged range
-    // must be placed at an offset congruent to 1 modulo 4. Bytes 9..12 are unreferenced.
+    // `whole` (split a) starts at offset 1 and contains the 4-aligned `word`. A contained
+    // symbol keeps its container's alignment, so a's range moves as a unit and every module's
+    // data fits the input segment without moving split data into main.
+
     let data = b"MABCDEFGH...BBBB".to_vec();
     let input = Input {
         data: data.clone(),
@@ -1162,35 +1119,69 @@ fn overlong_segment_folds_the_smallest_split_into_main() {
     };
     let output = split(&input);
 
-    // Without folding: a's range at 1..9, b's word at 12..16, main's byte at 16: one byte too
-    // long. Folding `b`, the smaller split, into main puts its word first at 0..4, then a's
-    // range at 5..13 and main's byte at 13.
-    assert_eq!(
-        data_segments(&output.main),
-        vec![
-            (SEGMENT_BASE, b"BBBB".to_vec()),
-            (SEGMENT_BASE + 13, b"M".to_vec())
-        ],
-        "main should hold b's word and its own byte",
-    );
-    assert_eq!(
-        exported_function_constants(&output.main, "main_reads"),
-        vec![SEGMENT_BASE + 13]
-    );
-    let split_b = output.split("b");
-    assert_eq!(data_segments(split_b), vec![], "b's data moved into main");
-    assert_some_function_refers_to(split_b, &[SEGMENT_BASE]);
-
     let split_a = output.split("a");
     let (a_addr, a_bytes) = single_data_segment(split_a);
     assert_eq!(a_bytes, b"ABCDEFGH");
-    assert_eq!(
-        (a_addr + 3) % 4,
-        0,
-        "the word inside a's range must stay 4-aligned"
-    );
-    assert!(a_addr >= SEGMENT_BASE + 4 && a_addr + 8 <= SEGMENT_BASE + 13);
+    assert_eq!(single_data_segment(output.split("b")).1, b"BBBB");
+    assert_eq!(single_data_segment(&output.main).1, b"M");
     assert_some_function_refers_to(split_a, &[a_addr, a_addr + 3]);
+    for module in [&output.main[..], split_a, output.split("b")] {
+        for (addr, bytes) in data_segments(module) {
+            assert!(addr >= SEGMENT_BASE);
+            assert!(addr + bytes.len() as u32 <= SEGMENT_BASE + input.data.len() as u32);
+        }
+    }
+}
+
+#[test]
+fn partially_overlapping_symbols_share_one_range() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // `s1` and `s2` overlap without containment. Their start is a multiple of the stricter
+    // alignment, so they form one 4-aligned range that keeps their distance.
+    let input = Input {
+        data: b"ABCDEFGH".to_vec(),
+        alignment: 2,
+        symbols: vec![DataSymbol("s1", 0, 6), DataSymbol("s2", 4, 4)],
+        funcs: vec![Func(Owner::Split("a"), vec![0, 1])],
+        extra_segments: vec![],
+        data_relocs: vec![],
+    };
+    let output = split(&input);
+    let (addr, bytes) = single_data_segment(output.split("a"));
+    assert_eq!(bytes, input.data);
+    assert_eq!(addr % 4, 0);
+    assert_some_function_refers_to(output.split("a"), &[addr, addr + 4]);
+}
+
+#[test]
+fn partially_overlapping_symbols_with_incompatible_alignment_keep_the_segment_whole() {
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // `s1` at offset 2 and `s2` at offset 4 overlap without containment, and their start is no
+    // multiple of the stricter alignment 4, so the segment is kept whole in main.
+    let input = Input {
+        data: b"M.ABCDEF".to_vec(),
+        alignment: 2,
+        symbols: vec![
+            DataSymbol("main_byte", 0, 1),
+            DataSymbol("s1", 2, 4),
+            DataSymbol("s2", 4, 4),
+        ],
+        funcs: vec![
+            Func(Owner::Main("main_reads"), vec![0]),
+            Func(Owner::Split("a"), vec![1, 2]),
+        ],
+        extra_segments: vec![],
+        data_relocs: vec![],
+    };
+    let output = split(&input);
+    assert_eq!(
+        single_data_segment(&output.main),
+        (SEGMENT_BASE, input.data)
+    );
+    assert!(data_segments(output.split("a")).is_empty());
+    assert_some_function_refers_to(output.split("a"), &[SEGMENT_BASE + 2, SEGMENT_BASE + 4]);
 }
 
 #[test]
