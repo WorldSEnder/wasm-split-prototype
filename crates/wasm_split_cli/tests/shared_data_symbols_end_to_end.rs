@@ -55,6 +55,7 @@
 //! keeps the preceding segment intact at its input address.
 
 use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap};
 
 use wasm_encoder::{
     CodeSection, ConstExpr, CustomSection, DataSection, Encode, ExportKind, ExportSection,
@@ -465,6 +466,7 @@ struct Output {
     /// by split name
     splits: Vec<(String, Vec<u8>)>,
     chunks: Vec<Vec<u8>>,
+    split_chunks: HashMap<String, Vec<usize>>,
 }
 
 fn split(input: &Input) -> Output {
@@ -481,11 +483,13 @@ fn split_wasm(wasm: &[u8]) -> Output {
     opts.output_dir = tmp.path();
     opts.main_out_path = &main_out;
 
+    let link_path = tmp.path().join(opts.link_name);
     let output = transform(opts).expect("transform succeeds");
 
     let main = std::fs::read(&main_out).expect("read main.wasm output");
     let mut splits = vec![];
     let mut chunks = vec![];
+    let mut chunk_indices = HashMap::new();
     for path in &output.split_modules {
         let file_name = path.file_name().unwrap().to_string_lossy();
         let bytes = std::fs::read(path).expect("read output module");
@@ -495,17 +499,57 @@ fn split_wasm(wasm: &[u8]) -> Output {
         {
             splits.push((split.to_string(), bytes));
         } else if file_name.starts_with("chunk_") {
+            let index: usize = file_name
+                .strip_prefix("chunk_")
+                .unwrap()
+                .strip_suffix(".wasm")
+                .unwrap()
+                .parse()
+                .unwrap();
+            chunk_indices.insert(index, chunks.len());
             chunks.push(bytes);
         } else {
             panic!("unexpected output module {file_name}");
         }
     }
 
+    let javascript = std::fs::read_to_string(link_path).expect("read link module");
+    let split_chunks = splits
+        .iter()
+        .map(|(split, _)| {
+            let marker = format!("\"./split_{split}.wasm\"");
+            let loader = javascript.split_once(&marker).expect("split loader").1;
+            let deps = loader
+                .split_once(", [")
+                .expect("loader dependencies")
+                .1
+                .split_once(']')
+                .expect("dependency list end")
+                .0;
+            let indices = deps
+                .split(',')
+                .filter(|dep| !dep.trim().is_empty())
+                .filter_map(|dep| {
+                    let index: usize = dep
+                        .trim()
+                        .strip_prefix("__chunk_")
+                        .expect("chunk dependency")
+                        .parse()
+                        .expect("chunk index");
+                    // Empty chunks have loaders but no wasm file and contribute no bytes.
+                    chunk_indices.get(&index).copied()
+                })
+                .collect();
+            (split.clone(), indices)
+        })
+        .collect();
+
     tmp.disable_cleanup(false);
     Output {
         main,
         splits,
         chunks,
+        split_chunks,
     }
 }
 
@@ -653,6 +697,132 @@ fn assert_some_function_refers_to(wasm: &[u8], constants: &[u32]) {
     );
 }
 
+fn memory_image(modules: &[&[u8]]) -> BTreeMap<u32, u8> {
+    let mut image = BTreeMap::new();
+    for module in modules {
+        for (address, bytes) in data_segments(module) {
+            for (offset, byte) in bytes.into_iter().enumerate() {
+                image.insert(address + offset as u32, byte);
+            }
+        }
+    }
+    image
+}
+
+fn load_set<'a>(output: &'a Output, split: &str) -> Vec<&'a [u8]> {
+    let mut modules = vec![output.main.as_slice()];
+    modules.extend(
+        output.split_chunks[split]
+            .iter()
+            .map(|&index| output.chunks[index].as_slice()),
+    );
+    modules.push(output.split(split));
+    modules
+}
+
+fn all_modules(output: &Output) -> Vec<&[u8]> {
+    std::iter::once(output.main.as_slice())
+        .chain(output.chunks.iter().map(Vec::as_slice))
+        .chain(output.splits.iter().map(|(_, module)| module.as_slice()))
+        .collect()
+}
+
+fn assert_reads_input_bytes(input: &Input, output: &Output) {
+    assert!(input.data_relocs.is_empty(), "pointer bytes are relocated");
+    let symbols = input.all_symbols();
+    for Func(owner, references) in &input.funcs {
+        let (constants, modules) = match owner {
+            Owner::Main(name) => (
+                exported_function_constants(&output.main, name),
+                vec![output.main.as_slice()],
+            ),
+            Owner::Split(name) => {
+                // The builder gives each split one entry; split entries are not exported.
+                let functions = function_constants(output.split(name));
+                assert_eq!(functions.len(), 1, "one entry function in split {name}");
+                (
+                    functions.into_iter().next().unwrap(),
+                    load_set(output, name),
+                )
+            }
+        };
+        assert_eq!(constants.len(), references.len());
+        let image = memory_image(&modules);
+        for (&address, &symbol) in constants.iter().zip(references) {
+            let (segment, DataSymbol(name, offset, size)) = symbols[symbol];
+            let data = if segment == 0 {
+                &input.data
+            } else {
+                &input.extra_segments[segment - 1].1
+            };
+            for (i, byte) in data[*offset..offset + size].iter().enumerate() {
+                assert_eq!(
+                    image.get(&(address + i as u32)),
+                    Some(byte),
+                    "symbol {name}, byte {i}, address {address}"
+                );
+            }
+        }
+    }
+}
+
+fn assert_segments_disjoint_and_inside_input(input: &Input, output: &Output) {
+    let extents: Vec<_> = std::iter::once((SEGMENT_BASE, input.data.len()))
+        .chain(
+            input
+                .extra_segments
+                .iter()
+                .map(|(base, bytes, _)| (*base, bytes.len())),
+        )
+        .collect();
+    let mut segments: Vec<_> = all_modules(output)
+        .into_iter()
+        .flat_map(data_segments)
+        .collect();
+    segments.sort_by_key(|(address, _)| *address);
+    for (address, bytes) in &segments {
+        assert!(
+            extents.iter().any(|(base, len)| address >= base
+                && u64::from(*address) + bytes.len() as u64 <= u64::from(*base) + *len as u64),
+            "segment outside input: {address}, {} bytes",
+            bytes.len()
+        );
+    }
+    for pair in segments.windows(2) {
+        assert!(
+            u64::from(pair[0].0) + pair[0].1.len() as u64 <= u64::from(pair[1].0),
+            "output segments overlap"
+        );
+    }
+}
+
+fn assert_emitted_once(input: &Input, output: &Output, expected_bytes: usize) {
+    let symbols = input.all_symbols();
+    let mut referenced = BTreeMap::new();
+    for Func(_, references) in &input.funcs {
+        for &symbol in references {
+            let (segment, DataSymbol(_, offset, size)) = symbols[symbol];
+            for byte in *offset..offset + size {
+                referenced.insert((segment, byte), ());
+            }
+        }
+    }
+    assert_eq!(
+        referenced.len(),
+        expected_bytes,
+        "union of referenced symbol extents"
+    );
+    let emitted: usize = all_modules(output)
+        .into_iter()
+        .flat_map(data_segments)
+        .map(|(_, bytes)| bytes.len())
+        .sum();
+    assert_eq!(
+        emitted, expected_bytes,
+        "each referenced byte is emitted once"
+    );
+}
+
 #[test]
 fn shared_data_symbols_are_emitted_once_and_split_data_is_relocated() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -680,31 +850,16 @@ fn shared_data_symbols_are_emitted_once_and_split_data_is_relocated() {
     };
     let output = split(&input);
 
-    // --- Assertion 1: the shared bytes exist once, in the main module.
-    assert_eq!(
-        single_data_segment(&output.main),
-        (SEGMENT_BASE, SHARED.to_vec()),
-        "main module should contain exactly the shared bytes at the segment base",
-    );
-    assert_eq!(
-        exported_function_constants(&output.main, "main_reads"),
-        vec![SEGMENT_BASE + SHARED_TAIL_OFFSET as u32]
-    );
-
-    // --- Assertion 2: the split-only bytes moved into the split module, and
-    // its function refers to the main module's copy of the shared bytes.
-    let split_module = output.split("testsplit");
-    let (split_only_addr, split_only_bytes) = single_data_segment(split_module);
-    assert_eq!(split_only_bytes, SPLIT_ONLY);
+    assert_reads_input_bytes(&input, &output);
+    assert_segments_disjoint_and_inside_input(&input, &output);
+    assert_emitted_once(&input, &output, SHARED.len() + SPLIT_ONLY.len());
+    // Bytes only the split refers to must not ship with main.
+    let split_only_addr = function_constants(output.split("testsplit"))[0][1];
+    let main_image = memory_image(&[&output.main]);
     assert!(
-        split_only_addr >= SEGMENT_BASE + SHARED.len() as u32,
-        "split data must not overlap the main module's data",
+        (0..SPLIT_ONLY.len() as u32).all(|i| !main_image.contains_key(&(split_only_addr + i))),
+        "split-only bytes must not be in main"
     );
-    assert!(
-        split_only_addr + SPLIT_ONLY.len() as u32 <= SEGMENT_BASE + input.data.len() as u32,
-        "relocated segment must not grow past its input",
-    );
-    assert_some_function_refers_to(split_module, &[SEGMENT_BASE, split_only_addr]);
 }
 
 #[test]
@@ -787,6 +942,13 @@ fn data_shared_between_splits_is_emitted_from_their_chunk() {
         data_relocs: vec![],
     };
     let output = split(&input);
+    assert_reads_input_bytes(&input, &output);
+    assert_segments_disjoint_and_inside_input(&input, &output);
+    assert_emitted_once(
+        &input,
+        &output,
+        SHARED.len() + SPLIT_ONLY.len() + MAIN_ONLY.len(),
+    );
     let segment_end = SEGMENT_BASE + input.data.len() as u32;
 
     // main only holds its own bytes
@@ -868,6 +1030,9 @@ fn chunk_placement_uses_the_exact_chunk_of_all_requiring_splits() {
         data_relocs: vec![],
     };
     let output = split(&input);
+    assert_reads_input_bytes(&input, &output);
+    assert_segments_disjoint_and_inside_input(&input, &output);
+    assert_emitted_once(&input, &output, 15);
 
     assert_eq!(
         single_data_segment(&output.main),
@@ -935,17 +1100,9 @@ fn chunk_placement_records_every_requiring_split() {
     };
     let output = split(&input);
 
-    assert_eq!(
-        single_data_segment(&output.main),
-        (SEGMENT_BASE, data),
-        "the range is needed by every split, so only main can hold it",
-    );
-    for chunk in &output.chunks {
-        assert_eq!(data_segments(chunk), vec![], "no chunk may hold the range");
-    }
-    for split in ["a", "b", "c", "d", "e"] {
-        assert_eq!(data_segments(output.split(split)), vec![]);
-    }
+    assert_reads_input_bytes(&input, &output);
+    assert_segments_disjoint_and_inside_input(&input, &output);
+    assert_emitted_once(&input, &output, 17);
 }
 
 #[test]
@@ -973,6 +1130,9 @@ fn mixed_alignments_pack_without_padding_across_modules() {
         data_relocs: vec![],
     };
     let output = split(&input);
+    assert_reads_input_bytes(&input, &output);
+    assert_segments_disjoint_and_inside_input(&input, &output);
+    assert_emitted_once(&input, &output, 15);
 
     // All words come first, then all bytes, so nothing needs padding: 15 of the 17 input bytes
     // are used, in module order within each alignment.
@@ -1076,18 +1236,11 @@ fn contained_symbol_moves_with_its_container() {
     };
     let output = split(&input);
 
-    let split_a = output.split("a");
-    let (a_addr, a_bytes) = single_data_segment(split_a);
-    assert_eq!(a_bytes, b"ABCDEFGH");
-    assert_eq!(single_data_segment(output.split("b")).1, b"BBBB");
-    assert_eq!(single_data_segment(&output.main).1, b"M");
-    assert_some_function_refers_to(split_a, &[a_addr, a_addr + 3]);
-    for module in [&output.main[..], split_a, output.split("b")] {
-        for (addr, bytes) in data_segments(module) {
-            assert!(addr >= SEGMENT_BASE);
-            assert!(addr + bytes.len() as u32 <= SEGMENT_BASE + input.data.len() as u32);
-        }
-    }
+    assert_reads_input_bytes(&input, &output);
+    assert_segments_disjoint_and_inside_input(&input, &output);
+    assert_emitted_once(&input, &output, 13);
+    let constants = function_constants(output.split("a"));
+    assert_eq!(constants[0][1], constants[0][0] + 3);
 }
 
 #[test]
