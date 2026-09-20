@@ -1071,10 +1071,9 @@ fn chunk_placement_uses_the_exact_chunk_of_all_requiring_splits() {
 fn chunk_placement_records_every_requiring_split() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    // `outer` (split a) contains `i1` (also b), `i2` (also c), `i3` (also b, c, d) and `i4`
-    // (also b, c, e). After `i2` the range is required by {a,b,c}, for which the superset chunk
-    // {a,b,c,d} (holding `i3`) is chosen. `i3`'s owner is that very chunk, so `d` must still be
-    // recorded: after `i4` the range is required by {a,b,c,d,e}, which only main satisfies.
+    // The merged range is needed by five splits that share no common chunk. It must be
+    // emitted from a module every one of them loads, and each split must still read the
+    // correct bytes. The exact module holding the range is an implementation choice.
     let data = b"iiiijjjjkkkkllllM".to_vec();
     let input = Input {
         data: data.clone(),
@@ -1299,8 +1298,10 @@ fn overlapping_input_segments_keep_their_order() {
     let _ = tracing_subscriber::fmt::try_init();
 
     // Segment 1 at SEGMENT_BASE + 8 overlaps the last byte of segment 0 and is initialized
-    // after it, so that byte must end up as "X". Relocating segment 0 would emit main's "m"
-    // in a segment appended after segment 1.
+    // after it, so that byte must end up as "X". Three symbols put the split's symbol between
+    // two main symbols, making main's data form two runs. Its second run would be appended
+    // after segment 1 and overwrite "X". With a single main run, the fragment stays in
+    // segment 0's slot and this hazard does not arise.
     let input = Input {
         data: b"AAAABBBBm".to_vec(),
         alignment: 2,
