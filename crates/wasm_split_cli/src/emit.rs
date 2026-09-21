@@ -20,6 +20,8 @@ use wasmparser::{
     SymbolInfo, TypeRef,
 };
 
+const MAIN_MODULE: usize = 0;
+
 pub(crate) struct EmitState<'a> {
     input_options: &'a crate::Options<'a>,
     input_module: &'a InputModule<'a>,
@@ -283,9 +285,75 @@ impl IndirectFunctionEmitInfo {
 #[derive(Debug)]
 struct LateDataRange {
     input_range: Range<u64>,
+    // the modules whose symbols are in this range, see `SplitModuleIdentifier::also_in`
+    needed_by: SplitModuleIdentifier,
+    // the module emitting this range, which is loaded whenever any of `needed_by` is
     in_module: usize,
-    data_align: u64, // power of 2
-    in_module_offset: u64,
+    /// Power of 2. The alignment inferred for the range's first symbol, raised only by
+    /// partially overlapping symbols; a contained symbol cannot be aligned stricter than
+    /// its container. The range is placed at a multiple of it.
+    data_align: u64,
+    // offset in the relocated segment, filled in by `layout_ranges`
+    segment_offset: u64,
+}
+
+/// A contiguous run of ranges of one output module, emitted as one data segment.
+#[derive(Debug)]
+struct Fragment {
+    module: usize,
+    // offset in the relocated segment
+    offset: u64,
+    // the ranges, as a range of indices into `RangeLayout::emit_order`
+    ranges: Range<usize>,
+}
+
+#[derive(Debug)]
+struct RangeLayout {
+    // indices into the ranges, in the order they are placed in the segment
+    emit_order: Vec<usize>,
+    // in placement order; the fragments of one module are in ascending order
+    fragments: Vec<Fragment>,
+    segment_len: u64,
+}
+
+/// Lay out the ranges of one segment.
+///
+/// Ranges are placed by decreasing alignment, then module and input order. Every range
+/// starts at a multiple of its alignment, and linker output gives lengths that are multiples
+/// of it, so no padding arises. Each module emits one segment per run of its ranges.
+/// The overlong check remains as a safety net.
+fn layout_ranges(ranges: &mut [LateDataRange]) -> RangeLayout {
+    let mut emit_order: Vec<_> = (0..ranges.len()).collect();
+    emit_order.sort_by_key(|&range_idx| {
+        let range = &ranges[range_idx];
+        (
+            std::cmp::Reverse(range.data_align),
+            range.in_module,
+            range.input_range.start,
+        )
+    });
+    let mut fragments: Vec<Fragment> = vec![];
+    let mut segment_len: u64 = 0;
+    for (order_idx, &range_idx) in emit_order.iter().enumerate() {
+        let range = &mut ranges[range_idx];
+        range.segment_offset = segment_len.next_multiple_of(range.data_align);
+        segment_len = range.segment_offset + (range.input_range.end - range.input_range.start);
+        match fragments.last_mut() {
+            Some(fragment) if fragment.module == range.in_module => {
+                fragment.ranges.end = order_idx + 1;
+            }
+            _ => fragments.push(Fragment {
+                module: range.in_module,
+                offset: range.segment_offset,
+                ranges: order_idx..order_idx + 1,
+            }),
+        }
+    }
+    RangeLayout {
+        emit_order,
+        fragments,
+        segment_len,
+    }
 }
 
 #[derive(Debug)]
@@ -296,20 +364,43 @@ enum DataSegmentEmitInfo {
     Ranges {
         // some reloc information
         base_address: u64,
-        per_output_offset: HashMap<usize, u64>,
-        // the output segment is formed by concatenating all these segment
+        // the output segments are formed by concatenating runs of these ranges
         ranges: Vec<LateDataRange>,
         // symbol index -> (index in 'ranges', offset in range)
         range_lookup: HashMap<usize, (usize, u64)>,
-        // we re-order ranges to put data with larger alignment up front (this saves padding bytes).
-        // since indices are stored in the range_lookup map, we can't do this in-place and maintain a separate order here.
-        range_emit_order: Vec<usize>,
+        layout: RangeLayout,
     },
 }
 
 #[derive(Debug)]
 struct DataEmitInfo {
     per_segment: Vec<DataSegmentEmitInfo>,
+}
+
+impl DataEmitInfo {
+    /// The fragments of `segment_idx` that `module` emits, in ascending order.
+    fn fragments(&self, segment_idx: usize, module: usize) -> impl Iterator<Item = &Fragment> {
+        let fragments = match &self.per_segment[segment_idx] {
+            DataSegmentEmitInfo::Ranges { layout, .. } => layout.fragments.as_slice(),
+            _ => &[],
+        };
+        fragments
+            .iter()
+            .filter(move |fragment| fragment.module == module)
+    }
+
+    /// Every input segment keeps its index in every output module, holding the module's first
+    /// fragment of it (or nothing). Further fragments are appended after all input segments;
+    /// this lists them as `(input segment, fragment)`, in the order they are appended.
+    fn extra_fragments(&self, module: usize) -> Vec<(usize, &Fragment)> {
+        (0..self.per_segment.len())
+            .flat_map(|segment_idx| {
+                self.fragments(segment_idx, module)
+                    .skip(1)
+                    .map(move |fragment| (segment_idx, fragment))
+            })
+            .collect()
+    }
 }
 
 impl DataEmitInfo {
@@ -324,6 +415,49 @@ impl DataEmitInfo {
                 base_address: u64,
             },
         }
+        // Active segments are initialized in index order. Relocated data is emitted in
+        // additional segments after all input segments, which is only order-preserving when the
+        // input segments do not overlap in memory. wasm-ld never lets them overlap, but a
+        // hand-made input may; keep overlapping segments as they are, in their slots. An active
+        // segment with an unknown address may overlap any other active segment; passive
+        // segments have no address at instantiation and do not affect this ordering.
+        let mut active_unknown_address = None;
+        let segment_extents: Vec<Option<Range<u64>>> = input_module
+            .data_segments
+            .iter()
+            .enumerate()
+            .map(|(segment_idx, segment)| match &segment.kind {
+                DataKind::Active { offset_expr, .. } => {
+                    match offset_expr.get_operators_reader().read() {
+                        Ok(wasmparser::Operator::I32Const { value }) => Some(value as u32 as u64),
+                        Ok(wasmparser::Operator::I64Const { value }) => Some(value as u64),
+                        _ => {
+                            active_unknown_address.get_or_insert(segment_idx);
+                            None
+                        }
+                    }
+                    .map(|base| base..base + wasm_data_len(segment))
+                }
+                DataKind::Passive => None,
+            })
+            .collect();
+        let overlaps_other_segment = |segment_idx: usize| -> bool {
+            if active_unknown_address.is_some() {
+                return true;
+            }
+            let Some(extent) = &segment_extents[segment_idx] else {
+                return false;
+            };
+            segment_extents
+                .iter()
+                .enumerate()
+                .any(|(other_idx, other)| {
+                    other_idx != segment_idx
+                        && other.as_ref().is_some_and(|other| {
+                            extent.start < other.end && other.start < extent.end
+                        })
+                })
+        };
         let mut per_segment = input_module
             .data_segments
             .iter()
@@ -344,13 +478,21 @@ impl DataEmitInfo {
                         wasmparser::Operator::I64Const { value } => u64::try_from(value).map_err(|_| value),
                         op => {
                             warn!("Non-constant operator {op:?} found to specify a memory's base address. Putting it into main.");
-                            return Ok(DataSegmentAnalysis::FromInputOnlyIn(0));
+                            return Ok(DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE));
                         }
                     };
                     let address = match address {
                         Ok(addr) => addr,
                         Err(value) => { bail!("Invalid base address found: {value}"); },
                     };
+                    if overlaps_other_segment(segment_idx) {
+                        if let Some(other) = active_unknown_address {
+                            warn!("Data segment {segment_idx} may overlap data segment {other} whose base address is not a constant. Putting it into main.");
+                        } else {
+                            warn!("Data segment {segment_idx} overlaps another data segment in memory. Putting it into main.");
+                        }
+                        return Ok(DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE));
+                    }
                     Ok(DataSegmentAnalysis::Ranges {
                         ranges: vec![],
                         range_lookup: HashMap::new(),
@@ -360,121 +502,195 @@ impl DataEmitInfo {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Now go through all data symbols
-        for (module_index, (_, module)) in program_info.output_modules.iter().enumerate() {
-            let mut included_symbols = module
-                .included_symbols
+        // Now go through the data symbols of all output modules.
+        //
+        // wasm-ld can place several symbols onto the same bytes: identical constants are
+        // deduplicated and strings are tail-merged when optimizing. These symbols do not
+        // necessarily end up in the same output module. Relocating the symbols of each module
+        // on its own would copy the shared bytes once per module, which makes the segment longer
+        // than its input and forces the *whole* segment into the main module (see below).
+        // Instead, the symbols of all modules are sorted by input position and overlapping
+        // symbols are merged into one range. A range needed by more than one output module is
+        // emitted from a module that is loaded whenever any of them is: the chunk shared by
+        // all the splits requiring it, or else the main module. The other modules refer to
+        // its address.
+        let module_by_identifier: HashMap<&SplitModuleIdentifier, usize> = program_info
+            .output_modules
+            .iter()
+            .enumerate()
+            .map(|(index, (identifier, _))| (identifier, index))
+            .collect();
+        // The output module to emit a range from that is required by `needed_by`.
+        let placement_module = |needed_by: &SplitModuleIdentifier| -> usize {
+            if let Some(&index) = module_by_identifier.get(needed_by) {
+                return index;
+            }
+            let SplitModuleIdentifier::Chunk(needed_by) = needed_by else {
+                return MAIN_MODULE;
+            };
+            // No chunk is shared by exactly these splits: use the smallest one that is loaded
+            // by all of them, if any.
+            program_info
+                .output_modules
                 .iter()
-                .filter_map(|symbol| {
-                    let DepNode::DataSymbol(symbol_index) = *symbol else {
-                        return None;
-                    };
-                    let SymbolInfo::Data {
-                        symbol: Some(def_data),
-                        ..
-                    } = input_module.reloc_info.symbols[symbol_index]
-                    else {
-                        // Undefined data symbol: nothing defines it, so there is
-                        // no definition to place and no address to relocate.
-                        // The linker already resolved every reference to it
-                        // (to 0 under --allow-undefined), and `reloc_value`
-                        // leaves such references untouched, so the symbol
-                        // simply has no place in the emit state. Toolchains
-                        // produce these in the wild, e.g. rustc incremental
-                        // builds whose reused objects still reference renamed
-                        // promoted anonymous globals (rust-lang/rust#81280).
-                        if let SymbolInfo::Data { name, .. } =
-                            input_module.reloc_info.symbols[symbol_index]
-                        {
-                            trace!("undefined data symbol {name:?} in included set; references keep their linker value");
-                        }
-                        return None;
-                    };
-                    if def_data.size == 0 {
-                        // We don't care about zero-sized symbols.
-                        // There are some prominent examples, specifically __heap_base, that lead to a zero-sized
-                        // data symbol in the output. For this example specifically, it sometimes leads to problems
-                        // since it is often outside the range of data defined via segments in the input.
-                        return None;
+                .enumerate()
+                .filter_map(|(index, (identifier, _))| match identifier {
+                    SplitModuleIdentifier::Chunk(splits) if splits.is_superset(needed_by) => {
+                        Some((splits.len(), index))
                     }
-                    let segment_index = def_data.index as usize;
-                    let DataSegmentAnalysis::Ranges { .. } = &per_segment[segment_index] else {
-                        // Only relocate if in active range
-                        return None;
-                    };
-                    Some(Ok((symbol_index, def_data)))
+                    _ => None,
                 })
-                .collect::<Result<Vec<_>>>()?;
-            // all keys are unique by the inclusion of the symbol index
-            included_symbols.sort_unstable_by_key(|&(sym_index, ref def_data)| {
-                (def_data.index, def_data.offset, sym_index)
-            });
-            for (symbol_index, def_data) in included_symbols {
-                let segment_index = def_data.index as usize;
-                let DataSegmentAnalysis::Ranges {
-                    ranges,
-                    range_lookup,
-                    ..
-                } = &mut per_segment[segment_index]
-                else {
-                    // filtered above. All passive ranges are put into the main module
-                    unreachable!(
-                        "data symbol in passive range should not have gotted included in this pass"
-                    );
+                .min()
+                .map_or(MAIN_MODULE, |(_, index)| index)
+        };
+        let mut included_symbols = Vec::new();
+        for (module_index, (_, module)) in program_info.output_modules.iter().enumerate() {
+            for symbol in module.included_symbols.iter() {
+                let DepNode::DataSymbol(symbol_index) = *symbol else {
+                    continue;
                 };
-                let data_len = u64::from(def_data.size);
-                let data_offset = u64::from(def_data.offset);
-                let data_range = data_offset..data_offset + data_len;
-
-                let in_segment = &input_module.data_segments[segment_index];
-                if data_range.end > wasm_data_len(in_segment) {
-                    unreachable!(
-                        "Found data symbol {:?} that extends past the input module's data \
-                        bytes: {data_range:?} not in range for data segment of length {}",
-                        input_module.reloc_info.symbols[symbol_index],
-                        in_segment.data.len()
-                    );
-                }
-
-                let segment_align =
-                    1u64 << input_module.reloc_info.segments[segment_index].alignment;
-
-                let mut data_align = segment_align;
-                if data_offset != 0 {
-                    // TODO: .isolate_least_significant_one()
-                    data_align = data_align.min(1 << data_offset.trailing_zeros());
-                }
-                debug_assert!(data_len != 0, "zero-sized symbols handled previously");
-                data_align = data_align.min(1 << data_len.trailing_zeros());
-
-                let mut has_merged = false;
-                let range_idx = ranges.len();
-                if let Some(back) = ranges.last_mut() {
-                    let has_overlap =
-                        back.in_module == module_index && data_offset < back.input_range.end;
-                    if has_overlap {
-                        // we sorted before ingesting, hence the existing range starts earlier
-                        debug_assert!(
-                            back.input_range.start <= data_offset,
-                            "overlapping range goes backwards"
-                        );
-                        let range_offset = data_offset - back.input_range.start;
-                        let range_idx = range_idx - 1; // back of ranges
-
-                        has_merged = true;
-                        // about alignment: we use the fact that llvm merged these symbols as proof that we too, do not have to worry about alignment
-                        back.input_range.end = back.input_range.end.max(data_range.end);
-                        range_lookup.insert(symbol_index, (range_idx, range_offset));
+                let SymbolInfo::Data {
+                    symbol: Some(def_data),
+                    ..
+                } = input_module.reloc_info.symbols[symbol_index]
+                else {
+                    // Undefined data symbol: nothing defines it, so there is
+                    // no definition to place and no address to relocate.
+                    // The linker already resolved every reference to it
+                    // (to 0 under --allow-undefined), and `reloc_value`
+                    // leaves such references untouched, so the symbol
+                    // simply has no place in the emit state. Toolchains
+                    // produce these in the wild, e.g. rustc incremental
+                    // builds whose reused objects still reference renamed
+                    // promoted anonymous globals (rust-lang/rust#81280).
+                    if let SymbolInfo::Data { name, .. } =
+                        input_module.reloc_info.symbols[symbol_index]
+                    {
+                        trace!("undefined data symbol {name:?} in included set; references keep their linker value");
                     }
+                    continue;
+                };
+                if def_data.size == 0 {
+                    // We don't care about zero-sized symbols.
+                    // There are some prominent examples, specifically __heap_base, that lead to a zero-sized
+                    // data symbol in the output. For this example specifically, it sometimes leads to problems
+                    // since it is often outside the range of data defined via segments in the input.
+                    continue;
                 }
-                if !has_merged {
-                    ranges.push(LateDataRange {
-                        input_range: data_range,
-                        in_module: module_index,
-                        data_align,
-                        in_module_offset: u64::MAX, // filled in later
-                    });
-                    range_lookup.insert(symbol_index, (range_idx, 0));
+                let segment_index = def_data.index as usize;
+                let DataSegmentAnalysis::Ranges { .. } = &per_segment[segment_index] else {
+                    // Only relocate if in active range
+                    continue;
+                };
+                included_symbols.push((module_index, symbol_index, def_data));
+            }
+        }
+        // Symbols starting at the same offset are ordered longest first, so that a range always
+        // begins with the symbol that extends furthest. All keys are unique by the inclusion of
+        // the symbol index.
+        included_symbols.sort_unstable_by_key(|&(_, sym_index, ref def_data)| {
+            (
+                def_data.index,
+                def_data.offset,
+                std::cmp::Reverse(def_data.size),
+                sym_index,
+            )
+        });
+        for (module_index, symbol_index, def_data) in included_symbols {
+            let segment_index = def_data.index as usize;
+            let DataSegmentAnalysis::Ranges {
+                ranges,
+                range_lookup,
+                ..
+            } = &mut per_segment[segment_index]
+            else {
+                // filtered above. Passive and TLS segments are copied to every module.
+                unreachable!(
+                    "data symbol in passive range should not have gotted included in this pass"
+                );
+            };
+            let data_len = u64::from(def_data.size);
+            let data_offset = u64::from(def_data.offset);
+            let data_range = data_offset..data_offset + data_len;
+
+            let in_segment = &input_module.data_segments[segment_index];
+            if data_range.end > wasm_data_len(in_segment) {
+                unreachable!(
+                    "Found data symbol {:?} that extends past the input module's data \
+                    bytes: {data_range:?} not in range for data segment of length {}",
+                    input_module.reloc_info.symbols[symbol_index],
+                    in_segment.data.len()
+                );
+            }
+
+            let segment_align = 1u64 << input_module.reloc_info.segments[segment_index].alignment;
+
+            let mut data_align = segment_align;
+            if data_offset != 0 {
+                // TODO: .isolate_least_significant_one()
+                data_align = data_align.min(1 << data_offset.trailing_zeros());
+            }
+            debug_assert!(data_len != 0, "zero-sized symbols handled previously");
+            data_align = data_align.min(1 << data_len.trailing_zeros());
+
+            let mut has_merged = false;
+            let range_idx = ranges.len();
+            if let Some(back) = ranges.last_mut() {
+                let has_overlap = data_offset < back.input_range.end;
+                if has_overlap {
+                    // we sorted before ingesting, hence the existing range starts earlier
+                    debug_assert!(
+                        back.input_range.start <= data_offset,
+                        "overlapping range goes backwards"
+                    );
+                    let range_offset = data_offset - back.input_range.start;
+                    let range_idx = range_idx - 1; // back of ranges
+
+                    has_merged = true;
+                    // Contained symbols (struct fields or merged string suffixes) cannot be
+                    // stricter aligned than their container. Partial overlaps raise the
+                    // alignment; the range start must remain a multiple of it (checked below).
+                    let contained = data_range.end <= back.input_range.end;
+                    if !contained {
+                        warn!(
+                            "data symbol {symbol_index} partially overlaps the symbols before it in segment {segment_index} ({:?} vs {:?}); the linker is not expected to produce this",
+                            data_range, back.input_range
+                        );
+                        back.input_range.end = data_range.end;
+                        back.data_align = back.data_align.max(data_align);
+                    }
+                    // Track the modules actually needing the range, not the module chosen to
+                    // emit it: the latter may be a superset chunk, which would rule out an exact
+                    // chunk for a later, larger requirement. Record every owner, even one that
+                    // happens to be the module currently chosen: its splits are needed too.
+                    back.needed_by
+                        .also_in(&program_info.output_modules[module_index].0);
+                    range_lookup.insert(symbol_index, (range_idx, range_offset));
+                }
+            }
+            if !has_merged {
+                ranges.push(LateDataRange {
+                    input_range: data_range,
+                    needed_by: program_info.output_modules[module_index].0.clone(),
+                    in_module: module_index,
+                    data_align,
+                    segment_offset: u64::MAX, // filled in later
+                });
+                range_lookup.insert(symbol_index, (range_idx, 0));
+            }
+        }
+        // Derive placement from `needed_by` once all owners are known.
+        for segment in &mut per_segment {
+            if let DataSegmentAnalysis::Ranges { ranges, .. } = segment {
+                for range in ranges {
+                    let placement = placement_module(&range.needed_by);
+                    if placement != range.in_module {
+                        trace!(
+                            "data range {:?} placed in module {placement}",
+                            range.input_range
+                        );
+                    }
+                    range.in_module = placement;
                 }
             }
         }
@@ -492,62 +708,35 @@ impl DataEmitInfo {
                     range_lookup,
                     base_address,
                 } => {
-                    let segment_alignment =
-                        1u64 << input_module.reloc_info.segments[segment_index].alignment;
-
-                    let mut range_emit_order: Vec<_> = (0..ranges.len()).collect();
-                    range_emit_order.sort_by_key(|&range_idx| {
-                        let range = &ranges[range_idx];
-                        (range.in_module, std::cmp::Reverse(range.data_align), range.input_range.start)
-                    });
-                    // reorder symbols per module
-                    let mut per_module_size = HashMap::new();
-                    for &range_idx in &range_emit_order {
-                        let range = &mut ranges[range_idx];
-                        let module_len = per_module_size.entry(range.in_module).or_insert(0);
-                        let data_range = range.input_range.clone();
-                        let data_offset = u64::next_multiple_of(*module_len, range.data_align);
-
-                        // allocate it in that module
-                        range.in_module_offset = data_offset;
-                        *module_len = data_offset + (data_range.end - data_range.start);
-                    }
-
-                    // check that range_lookup completely covers the (non-zero) data segment?
-                    // Otherwise there is non-relocated data, which most likely indicates an error.
-                    // There might be data symbols that are not included/depended upon anywhere though.
-                    // Some gaps will exist, introduced by padding for alignment! This padding should be zeroed.
-                    // So for the moment, don't bother with this sanity analysis.
-
-                    // figure out module offsets
-                    let mut per_module_size = per_module_size.into_iter().collect::<Vec<_>>();
-                    per_module_size.sort_by_key(|&(m, _)| m);
-                    let mut per_output_offset = HashMap::new();
-                    let mut data_offset: u64 = 0;
-                    for &(module, module_size) in &per_module_size {
-                        data_offset = data_offset.next_multiple_of(segment_alignment);
-                        per_output_offset.insert(module, data_offset);
-                        data_offset += module_size;
-                    }
-                    let segment_len = data_offset;
-
-                    let ranges = DataSegmentEmitInfo::Ranges {
-                        ranges,
-                        base_address,
-                        per_output_offset,
-                        range_lookup,
-                        range_emit_order,
-                    };
-                    // If we could move other active segments to different base addresses, this segment getting longer
-                    // would not be a problem. Since we can't guarantee this at this point though, don't risk it.
-                    // Overlapping segments *will* overwrite data!
-                    if segment_len > wasm_data_len(&input_module.data_segments[segment_index]) {
-                        let overlength = segment_len - wasm_data_len(&input_module.data_segments[segment_index]);
-                        trace!("{ranges:?}");
-                        warn!("Overlong segment {segment_index} by {overlength} after relocation, putting it in main module.");
-                        DataSegmentEmitInfo::FromInputOnlyIn(0)
+                    let input_len = wasm_data_len(&input_module.data_segments[segment_index]);
+                    // Partial overlaps must leave the range start aligned. Keep the segment
+                    // whole in main if they do not, or if the relocated layout is overlong:
+                    // other active segments cannot be moved and must not be overwritten.
+                    if let Some(range) = ranges.iter().find(|r| r.input_range.start % r.data_align != 0) {
+                        warn!(
+                            "Data segment {segment_index}: partially overlapping symbols at {:?} need an alignment of {} that their start does not have. Putting it into main.",
+                            range.input_range, range.data_align
+                        );
+                        DataSegmentEmitInfo::FromInputOnlyIn(MAIN_MODULE)
                     } else {
-                        ranges
+                        // check that range_lookup completely covers the (non-zero) data segment?
+                        // Otherwise there is non-relocated data, which most likely indicates an error.
+                        // There might be data symbols that are not included/depended upon anywhere though.
+                        // Some gaps will exist, introduced by padding for alignment! This padding should be zeroed.
+                        // So for the moment, don't bother with this sanity analysis.
+                        let layout = layout_ranges(&mut ranges);
+                        if layout.segment_len > input_len {
+                            trace!("{ranges:?}");
+                            warn!("Overlong segment {segment_index} after relocation, putting it in main module.");
+                            DataSegmentEmitInfo::FromInputOnlyIn(MAIN_MODULE)
+                        } else {
+                            DataSegmentEmitInfo::Ranges {
+                                ranges,
+                                base_address,
+                                range_lookup,
+                                layout,
+                            }
+                        }
                     }
                 }
             })
@@ -567,7 +756,6 @@ impl DataEmitInfo {
         let DataSegmentEmitInfo::Ranges {
             ranges,
             base_address,
-            per_output_offset,
             range_lookup,
             ..
         } = &self.per_segment[segment_idx]
@@ -579,11 +767,7 @@ impl DataEmitInfo {
             return Err(());
         };
         let range = &ranges[range_index];
-        let mut address = *base_address;
-        address += per_output_offset[&range.in_module];
-        address += range.in_module_offset;
-        address += offset_in_range;
-        Ok(Some(address))
+        Ok(Some(base_address + range.segment_offset + offset_in_range))
     }
 }
 
@@ -749,7 +933,7 @@ impl<'a> ModuleEmitState<'a> {
                 continue;
             }
             debug_assert!(
-                output_module_index == 0,
+                output_module_index == MAIN_MODULE,
                 "expected a function import to happen in the main module"
             );
             let import = &emit_state.input_module.imports[func_import.import_id];
@@ -925,7 +1109,7 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn is_main(&self) -> bool {
-        self.output_module_index == 0
+        self.output_module_index == MAIN_MODULE
     }
 
     fn get_relocated_data(&self, range: Range<InputOffset>) -> Result<Vec<u8>> {
@@ -1196,7 +1380,12 @@ impl<'a> ModuleEmitState<'a> {
     }
 
     fn generate_data_count_section(&mut self) {
-        let data_section_count = self.input_module.data_segments.len();
+        let data_section_count = self.input_module.data_segments.len()
+            + self
+                .emit_state
+                .data_relocations
+                .extra_fragments(self.output_module_index)
+                .len();
         let section = wasm_encoder::DataCountSection {
             count: data_section_count
                 .try_into()
@@ -1338,56 +1527,75 @@ impl<'a> ModuleEmitState<'a> {
         self.get_relocated_data(range_start..range_end)
     }
 
+    /// The data of `fragment`, with the relocations inside applied.
+    fn fragment_data(&self, segment_idx: usize, fragment: &Fragment) -> Result<Vec<u8>> {
+        let DataSegmentEmitInfo::Ranges { ranges, layout, .. } =
+            &self.emit_state.data_relocations.per_segment[segment_idx]
+        else {
+            unreachable!("fragments only exist for relocated segments");
+        };
+        let input_range_start = wasm_data_start(&self.input_module.data_segments[segment_idx]);
+        let mut data = vec![];
+        for &range_idx in &layout.emit_order[fragment.ranges.clone()] {
+            let range = &ranges[range_idx];
+            let input_range = (input_range_start + range.input_range.start)
+                ..(input_range_start + range.input_range.end);
+            data.resize((range.segment_offset - fragment.offset) as usize, 0); // pad with zeroes
+            data.extend(self.get_relocated_data(input_range)?);
+        }
+        Ok(data)
+    }
+
     fn generate_data_section(&mut self) -> Result<()> {
         let data_reloc = &self.emit_state.data_relocations;
         let mut section = wasm_encoder::DataSection::new();
+        // `(input segment, address, data)`; the address is `None` to copy the input's offset
+        let mut segments: Vec<(usize, Option<u64>, Vec<u8>)> = vec![];
+        // Every input segment keeps its index, so that indices in the code stay valid.
         for (segment_idx, segment) in data_reloc.per_segment.iter().enumerate() {
             let input_data = &self.input_module.data_segments[segment_idx];
-            let input_range_start = wasm_data_start(input_data);
-
-            let mut data: Vec<u8>;
-            let addr_offset: Option<u64>;
-            match segment {
+            let (addr_offset, data) = match segment {
                 DataSegmentEmitInfo::FromInputInAll => {
-                    addr_offset = None;
-                    data = self.get_relocated_segment_data(input_data)?;
+                    (None, self.get_relocated_segment_data(input_data)?)
                 }
                 DataSegmentEmitInfo::FromInputOnlyIn(module)
                     if *module == self.output_module_index =>
                 {
-                    addr_offset = None;
-                    data = self.get_relocated_segment_data(input_data)?;
+                    (None, self.get_relocated_segment_data(input_data)?)
                 }
                 DataSegmentEmitInfo::FromInputOnlyIn(_) => {
-                    addr_offset = None;
-                    data = vec![]; // no data, but emit the module to not shift data indices
+                    (None, vec![]) // no data, but emit the segment to not shift data indices
                 }
-                DataSegmentEmitInfo::Ranges {
-                    ranges,
-                    range_emit_order,
-                    per_output_offset,
-                    base_address,
-                    ..
-                } => {
-                    if let Some(module_offset) = per_output_offset.get(&self.output_module_index) {
-                        addr_offset = Some(base_address + *module_offset);
-                    } else {
-                        addr_offset = None;
-                    }
-                    data = vec![];
-                    for &range_idx in range_emit_order {
-                        let range = &ranges[range_idx];
-                        if range.in_module != self.output_module_index {
-                            continue;
-                        }
-                        let data_range = &range.input_range;
-                        let input_range = (input_range_start + data_range.start)
-                            ..(input_range_start + data_range.end);
-                        data.resize(range.in_module_offset as usize, 0); // pad with zeroes
-                        data.extend(self.get_relocated_data(input_range)?);
+                DataSegmentEmitInfo::Ranges { base_address, .. } => {
+                    match data_reloc
+                        .fragments(segment_idx, self.output_module_index)
+                        .next()
+                    {
+                        Some(fragment) => (
+                            Some(base_address + fragment.offset),
+                            self.fragment_data(segment_idx, fragment)?,
+                        ),
+                        None => (None, vec![]),
                     }
                 }
-            }
+            };
+            segments.push((segment_idx, addr_offset, data));
+        }
+        // Further fragments are appended, see `DataEmitInfo::extra_fragments`.
+        for (segment_idx, fragment) in data_reloc.extra_fragments(self.output_module_index) {
+            let DataSegmentEmitInfo::Ranges { base_address, .. } =
+                &data_reloc.per_segment[segment_idx]
+            else {
+                unreachable!("fragments only exist for relocated segments");
+            };
+            segments.push((
+                segment_idx,
+                Some(base_address + fragment.offset),
+                self.fragment_data(segment_idx, fragment)?,
+            ));
+        }
+        for (segment_idx, addr_offset, data) in segments {
+            let input_data = &self.input_module.data_segments[segment_idx];
             match input_data.kind {
                 DataKind::Passive => {
                     section.passive(data);
@@ -1488,9 +1696,23 @@ impl<'a> ModuleEmitState<'a> {
         section.memories(&convert_name_hash_map(&self.input_module.names.memories));
         section.globals(&convert_name_hash_map(&self.input_module.names.globals));
         // elements
-        section.data(&convert_name_hash_map(
-            &self.input_module.names.data_segments,
-        ));
+        {
+            // appended fragments are named after their input segment
+            let mut data_names = self.input_module.names.data_segments.clone();
+            let input_count = self.input_module.data_segments.len();
+            for (i, (segment_idx, _)) in self
+                .emit_state
+                .data_relocations
+                .extra_fragments(self.output_module_index)
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(name) = self.input_module.names.data_segments.get(&segment_idx) {
+                    data_names.insert(input_count + i, name);
+                }
+            }
+            section.data(&convert_name_hash_map(&data_names));
+        }
         // tag
         // fields
         // tags

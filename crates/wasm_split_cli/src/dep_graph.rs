@@ -305,6 +305,8 @@ fn iter_data_dependencies<'m>(
                 }) {
                     let _ = overlap_candidates.pop();
                 }
+                // The relocation belongs to the innermost symbol containing its start,
+                // and must lie fully inside it.
                 let &target = emit_iter_err!(overlap_candidates.last().ok_or_else(|| anyhow!(
                     "Invalid relocation entry {entry:?} not overlapping any data symbols"
                 )));
@@ -351,6 +353,10 @@ fn iter_data_dependencies<'m>(
 
         // if we reach here, then the next symbol is contained in all items on the stack
         if let Some(container) = container {
+            // Keep the inner symbol as a candidate: relocations inside it must be attributed to
+            // it, the smallest symbol containing them, and not to its container. Otherwise a
+            // module that only needs the inner symbol would miss the relocation's target.
+            overlap_candidates.push(next_symbol);
             return Some(Ok(DataDependency::Containment {
                 container,
                 inner: next_symbol,

@@ -1,5 +1,12 @@
 ## wasm-split-cli vfuture
 
+- Improve data layout in optimized builds, with less data ending up in the main module and more
+  data in the split modules, in particular when `wasm-ld` deduplicates strings and performs tail
+  merging (for details see #60).
+- Fix relocations inside a data symbol that is contained in another symbol being attributed to
+  the containing symbol. A module that only used the inner symbol could miss the relocation's
+  target. This was hidden by whole segments being kept in the main module.
+
 ## wasm-split-cli v0.2.3
 
 - Fix breakage from wasm-bindgen 0.128, which changes how casts are generated, leading to
