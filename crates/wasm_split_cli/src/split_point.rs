@@ -8,7 +8,7 @@ use crate::tracing_support::perf_span;
 use eyre::{anyhow, bail, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
-use tracing::{trace, warn};
+use tracing::{field, trace, warn};
 use wasmparser::TypeRef;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -21,7 +21,7 @@ pub struct SplitPoint {
 }
 
 pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
-    let perf_span = perf_span!("discover split points");
+    let perf_span = perf_span!("discover split points", split_point_count = field::Empty);
     let _perf_span = perf_span.enter();
 
     macro_rules! process_imports_or_exports {
@@ -98,6 +98,7 @@ pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
     // but we do it anyway for good measure since its cheap
     let mut split_points = split_points;
     split_points.sort_unstable_by_key(|split| split.export);
+    perf_span.record("split_point_count", split_points.len());
     Ok(split_points)
 }
 
@@ -477,8 +478,8 @@ pub fn compute_split_modules(
     dep_graph: &DepGraph,
     split_points: Vec<SplitPoint>,
 ) -> Result<SplitProgramInfo> {
-    let perf_span = perf_span!("compute splits");
-    let _perf_span = perf_span.enter();
+    let split_span = perf_span!("compute splits", module_count = field::Empty);
+    let _perf_span = split_span.enter();
 
     let split_points_by_module = get_split_points_by_module(&split_points);
 
@@ -611,6 +612,7 @@ pub fn compute_split_modules(
     program_info
         .output_modules
         .sort_unstable_by_key(|(identifier, _)| (*identifier).clone());
+    split_span.record("module_count", program_info.output_modules.len());
 
     let perf_span = perf_span!("build reverse lookup");
     let perf_span = perf_span.enter();

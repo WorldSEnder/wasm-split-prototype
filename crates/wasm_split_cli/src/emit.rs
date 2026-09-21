@@ -1892,7 +1892,7 @@ pub fn emit_modules<'info, M>(
         .map(|(output_module_index, (identifier, module))| {
             let emit_span = perf_span!(
                 "emit module",
-                index = output_module_index,
+                module_index = output_module_index,
                 data_size = tracing::field::Empty
             );
             let _emit_span = emit_span.enter();

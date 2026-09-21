@@ -4,6 +4,7 @@ use std::{
 };
 
 use eyre::{anyhow, bail, Result};
+use tracing::field;
 use wasmparser::{FunctionBody, Operator, RelocationEntry};
 
 use crate::{
@@ -64,17 +65,18 @@ pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
     let mut deps = Builder(DepGraph::new(), module);
     let mut fns_with_relocs = HashSet::<InputFuncId>::new();
 
-    let perf_span = perf_span!("function deps from relocs");
-    let perf_span = perf_span.enter();
+    let perf_span = perf_span!("function deps from relocs", func_count = field::Empty);
+    let perf_guard = perf_span.enter();
     for dep_entry in iter_functions_with_relocs(module) {
         let (func_index, entry) = dep_entry?;
         fns_with_relocs.insert(func_index);
         deps.add_reloc_dep(DepNode::Function(func_index), entry)?;
     }
-    perf_span.exit();
+    perf_span.record("func_count", fns_with_relocs.len());
+    perf_guard.exit();
 
-    let perf_span = perf_span!("stub function check");
-    let perf_span = perf_span.enter();
+    let perf_span = perf_span!("stub function check", stub_count = field::Empty);
+    let perf_guard = perf_span.enter();
     // See issue #29 for why we detect stub functions that aren't covered by reloc data
     let mut stub_fns = HashSet::<InputFuncId>::new();
     let imported_fns_len = module.imported_funcs.len();
@@ -103,7 +105,8 @@ pub fn get_dependencies(module: &InputModule) -> Result<Dependencies> {
             );
         }
     }
-    perf_span.exit();
+    perf_span.record("stub_count", stub_fns.len());
+    perf_guard.exit();
 
     let perf_span = perf_span!("data dependencies");
     let perf_span = perf_span.enter();
