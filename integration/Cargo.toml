@@ -9,6 +9,7 @@ members = [
     "optimize_splits",
     "static_mut",
     "undefined_data",
+    "position-independent-code",
 ]
 resolver = "2"
 
