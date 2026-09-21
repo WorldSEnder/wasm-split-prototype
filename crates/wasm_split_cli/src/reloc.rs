@@ -7,15 +7,17 @@ use std::{
 use eyre::{anyhow, bail, ensure, Result};
 use tracing::trace;
 use wasmparser::{
-    CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Export, ExternalKind,
-    KnownCustom, Linking, Payload, RelocAddendKind, RelocationEntry, RelocationType, Segment,
-    SymbolFlags, SymbolInfo,
+    CustomSectionReader, Data, DataKind, DataSectionReader, DefinedDataSymbol, ElementItems,
+    ElementKind, Export, ExternalKind, KnownCustom, Linking, Payload, RelocAddendKind,
+    RelocationEntry, RelocationType, Segment, SymbolFlags, SymbolInfo,
 };
 
 use crate::{
     magic_constants,
-    read::{GlobalId, InputFuncId, InputModule, InputOffset, SectionId, TableId, TagId},
-    util::{find_subrange, shift_range, wasm_reloc_range},
+    read::{
+        DataSegmentId, GlobalId, InputFuncId, InputModule, InputOffset, SectionId, TableId, TagId,
+    },
+    util::{find_subrange, shift_range, wasm_data_start, wasm_reloc_range},
 };
 
 // An offset (index) into the bytes of the input module
@@ -85,6 +87,29 @@ impl<'a> RelocInfoParser<'a> {
             _ => Ok(false),
         }
     }
+    fn visit_segments(&mut self, segments: &DataSectionReader<'_>) -> Result<()> {
+        for segment in segments.clone().into_iter() {
+            let segment = segment?;
+            let segment_input_offset = wasm_data_start(&segment);
+            let base_address = match segment.kind {
+                DataKind::Active { offset_expr, .. } => {
+                    match offset_expr.get_operators_reader().read() {
+                        Ok(wasmparser::Operator::I32Const { value }) => {
+                            u64::try_from(value as i64).ok()
+                        }
+                        Ok(wasmparser::Operator::I64Const { value }) => u64::try_from(value).ok(),
+                        _ => None,
+                    }
+                }
+                DataKind::Passive => None,
+            };
+            self.info.data_segment_addresses.push(base_address);
+            self.info
+                .data_segment_input_offset
+                .push(segment_input_offset);
+        }
+        Ok(())
+    }
     pub fn visit_payload(&mut self, payload: &Payload<'a>) -> Result<bool> {
         let section_index = self.info.relocatable_ranges.len();
         if let Some((_, mut section_range)) = payload.as_section() {
@@ -99,8 +124,9 @@ impl<'a> RelocInfoParser<'a> {
             self.info.relocatable_ranges.push(section_range);
         }
         match payload {
-            Payload::DataSection(_) => {
+            Payload::DataSection(segments) => {
                 self.info.data_section_index = section_index;
+                self.visit_segments(segments)?;
                 Ok(true)
             }
             Payload::CodeSectionStart { .. } => {
@@ -348,6 +374,10 @@ pub struct RelocInfo<'a> {
     // `#i -> #s` if Global #i contains the address of symbol #s
     pub symbol_as_global: HashMap<GlobalId, SymbolIndex>,
     pub split_marker_globals: HashSet<GlobalId>,
+    // The runtime address of active data segments.
+    // Errors are transformed to None.
+    pub data_segment_addresses: Vec<Option<u64>>,
+    pub data_segment_input_offset: Vec<InputOffset>,
 }
 
 impl RelocInfo<'_> {
@@ -440,17 +470,33 @@ impl RelocInfo<'_> {
         (reloc_base, section_relocs[reloc_range].iter())
     }
 
+    // Get an address A such that the address of a byte targeted by a relocation in that segment with offset O
+    // is computed as `A + O`.
+    pub fn get_segment_data_address(&self, segment: DataSegmentId) -> Option<u64> {
+        let virtual_addr = self.data_segment_addresses[segment]?;
+        let data_in_offset = self.data_section_reloc_base();
+        let segment_in_offset = self.data_segment_input_offset[segment];
+        Some(virtual_addr.wrapping_add(data_in_offset.wrapping_sub(segment_in_offset)))
+    }
+
     pub fn get_relocated_data(
         module: &InputModule,
         range: Range<InputOffset>,
         target: &impl RelocTarget,
+        data_address: Option<u64>,
     ) -> Result<Vec<u8>> {
         let this = &module.reloc_info;
         let mut data = Vec::from(&module.raw[range.start as usize..range.end as usize]);
         let (reloc_base, relocs) = this.get_relocations_for_range(&range);
         let reloc_base_to_data_off = range.start - reloc_base;
         for relocation in relocs {
-            this.apply_relocation(target, &mut data, reloc_base_to_data_off, relocation)?;
+            this.apply_relocation(
+                target,
+                &mut data,
+                reloc_base_to_data_off,
+                data_address,
+                relocation,
+            )?;
         }
         Ok(data)
     }
@@ -598,6 +644,7 @@ impl RelocInfo<'_> {
         reloc_target: &T,
         data: &mut [u8],
         reloc_base_to_data_off: u64,
+        rt_base_address: Option<u64>,
         relocation: &RelocationEntry,
     ) -> Result<()> {
         // TODO(MSRV): -1i32.cast_unsigned() since rust 1.87
@@ -623,15 +670,40 @@ impl RelocInfo<'_> {
         let target = &mut data[(relocation_range.start - reloc_base_to_data_off) as usize
             ..(relocation_range.end - reloc_base_to_data_off) as usize];
         let ty = relocation.ty;
+        if matches!(relocation.ty, RelocationType::MemoryAddrLocrelI32) {
+            let data_address = rt_base_address
+                .ok_or_else(|| anyhow!("can't use relocation {ty:?} in this section"))?;
+            let reloc_address = data_address.wrapping_add(relocation_range.start);
+            let details = self.expand_relocation(relocation).unwrap();
+            // TODO: we would have to resolve symbol addresses in other modules.
+            // Moreover, llvm can often decide to not even emit these relocations.
+            //
+            // .section    .data,"",@
+            // .p2align 3
+            // .weak fizz    ; should also be possible if fizz is defined. Support is even worse
+            // .extern fizz
+            // .globl check
+            // check:
+            // .int32 fizz - check
+            // .size check, 4
+            bail!("Location relative relocation not supported: {relocation:?} {details:?} (resolved to address {reloc_address}).");
+        }
         let Some(value) = relocated else {
             return Ok(());
         };
+        let addend = relocation.addend;
         debug_assert!(
-            relocation.addend == 0 || ty.addend_kind() != RelocAddendKind::None,
-            "relocation {relocation:?} without addend should have addend == 0, not {}",
-            relocation.addend,
+            addend == 0 || ty.addend_kind() != RelocAddendKind::None,
+            "relocation {relocation:?} without addend should have addend == 0, not {addend}",
         );
-        let () = encode_for_ty(ty, value, relocation.addend, target, T::SENTINEL_UNDEF)?;
+        let resolved = if T::SENTINEL_UNDEF && value == SENTINEL_UNDEF {
+            SENTINEL_UNDEF
+        } else {
+            value
+                .checked_add_signed(addend)
+                .ok_or_else(|| anyhow!("reloc {ty:?} <{value:x}{addend:+}> overflows"))?
+        };
+        let () = encode_for_ty(ty, resolved, target, T::SENTINEL_UNDEF)?;
         Ok(())
     }
 }
@@ -736,20 +808,11 @@ fn encode_u64(value: u64, buf: &mut [u8; 8]) {
 
 fn encode_for_ty(
     ty: RelocationType,
-    value: u64,
-    addend: i64,
+    resolved: u64,
     target: &mut [u8],
     allow_undef: bool,
 ) -> Result<()> {
     use RelocationType::*;
-    let resolved = if allow_undef && value == SENTINEL_UNDEF {
-        Some(SENTINEL_UNDEF)
-    } else {
-        value.checked_add_signed(addend)
-    };
-    let Some(resolved) = resolved else {
-        bail!("reloc {ty:?} <{value:x}{addend:+}> overflows");
-    };
     macro_rules! try_into_value {
         ($resolved:ident as $t:ty, $msg:literal) => {
             match $resolved {

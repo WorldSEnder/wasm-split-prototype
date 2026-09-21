@@ -427,24 +427,18 @@ impl DataEmitInfo {
             .iter()
             .enumerate()
             .map(|(segment_idx, segment)| match &segment.kind {
-                DataKind::Active { offset_expr, .. } => {
-                    match offset_expr.get_operators_reader().read() {
-                        Ok(wasmparser::Operator::I32Const { value }) => Some(value as u32 as u64),
-                        Ok(wasmparser::Operator::I64Const { value }) => Some(value as u64),
-                        _ => {
-                            active_unknown_address.get_or_insert(segment_idx);
-                            None
-                        }
-                    }
-                    .map(|base| base..base + wasm_data_len(segment))
+                DataKind::Active { .. } => {
+                    let Some(base) = input_module.reloc_info.data_segment_addresses[segment_idx]
+                    else {
+                        active_unknown_address.get_or_insert(segment_idx);
+                        return None;
+                    };
+                    Some(base..base + wasm_data_len(segment))
                 }
                 DataKind::Passive => None,
             })
             .collect();
         let overlaps_other_segment = |segment_idx: usize| -> bool {
-            if active_unknown_address.is_some() {
-                return true;
-            }
             let Some(extent) = &segment_extents[segment_idx] else {
                 return false;
             };
@@ -458,6 +452,10 @@ impl DataEmitInfo {
                         })
                 })
         };
+        if let Some(&unknown_active) = active_unknown_address.as_ref() {
+            warn!("Found an active data segment {unknown_active} whose base address can not be determined. \
+                Putting all active memory segments in main.");
+        }
         let mut per_segment = input_module
             .data_segments
             .iter()
@@ -467,40 +465,40 @@ impl DataEmitInfo {
                 // We duplicate all passive segments (there shouldn't be any except in multi-threading?)
                 // because we don't have relocation to identify which function uses which passive data
                 // for initialization. Hence we try to preserve indices as best as possible.
-                DataKind::Passive => Ok(DataSegmentAnalysis::FromInputInAll),
+                DataKind::Passive => DataSegmentAnalysis::FromInputInAll,
                 DataKind::Active { offset_expr, .. } => {
                     let segment_info = &input_module.reloc_info.segments[segment_idx];
                     if segment_info.flags.contains(SegmentFlags::TLS) {
-                        return Ok(DataSegmentAnalysis::FromInputInAll);
+                        return DataSegmentAnalysis::FromInputInAll;
                     }
-                    let address = match offset_expr.get_operators_reader().read().unwrap() {
-                        wasmparser::Operator::I32Const { value } => u64::try_from(value).map_err(|_| i64::from(value)),
-                        wasmparser::Operator::I64Const { value } => u64::try_from(value).map_err(|_| value),
-                        op => {
-                            warn!("Non-constant operator {op:?} found to specify a memory's base address. Putting it into main.");
-                            return Ok(DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE));
-                        }
+                    let Some(extent) = &segment_extents[segment_idx] else {
+                        let invalid_value = match offset_expr.get_operators_reader().read().unwrap() {
+                            wasmparser::Operator::I32Const { value } => i64::from(value),
+                            wasmparser::Operator::I64Const { value } => value,
+                            op => {
+                                warn!("Non-constant operator {op:?} found to specify a segment #{segment_idx}'s base address.");
+                                return DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE);
+                            }
+                        };
+                        warn!("Invalid base address ({invalid_value}) found as segment #{segment_idx}'s base address");
+                        return DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE);
                     };
-                    let address = match address {
-                        Ok(addr) => addr,
-                        Err(value) => { bail!("Invalid base address found: {value}"); },
-                    };
+                    if active_unknown_address.is_some() {
+                        return DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE);
+                    }
                     if overlaps_other_segment(segment_idx) {
-                        if let Some(other) = active_unknown_address {
-                            warn!("Data segment {segment_idx} may overlap data segment {other} whose base address is not a constant. Putting it into main.");
-                        } else {
-                            warn!("Data segment {segment_idx} overlaps another data segment in memory. Putting it into main.");
-                        }
-                        return Ok(DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE));
+                        warn!("Data segment {segment_idx} overlaps another data segment in memory. Putting it into main.");
+                        return DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE);
                     }
-                    Ok(DataSegmentAnalysis::Ranges {
+                    let address = extent.start;
+                    DataSegmentAnalysis::Ranges {
                         ranges: vec![],
                         range_lookup: HashMap::new(),
                         base_address: address,
-                    })
+                    }
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Vec<_>>();
 
         // Now go through the data symbols of all output modules.
         //
@@ -1112,8 +1110,12 @@ impl<'a> ModuleEmitState<'a> {
         self.output_module_index == MAIN_MODULE
     }
 
-    fn get_relocated_data(&self, range: Range<InputOffset>) -> Result<Vec<u8>> {
-        RelocInfo::get_relocated_data(self.input_module, range, self)
+    fn get_relocated_data(
+        &self,
+        range: Range<InputOffset>,
+        data_address: Option<u64>,
+    ) -> Result<Vec<u8>> {
+        RelocInfo::get_relocated_data(self.input_module, range, self, data_address)
     }
 
     fn generate(&mut self) -> Result<()> {
@@ -1460,7 +1462,7 @@ impl<'a> ModuleEmitState<'a> {
                     let input_func = &self.input_module.defined_funcs
                         [input_func_id - self.input_module.imported_funcs.len()];
                     let relocated_def = self
-                        .get_relocated_data(input_func.body.range())
+                        .get_relocated_data(input_func.body.range(), None)
                         .with_context(|| {
                             format!(
                                 "when emitted definition of func[{}] in module {}",
@@ -1520,11 +1522,15 @@ impl<'a> ModuleEmitState<'a> {
         Ok(())
     }
 
-    fn get_relocated_segment_data(&self, data: &Data<'_>) -> Result<Vec<u8>> {
+    fn get_relocated_segment_data(&self, segment_idx: usize, data: &Data<'_>) -> Result<Vec<u8>> {
         // Note: `data.range` includes the segment header.
         let range_end = data.range.end;
         let range_start = wasm_data_start(data);
-        self.get_relocated_data(range_start..range_end)
+        let segment_address = self
+            .input_module
+            .reloc_info
+            .get_segment_data_address(segment_idx);
+        self.get_relocated_data(range_start..range_end, segment_address)
     }
 
     /// The data of `fragment`, with the relocations inside applied.
@@ -1534,6 +1540,10 @@ impl<'a> ModuleEmitState<'a> {
         else {
             unreachable!("fragments only exist for relocated segments");
         };
+        let segment_address = self
+            .input_module
+            .reloc_info
+            .get_segment_data_address(segment_idx);
         let input_range_start = wasm_data_start(&self.input_module.data_segments[segment_idx]);
         let mut data = vec![];
         for &range_idx in &layout.emit_order[fragment.ranges.clone()] {
@@ -1541,7 +1551,7 @@ impl<'a> ModuleEmitState<'a> {
             let input_range = (input_range_start + range.input_range.start)
                 ..(input_range_start + range.input_range.end);
             data.resize((range.segment_offset - fragment.offset) as usize, 0); // pad with zeroes
-            data.extend(self.get_relocated_data(input_range)?);
+            data.extend(self.get_relocated_data(input_range, segment_address)?);
         }
         Ok(data)
     }
@@ -1555,13 +1565,17 @@ impl<'a> ModuleEmitState<'a> {
         for (segment_idx, segment) in data_reloc.per_segment.iter().enumerate() {
             let input_data = &self.input_module.data_segments[segment_idx];
             let (addr_offset, data) = match segment {
-                DataSegmentEmitInfo::FromInputInAll => {
-                    (None, self.get_relocated_segment_data(input_data)?)
-                }
+                DataSegmentEmitInfo::FromInputInAll => (
+                    None,
+                    self.get_relocated_segment_data(segment_idx, input_data)?,
+                ),
                 DataSegmentEmitInfo::FromInputOnlyIn(module)
                     if *module == self.output_module_index =>
                 {
-                    (None, self.get_relocated_segment_data(input_data)?)
+                    (
+                        None,
+                        self.get_relocated_segment_data(segment_idx, input_data)?,
+                    )
                 }
                 DataSegmentEmitInfo::FromInputOnlyIn(_) => {
                     (None, vec![]) // no data, but emit the segment to not shift data indices
