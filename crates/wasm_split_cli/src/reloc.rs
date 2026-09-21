@@ -694,24 +694,6 @@ impl RelocInfo<'_> {
         let target = &mut data[(relocation_range.start - reloc_base_to_data_off) as usize
             ..(relocation_range.end - reloc_base_to_data_off) as usize];
         let ty = relocation.ty;
-        if matches!(relocation.ty, RelocationType::MemoryAddrLocrelI32) {
-            let data_address = rt_base_address
-                .ok_or_else(|| anyhow!("can't use relocation {ty:?} in this section"))?;
-            let reloc_address = data_address.wrapping_add(relocation_range.start);
-            let details = self.expand_relocation(relocation).unwrap();
-            // TODO: we would have to resolve symbol addresses in other modules.
-            // Moreover, llvm can often decide to not even emit these relocations.
-            //
-            // .section    .data,"",@
-            // .p2align 3
-            // .weak fizz    ; should also be possible if fizz is defined. Support is even worse
-            // .extern fizz
-            // .globl check
-            // check:
-            // .int32 fizz - check
-            // .size check, 4
-            bail!("Location relative relocation not supported: {relocation:?} {details:?} (resolved to address {reloc_address}).");
-        }
         let Some(value) = relocated else {
             return Ok(());
         };
@@ -723,11 +705,20 @@ impl RelocInfo<'_> {
         let resolved = if T::SENTINEL_UNDEF && value == SENTINEL_UNDEF {
             SENTINEL_UNDEF
         } else {
-            value
-                .checked_add_signed(addend)
-                .ok_or_else(|| anyhow!("reloc {ty:?} <{value:x}{addend:+}> overflows"))?
+            if matches!(relocation.ty, RelocationType::MemoryAddrLocrelI32) {
+                let data_address = rt_base_address
+                    .ok_or_else(|| anyhow!("can't use relocation {ty:?} in this section"))?;
+                let reloc_address = data_address.wrapping_add(relocation_range.start);
+                value
+                    .wrapping_sub(reloc_address)
+                    .wrapping_add_signed(addend)
+            } else {
+                value
+                    .checked_add_signed(addend)
+                    .ok_or_else(|| anyhow!("reloc {ty:?} <{value:x}{addend:+}> overflows"))?
+            }
         };
-        let () = encode_for_ty(ty, resolved, target, T::SENTINEL_UNDEF)?;
+        let () = encode_for_ty(ty, resolved, target, T::SENTINEL_UNDEF, SENTINEL_UNDEF)?;
         Ok(())
     }
 }
@@ -795,6 +786,7 @@ fn encode_leb128_u32_5byte(mut value: u32, buf: &mut [u8; 5]) {
 fn encode_leb128_i32_5byte(mut value: i32, buf: &mut [u8; 5]) {
     for b in &mut buf[0..5] {
         *b = (value as u8) & 0x7f;
+        // sign extending shift
         value >>= 7;
     }
     for b in &mut buf[0..4] {
@@ -826,8 +818,16 @@ fn encode_u32(value: u32, buf: &mut [u8; 4]) {
     *buf = value.to_le_bytes();
 }
 
+fn encode_i32(value: i32, buf: &mut [u8; 4]) {
+    encode_u32(value as u32, buf);
+}
+
 fn encode_u64(value: u64, buf: &mut [u8; 8]) {
     *buf = value.to_le_bytes();
+}
+
+fn encode_i64(value: i64, buf: &mut [u8; 8]) {
+    encode_u64(value as u64, buf);
 }
 
 fn encode_for_ty(
@@ -835,42 +835,79 @@ fn encode_for_ty(
     resolved: u64,
     target: &mut [u8],
     allow_undef: bool,
+    tombstone: u64,
 ) -> Result<()> {
     use RelocationType::*;
+    let eval_tombstone = || match ty {
+        TableIndexI32 | TableIndexI64 | TableIndexSleb | TableIndexSleb64 | TableIndexRelSleb
+        | TableIndexRelSleb64 => 0,
+        MemoryAddrI32 | MemoryAddrI64 | MemoryAddrLeb | MemoryAddrLeb64 | MemoryAddrRelSleb
+        | MemoryAddrRelSleb64 | MemoryAddrSleb | MemoryAddrSleb64 | MemoryAddrLocrelI32
+        | MemoryAddrTlsSleb | MemoryAddrTlsSleb64 => 0,
+        TypeIndexLeb | EventIndexLeb | GlobalIndexI32 | GlobalIndexLeb | TableNumberLeb => {
+            tombstone
+        }
+        FunctionIndexI32 | FunctionIndexLeb => 0,
+        FunctionOffsetI32 | FunctionOffsetI64 | SectionOffsetI32 => tombstone,
+    };
     macro_rules! try_into_value {
-        ($resolved:ident as $t:ty, $msg:literal) => {
+        ([$resolved:ident as $t:ty, into $e:ty, $msg:literal]) => {
             match $resolved {
-                SENTINEL_UNDEF if allow_undef => -1isize as $t,
+                resolved if allow_undef && resolved == SENTINEL_UNDEF => eval_tombstone() as $e,
                 #[allow(irrefutable_let_patterns)]
-                resolved if let Ok(resolved) = resolved.try_into() => resolved,
+                resolved if let Ok(resolved) = (resolved as $t).try_into() => resolved,
                 resolved => {
-                    bail!("{}: {resolved:x}", $msg);
+                    bail!("{}: {:x}", $msg, resolved as $t);
                 }
             }
         };
+        ($resolved:ident as i32, $msg:literal) => { try_into_value!([$resolved as i64, into i32, $msg]) };
+        ($resolved:ident as u32, $msg:literal) => { try_into_value!([$resolved as u64, into u32, $msg]) };
+        ($resolved:ident as i64, $msg:literal) => { try_into_value!([$resolved as i64, into i64, $msg]) };
+        ($resolved:ident as u64, $msg:literal) => { try_into_value!([$resolved as u64, into u64, $msg]) };
     }
+    // Some relocations are specified as "signed" but can only produce unsigned values.
+    // Careful, since the tombstone is also a valid value and can sometimes be negative.
+    // The encoding usually differs by sign extension.
     match ty {
-        TableIndexI32 | MemoryAddrI32 | FunctionOffsetI32 | SectionOffsetI32 | GlobalIndexI32
-        | FunctionIndexI32 | MemoryAddrLocrelI32 => {
+        MemoryAddrLocrelI32 | FunctionOffsetI32 | SectionOffsetI32 => {
+            let resolved = try_into_value!(resolved as i32, "invalid value for I32 relocation");
+            encode_i32(resolved, target.try_into().unwrap());
+            Ok(())
+        }
+        TableIndexI32 | MemoryAddrI32 | GlobalIndexI32 | FunctionIndexI32 => {
             let resolved = try_into_value!(resolved as u32, "invalid value for I32 relocation");
             encode_u32(resolved, target.try_into().unwrap());
             Ok(())
         }
-        FunctionIndexLeb | MemoryAddrLeb | TypeIndexLeb | GlobalIndexLeb | EventIndexLeb
-        | TableNumberLeb => {
+        FunctionIndexLeb | MemoryAddrLeb => {
             let resolved = try_into_value!(resolved as u32, "invalid value for leb relocation");
             encode_leb128_u32_5byte(resolved, target.try_into().unwrap());
             Ok(())
         }
-        TableIndexSleb | MemoryAddrSleb | MemoryAddrRelSleb | TableIndexRelSleb
-        | MemoryAddrTlsSleb => {
+        TypeIndexLeb | GlobalIndexLeb | EventIndexLeb | TableNumberLeb => {
+            let resolved = try_into_value!(resolved as i32, "invalid value for leb relocation");
+            encode_leb128_i32_5byte(resolved, target.try_into().unwrap());
+            Ok(())
+        }
+        TableIndexSleb | MemoryAddrSleb | TableIndexRelSleb | MemoryAddrTlsSleb => {
+            let resolved = try_into_value!(resolved as u32, "invalid value for sleb relocation");
+            encode_leb128_u32_5byte(resolved, target.try_into().unwrap());
+            Ok(())
+        }
+        MemoryAddrRelSleb => {
             let resolved = try_into_value!(resolved as i32, "invalid value for sleb relocation");
             encode_leb128_i32_5byte(resolved, target.try_into().unwrap());
             Ok(())
         }
-        FunctionOffsetI64 | MemoryAddrI64 | TableIndexI64 => {
+        MemoryAddrI64 | TableIndexI64 => {
             let resolved = try_into_value!(resolved as u64, "invalid value for I64 relocation");
             encode_u64(resolved, target.try_into().unwrap());
+            Ok(())
+        }
+        FunctionOffsetI64 => {
+            let resolved = try_into_value!(resolved as i64, "invalid value for I64 relocation");
+            encode_i64(resolved, target.try_into().unwrap());
             Ok(())
         }
         MemoryAddrLeb64 => {
@@ -878,8 +915,12 @@ fn encode_for_ty(
             encode_leb128_u64_10byte(resolved, target.try_into().unwrap());
             Ok(())
         }
-        MemoryAddrRelSleb64 | TableIndexSleb64 | TableIndexRelSleb64 | MemoryAddrTlsSleb64
-        | MemoryAddrSleb64 => {
+        TableIndexSleb64 | MemoryAddrTlsSleb64 | MemoryAddrSleb64 => {
+            let resolved = try_into_value!(resolved as u64, "invalid value for sleb64 relocation");
+            encode_leb128_u64_10byte(resolved, target.try_into().unwrap());
+            Ok(())
+        }
+        MemoryAddrRelSleb64 | TableIndexRelSleb64 => {
             let resolved = try_into_value!(resolved as i64, "invalid value for sleb64 relocation");
             encode_leb128_i64_10byte(resolved, target.try_into().unwrap());
             Ok(())

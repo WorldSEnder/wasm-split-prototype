@@ -1553,6 +1553,7 @@ impl<'a> ModuleEmitState<'a> {
         // Note: `data.range` includes the segment header.
         let range_end = data.range.end;
         let range_start = wasm_data_start(data);
+        // unchanged from the input in this case
         let segment_address = self
             .input_module
             .reloc_info
@@ -1578,7 +1579,11 @@ impl<'a> ModuleEmitState<'a> {
             let input_range = (input_range_start + range.input_range.start)
                 ..(input_range_start + range.input_range.end);
             data.resize((range.segment_offset - fragment.offset) as usize, 0); // pad with zeroes
-            data.extend(self.get_relocated_data(input_range, segment_address)?);
+            let adjusted_address = segment_address.map(|addr| {
+                addr.wrapping_add(range.segment_offset)
+                    .wrapping_sub(range.input_range.start)
+            });
+            data.extend(self.get_relocated_data(input_range, adjusted_address)?);
         }
         Ok(data)
     }
