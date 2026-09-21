@@ -5,7 +5,7 @@ use std::{
 };
 
 use eyre::{anyhow, bail, ensure, Result};
-use tracing::trace;
+use tracing::{field, trace};
 use wasmparser::{
     CustomSectionReader, Data, DataKind, DataSectionReader, DefinedDataSymbol, ElementItems,
     ElementKind, Export, ExternalKind, KnownCustom, Linking, Payload, RelocAddendKind,
@@ -17,6 +17,7 @@ use crate::{
     read::{
         DataSegmentId, GlobalId, InputFuncId, InputModule, InputOffset, SectionId, TableId, TagId,
     },
+    tracing_support::perf_span,
     util::{find_subrange, shift_range, wasm_data_start, wasm_reloc_range},
 };
 
@@ -34,13 +35,21 @@ pub struct RelocInfoParser<'a> {
 
 impl<'a> RelocInfoParser<'a> {
     fn visit_linking(&mut self, subsection: Linking<'a>) -> Result<()> {
+        let perf_span = perf_span!(
+            "visit linking section",
+            kind = field::Empty,
+            symbol_count = field::Empty
+        );
+        let _perf_span = perf_span.enter();
         match subsection {
             Linking::SegmentInfo(segments) => {
+                perf_span.record("kind", "segment_info");
                 ensure!(self.info.segments.is_empty(), "duplicate segments info");
                 self.info.segments = segments.into_iter().collect::<Result<_, _>>()?;
                 return Ok(());
             }
             Linking::SymbolTable(map) => {
+                perf_span.record("kind", "symbol_table");
                 ensure!(self.info.symbols.is_empty(), "duplicate symbol table");
                 self.info.symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
                 for sym in &self.info.symbols {
@@ -56,6 +65,7 @@ impl<'a> RelocInfoParser<'a> {
                         _ => {}
                     }
                 }
+                perf_span.record("symbol_count", self.info.symbols.len());
             }
             _ => {}
         }
@@ -71,6 +81,12 @@ impl<'a> RelocInfoParser<'a> {
                 Ok(true)
             }
             KnownCustom::Reloc(reader) => {
+                let perf_span = perf_span!(
+                    "visit reloc section",
+                    index = reader.section_index(),
+                    reloc_count = field::Empty
+                );
+                let _perf_span = perf_span.enter();
                 let mut reloc_entries = reader
                     .entries()
                     .into_iter()
@@ -79,6 +95,7 @@ impl<'a> RelocInfoParser<'a> {
                 // We *might* be fine with assuming that the entries are already sorted, but a single pass to correct this
                 // doesn't cost a lot of performance.
                 reloc_entries.sort_unstable_by_key(|entry| entry.offset);
+                perf_span.record("reloc_count", reloc_entries.len());
                 self.info
                     .relocs
                     .insert(reader.section_index() as SectionIndex, reloc_entries);
@@ -161,6 +178,8 @@ fn get_indirect_functions(
     iftable: TableId,
     module: &InputModule,
 ) -> Result<()> {
+    let perf_span = perf_span!("collect indirect functions");
+    let _perf_span = perf_span.enter();
     let mut input_indirect_funcs = HashSet::new();
     for elems in &module.elements {
         let ElementKind::Active {
@@ -230,6 +249,8 @@ pub struct DataSymbol {
 }
 
 fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Vec<DataSymbol>> {
+    let perf_span = perf_span!("get data symbols", symbol_count = field::Empty);
+    let _perf_span = perf_span.enter();
     let mut data_symbols = Vec::new();
     for (symbol_index, info) in symbols.iter().enumerate() {
         let SymbolInfo::Data {
@@ -261,10 +282,13 @@ fn get_data_symbols(data_segments: &[Data], symbols: &[SymbolInfo]) -> Result<Ve
     }
     // We assume that these are sorted by range start later on
     data_symbols.sort_unstable_by_key(|symbol| symbol.range.start);
+    perf_span.record("symbol_count", data_symbols.len());
     Ok(data_symbols)
 }
 
 fn reconstruct_global_symbols(reloc_info: &mut RelocInfo<'_>, module: &InputModule) -> Result<()> {
+    let perf_span = perf_span!("reconstruct global symbols");
+    let _perf_span = perf_span.enter();
     let symbol_as_global = &mut reloc_info.symbol_as_global;
     debug_assert!(
         symbol_as_global.is_empty(),

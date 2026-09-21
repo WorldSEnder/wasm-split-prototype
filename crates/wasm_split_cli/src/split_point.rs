@@ -4,10 +4,11 @@ use std::hash::{DefaultHasher, Hasher};
 use crate::dep_graph::{DepGraph, DepNode};
 use crate::graph_utils::tarjan_scc::{SccEvent, SccId, TarjanSccResult};
 use crate::read::{ExportId, ImportId, InputFuncId, InputModule};
+use crate::tracing_support::perf_span;
 use eyre::{anyhow, bail, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
-use tracing::{trace, warn};
+use tracing::{field, trace, warn};
 use wasmparser::TypeRef;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -20,6 +21,9 @@ pub struct SplitPoint {
 }
 
 pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
+    let perf_span = perf_span!("discover split points", split_point_count = field::Empty);
+    let _perf_span = perf_span.enter();
+
     macro_rules! process_imports_or_exports {
         ($pattern:expr, $map:ident, $member:ident, $id_ty:ty) => {
             let mut $map = HashMap::<(String, String), $id_ty>::new();
@@ -94,6 +98,7 @@ pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
     // but we do it anyway for good measure since its cheap
     let mut split_points = split_points;
     split_points.sort_unstable_by_key(|split| split.export);
+    perf_span.record("split_point_count", split_points.len());
     Ok(split_points)
 }
 
@@ -473,6 +478,9 @@ pub fn compute_split_modules(
     dep_graph: &DepGraph,
     split_points: Vec<SplitPoint>,
 ) -> Result<SplitProgramInfo> {
+    let split_span = perf_span!("compute splits", module_count = field::Empty);
+    let _perf_span = split_span.enter();
+
     let split_points_by_module = get_split_points_by_module(&split_points);
 
     trace!("split_points={split_points:?}");
@@ -492,10 +500,15 @@ pub fn compute_split_modules(
     // Determine reachable symbols (excluding main module symbols) for each
     // split module. Symbols may be reachable from more than one split module;
     // these symbols will be moved to a separate module.
+    let perf_span = perf_span!("explore module", module = "<main>");
+    let perf_span = perf_span.enter();
     let main_roots = get_main_module_roots(module, &split_points);
     graph_analysis.explore(main_roots, SplitModuleIdentifier::Main);
+    perf_span.exit();
 
     for (module_name, entry_points) in &split_points_by_module {
+        let perf_span = perf_span!("explore module", module = module_name);
+        let _perf_span = perf_span.enter();
         let roots = get_split_roots(entry_points);
         graph_analysis.explore(roots, SplitModuleIdentifier::Split(module_name.clone()));
     }
@@ -503,6 +516,8 @@ pub fn compute_split_modules(
     let mut program_info = SplitProgramInfo::default();
     // We "paint" each dependency with the modules it must be loaded in, then put them into that module
     // accordingly.
+    let perf_span = perf_span!("paint dep nodes");
+    let perf_span = perf_span.enter();
     let mut painter = graph_analysis.into_painter();
     let mut split_module_contents = HashMap::<SplitModuleIdentifier, OutputModuleInfo>::new();
     while let Some((node, color)) = painter.next() {
@@ -525,9 +540,12 @@ pub fn compute_split_modules(
             program_info.needs_shim_in_main.insert(func_id);
         }
     }
+    perf_span.exit();
 
     // Now, check for each module which of its dependencies it needs to import from some other module.
-    for out_module in split_module_contents.values_mut() {
+    for (name, out_module) in split_module_contents.iter_mut() {
+        let perf_span = perf_span!("discover shared deps", module = ?name);
+        let _perf_span = perf_span.enter();
         let needed_symbols = out_module
             .included_symbols
             .iter()
@@ -594,7 +612,10 @@ pub fn compute_split_modules(
     program_info
         .output_modules
         .sort_unstable_by_key(|(identifier, _)| (*identifier).clone());
+    split_span.record("module_count", program_info.output_modules.len());
 
+    let perf_span = perf_span!("build reverse lookup");
+    let perf_span = perf_span.enter();
     for (output_index, (_, info)) in program_info.output_modules.iter().enumerate() {
         for &symbol in info.included_symbols.iter() {
             program_info
@@ -602,14 +623,18 @@ pub fn compute_split_modules(
                 .insert(symbol, output_index);
         }
     }
+    perf_span.exit();
 
     // This exact implementation can differ between different compilations of the CLI, specifically
     // between rust versions. That is fine and intended.
+    let perf_span = perf_span!("canary fingerprint");
+    let perf_span = perf_span.enter();
     let mut hasher = DefaultHasher::new();
     hasher.write(env!("CARGO_PKG_VERSION").as_bytes()); // TODO: hasher.write_str(_) once that's stabilized
     hasher.write(module.raw);
     // once options impact the output module, these should be hashed too
     program_info.canary_export_name = format!("__canary_{:x}", hasher.finish());
+    perf_span.exit();
 
     Ok(program_info)
 }
