@@ -89,7 +89,8 @@ fn write_relocate_dwarf_section<'a, S: Section<DwarfReader<'a>>>(
         return Ok(vec![]);
     }
     let target = DwarfRelocTarget { module };
-    let reloc_data = RelocInfo::get_relocated_data(module.input_module, input_range, &target)?;
+    let reloc_data =
+        RelocInfo::get_relocated_data(module.input_module, input_range, &target, None)?;
     module.output_module.section(&CustomSection {
         name: S::section_name().into(),
         data: (&reloc_data).into(),

@@ -1110,8 +1110,12 @@ impl<'a> ModuleEmitState<'a> {
         self.output_module_index == MAIN_MODULE
     }
 
-    fn get_relocated_data(&self, range: Range<InputOffset>) -> Result<Vec<u8>> {
-        RelocInfo::get_relocated_data(self.input_module, range, self)
+    fn get_relocated_data(
+        &self,
+        range: Range<InputOffset>,
+        data_address: Option<u64>,
+    ) -> Result<Vec<u8>> {
+        RelocInfo::get_relocated_data(self.input_module, range, self, data_address)
     }
 
     fn generate(&mut self) -> Result<()> {
@@ -1458,7 +1462,7 @@ impl<'a> ModuleEmitState<'a> {
                     let input_func = &self.input_module.defined_funcs
                         [input_func_id - self.input_module.imported_funcs.len()];
                     let relocated_def = self
-                        .get_relocated_data(input_func.body.range())
+                        .get_relocated_data(input_func.body.range(), None)
                         .with_context(|| {
                             format!(
                                 "when emitted definition of func[{}] in module {}",
@@ -1518,11 +1522,15 @@ impl<'a> ModuleEmitState<'a> {
         Ok(())
     }
 
-    fn get_relocated_segment_data(&self, data: &Data<'_>) -> Result<Vec<u8>> {
+    fn get_relocated_segment_data(&self, segment_idx: usize, data: &Data<'_>) -> Result<Vec<u8>> {
         // Note: `data.range` includes the segment header.
         let range_end = data.range.end;
         let range_start = wasm_data_start(data);
-        self.get_relocated_data(range_start..range_end)
+        let segment_address = self
+            .input_module
+            .reloc_info
+            .get_segment_data_address(segment_idx);
+        self.get_relocated_data(range_start..range_end, segment_address)
     }
 
     /// The data of `fragment`, with the relocations inside applied.
@@ -1532,6 +1540,10 @@ impl<'a> ModuleEmitState<'a> {
         else {
             unreachable!("fragments only exist for relocated segments");
         };
+        let segment_address = self
+            .input_module
+            .reloc_info
+            .get_segment_data_address(segment_idx);
         let input_range_start = wasm_data_start(&self.input_module.data_segments[segment_idx]);
         let mut data = vec![];
         for &range_idx in &layout.emit_order[fragment.ranges.clone()] {
@@ -1539,7 +1551,7 @@ impl<'a> ModuleEmitState<'a> {
             let input_range = (input_range_start + range.input_range.start)
                 ..(input_range_start + range.input_range.end);
             data.resize((range.segment_offset - fragment.offset) as usize, 0); // pad with zeroes
-            data.extend(self.get_relocated_data(input_range)?);
+            data.extend(self.get_relocated_data(input_range, segment_address)?);
         }
         Ok(data)
     }
@@ -1553,13 +1565,17 @@ impl<'a> ModuleEmitState<'a> {
         for (segment_idx, segment) in data_reloc.per_segment.iter().enumerate() {
             let input_data = &self.input_module.data_segments[segment_idx];
             let (addr_offset, data) = match segment {
-                DataSegmentEmitInfo::FromInputInAll => {
-                    (None, self.get_relocated_segment_data(input_data)?)
-                }
+                DataSegmentEmitInfo::FromInputInAll => (
+                    None,
+                    self.get_relocated_segment_data(segment_idx, input_data)?,
+                ),
                 DataSegmentEmitInfo::FromInputOnlyIn(module)
                     if *module == self.output_module_index =>
                 {
-                    (None, self.get_relocated_segment_data(input_data)?)
+                    (
+                        None,
+                        self.get_relocated_segment_data(segment_idx, input_data)?,
+                    )
                 }
                 DataSegmentEmitInfo::FromInputOnlyIn(_) => {
                     (None, vec![]) // no data, but emit the segment to not shift data indices
