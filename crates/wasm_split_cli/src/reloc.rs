@@ -7,9 +7,9 @@ use std::{
 use eyre::{anyhow, bail, ensure, Result};
 use tracing::trace;
 use wasmparser::{
-    CustomSectionReader, Data, DefinedDataSymbol, ElementItems, ElementKind, Export, ExternalKind,
-    KnownCustom, Linking, Payload, RelocAddendKind, RelocationEntry, RelocationType, Segment,
-    SymbolFlags, SymbolInfo,
+    CustomSectionReader, Data, DataKind, DataSectionReader, DefinedDataSymbol, ElementItems,
+    ElementKind, Export, ExternalKind, KnownCustom, Linking, Payload, RelocAddendKind,
+    RelocationEntry, RelocationType, Segment, SymbolFlags, SymbolInfo,
 };
 
 use crate::{
@@ -85,6 +85,24 @@ impl<'a> RelocInfoParser<'a> {
             _ => Ok(false),
         }
     }
+    fn visit_segments(&mut self, segments: &DataSectionReader<'_>) -> Result<()> {
+        for segment in segments.clone().into_iter() {
+            let base_address = match segment?.kind {
+                DataKind::Active { offset_expr, .. } => {
+                    match offset_expr.get_operators_reader().read() {
+                        Ok(wasmparser::Operator::I32Const { value }) => {
+                            u64::try_from(value as i64).ok()
+                        }
+                        Ok(wasmparser::Operator::I64Const { value }) => u64::try_from(value).ok(),
+                        _ => None,
+                    }
+                }
+                DataKind::Passive => None,
+            };
+            self.info.data_segment_addresses.push(base_address);
+        }
+        Ok(())
+    }
     pub fn visit_payload(&mut self, payload: &Payload<'a>) -> Result<bool> {
         let section_index = self.info.relocatable_ranges.len();
         if let Some((_, mut section_range)) = payload.as_section() {
@@ -99,8 +117,9 @@ impl<'a> RelocInfoParser<'a> {
             self.info.relocatable_ranges.push(section_range);
         }
         match payload {
-            Payload::DataSection(_) => {
+            Payload::DataSection(segments) => {
                 self.info.data_section_index = section_index;
+                self.visit_segments(segments)?;
                 Ok(true)
             }
             Payload::CodeSectionStart { .. } => {
@@ -348,6 +367,9 @@ pub struct RelocInfo<'a> {
     // `#i -> #s` if Global #i contains the address of symbol #s
     pub symbol_as_global: HashMap<GlobalId, SymbolIndex>,
     pub split_marker_globals: HashSet<GlobalId>,
+    // The runtime address of active data segments.
+    // Errors are transformed to None.
+    pub data_segment_addresses: Vec<Option<u64>>,
 }
 
 impl RelocInfo<'_> {
