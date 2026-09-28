@@ -99,6 +99,9 @@ function getSharedImports() {{
         // Note: the expression returned from here should:
         // - allow lazily fetching the wasm module (no top-level import)
         // - allow bundlers and downstream code to recognize it as an expression to a path ("relocate" the import)
+        // - observe the module's promise as soon as it exists: the loader awaits it only after the module's
+        //   chunks have loaded, and never once one of them fails, so its rejection would otherwise reach the
+        //   page as an unhandled rejection. Awaiting the promise still reports the failure to the loader.
         match self.input_options.target {
             // Note: we use the form `new URL(<string literal>, import.meta.url)` which is understood by some
             // bundlers as syntax that can get rewritten if the path from where the file gets fetched is changed
@@ -106,6 +109,7 @@ function getSharedImports() {{
             crate::OutputTarget::Web(_) => format!(
                 r#"() => {{
     const src = fetch(new URL({file_path}, import.meta.url));
+    src.catch(() => {{}});
     return async (imports) => {wrap}(WebAssembly.instantiateStreaming(src, imports));
 }}
 "#
@@ -113,6 +117,7 @@ function getSharedImports() {{
             crate::OutputTarget::Bundler(_) => format!(
                 r#"() => {{
     const module = import.source({file_path});
+    module.catch(() => {{}});
     return async (imports) => {wrap}(new WebAssembly.Instance(await module, imports));
 }}
 "#
