@@ -146,6 +146,12 @@ fn refused_chunk_sibling() -> Result<u32, SplitLoaderError> {
     Ok(shared_by_the_chunk_pair(2))
 }
 
+// Loaded by the throwing-waker test alone, so its loader still runs there.
+#[wasm_split(thrown_while_woken)]
+fn loaded_for_a_throwing_waker() -> u32 {
+    42
+}
+
 /// Browser hooks for the failed-fetch tests: refuse or hold back the fetches
 /// the split loaders make, count them, and count the rejections nobody
 /// observed.
@@ -212,6 +218,48 @@ mod fetch_hook {
         pub fn unhandled_rejections() -> Promise<u32>;
         pub fn refused_requests() -> u32;
         pub fn delayed_requests() -> u32;
+    }
+}
+
+/// Browser hooks for the throwing-waker test: a waker that throws a marker
+/// error once a split's loader calls back, and a count of the times that
+/// error was reported as uncaught.
+#[cfg(all(test, target_family = "wasm"))]
+mod throwing_waker_hook {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::js_sys::Promise;
+
+    #[wasm_bindgen(inline_js = r#"
+        const marker = new Error("thrown while waking the split loader");
+        let reported = 0;
+        let resolveWoken;
+        const woken = new Promise((resolve) => { resolveWoken = resolve; });
+        globalThis.addEventListener("error", (event) => {
+            if (event.error === marker) {
+                reported += 1;
+                event.preventDefault();
+            }
+        });
+        export function throw_from_waker() {
+            // Let the test continue even when delivery becomes an unhandled rejection.
+            resolveWoken();
+            throw marker;
+        }
+        export function waker_woken() { return woken; }
+        export function reported_errors() { return reported; }
+    "#)]
+    extern "C" {
+        pub fn throw_from_waker();
+        pub fn waker_woken() -> Promise;
+        pub fn reported_errors() -> u32;
+    }
+
+    pub struct ThrowingWaker;
+
+    impl std::task::Wake for ThrowingWaker {
+        fn wake(self: std::sync::Arc<Self>) {
+            throw_from_waker();
+        }
     }
 }
 
@@ -390,6 +438,44 @@ assertion `scrutinee matches pattern` failed: {}
             "the next attempt loads"
         );
         assert_matches!(crate::refused_chunk_sibling().await, Ok(_));
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[test]
+    pub async fn it_reports_an_error_thrown_while_waking_the_loader() {
+        use crate::fetch_hook::unhandled_rejections;
+        use crate::throwing_waker_hook::{reported_errors, waker_woken, ThrowingWaker};
+        use std::{
+            future::Future,
+            pin::pin,
+            sync::Arc,
+            task::{Context, Poll, Waker},
+        };
+
+        let before = unhandled_rejections().await.unwrap();
+        {
+            let mut future = pin!(crate::loaded_for_a_throwing_waker());
+            let waker = Waker::from(Arc::new(ThrowingWaker));
+            // Start the load with a waker that throws when the result is delivered.
+            assert_eq!(
+                future.as_mut().poll(&mut Context::from_waker(&waker)),
+                Poll::Pending
+            );
+            waker_woken().await.unwrap();
+            // The throw leaves this attempt's lock held; drop it without polling again.
+        }
+        let after = unhandled_rejections().await.unwrap();
+        assert_eq!(
+            after - before,
+            0,
+            "the thrown error escaped as an unhandled rejection"
+        );
+        assert_eq!(reported_errors(), 1, "the thrown error was not reported");
+        assert_eq!(
+            crate::loaded_for_a_throwing_waker().await,
+            42,
+            "a fresh attempt should load normally"
+        );
     }
 
     #[test]

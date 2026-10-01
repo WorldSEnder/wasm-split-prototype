@@ -7,10 +7,13 @@ function wrapAsyncCb(callee) {
         } catch (e) {
             console.error(e);
             success = false;
-        } finally {
+        }
+        // Call back from a microtask of its own: an exception thrown there is reported as uncaught,
+        // instead of rejecting the promise returned here, which nobody observes.
+        queueMicrotask(() => {
             const sharedImports = getSharedImports();
             sharedImports.__wasm_split.__indirect_function_table.get(callbackIndex)(callbackData, success);
-        }
+        });
     }
 }
 function makeLoad(fetcher, deps) {
