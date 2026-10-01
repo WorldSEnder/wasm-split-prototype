@@ -6,6 +6,8 @@
 - Fix relocations inside a data symbol that is contained in another symbol being attributed to
   the containing symbol. A module that only used the inner symbol could miss the relocation's
   target. This was hidden by whole segments being kept in the main module.
+- Fix a failed module request surfacing as an `unhandledrejection` event while the module's
+  chunks were still loading or after one of them failed.
 
 ## wasm-split-cli v0.2.3
 

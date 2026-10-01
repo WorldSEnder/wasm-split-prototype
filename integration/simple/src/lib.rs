@@ -109,6 +109,112 @@ fn read_shared_mut() -> bool {
         .is_ok()
 }
 
+// Two pairs of fallible splits sharing code that main never calls: each split
+// loads its pair's shared chunk alongside its own module, the shape of an
+// application's lazily loaded screens. Each pair serves one test, so no other
+// test has loaded its chunk before. Only the browser tests call the pairs, so
+// host builds see their shared code as dead.
+#[inline(never)]
+#[allow(dead_code)]
+fn shared_by_the_refused_pair(seed: u32) -> u32 {
+    seed.rotate_left(7) ^ 0x5eed
+}
+
+#[wasm_split(refused_module, fallible)]
+fn refused_module() -> Result<u32, SplitLoaderError> {
+    Ok(shared_by_the_refused_pair(1))
+}
+
+#[wasm_split(refused_module_sibling, fallible)]
+fn refused_module_sibling() -> Result<u32, SplitLoaderError> {
+    Ok(shared_by_the_refused_pair(2))
+}
+
+#[inline(never)]
+#[allow(dead_code)]
+fn shared_by_the_chunk_pair(seed: u32) -> u32 {
+    seed.rotate_right(5) ^ 0xc0de
+}
+
+#[wasm_split(refused_chunk_member, fallible)]
+fn refused_chunk_member() -> Result<u32, SplitLoaderError> {
+    Ok(shared_by_the_chunk_pair(1))
+}
+
+#[wasm_split(refused_chunk_sibling, fallible)]
+fn refused_chunk_sibling() -> Result<u32, SplitLoaderError> {
+    Ok(shared_by_the_chunk_pair(2))
+}
+
+/// Browser hooks for the failed-fetch tests: refuse or hold back the fetches
+/// the split loaders make, count them, and count the rejections nobody
+/// observed.
+#[cfg(all(test, target_family = "wasm"))]
+mod fetch_hook {
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_futures::js_sys::Promise;
+
+    #[wasm_bindgen(inline_js = r#"
+        const original = globalThis.fetch;
+        // Marks the rejections `unhandled_rejections` makes to count the others.
+        const trigger = Symbol();
+        let unhandled = 0;
+        let refusals = 0;
+        let delays = 0;
+        let releaseDelayed;
+        globalThis.addEventListener("unhandledrejection", (event) => {
+            const report = event.reason?.[trigger];
+            if (report) {
+                event.preventDefault();
+                report(unhandled);
+            } else {
+                unhandled += 1;
+            }
+        });
+
+        // Fetches whose URL matches `refused` fail at once; those matching
+        // `delayed` wait for `release_delayed`. An empty pattern matches nothing.
+        export function hook_fetch(refused, delayed) {
+            unhandled = refusals = delays = 0;
+            const held = new Promise((resolve) => { releaseDelayed = resolve; });
+            const refuses = refused && new RegExp(refused);
+            const holds = delayed && new RegExp(delayed);
+            globalThis.fetch = (input, init) => {
+                const url = input instanceof Request ? input.url : String(input);
+                if (refuses && refuses.test(url)) {
+                    refusals += 1;
+                    return Promise.reject(new TypeError(`refused by the test: ${url}`));
+                }
+                if (holds && holds.test(url)) {
+                    delays += 1;
+                    return held.then(() => original(input, init));
+                }
+                return original(input, init);
+            };
+        }
+        export function release_delayed() { releaseDelayed(); }
+        export function restore_fetch() { globalThis.fetch = original; }
+        // Resolves to the number of rejections left unhandled so far. The browser
+        // reports a rejection as unhandled in a later task, once the microtasks
+        // that could still handle it have run, and reports rejections in the
+        // order they happened. So this rejects a promise of its own and resolves
+        // once that one is reported, after every earlier rejection.
+        export function unhandled_rejections() {
+            return new Promise((resolve) => Promise.reject({ [trigger]: resolve }));
+        }
+        export function refused_requests() { return refusals; }
+        export function delayed_requests() { return delays; }
+    "#)]
+    extern "C" {
+        pub fn hook_fetch(refused: &str, delayed: &str);
+        pub fn release_delayed();
+        pub fn restore_fetch();
+        pub fn unhandled_rejections() -> Promise<u32>;
+        pub fn refused_requests() -> u32;
+        pub fn delayed_requests() -> u32;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(target_family = "wasm"))]
@@ -221,6 +327,69 @@ assertion `scrutinee matches pattern` failed: {}
     pub async fn it_supports_fallible_with_return_wrapper() {
         // `fallible` + `return_wrapper` (the leptos async-view shape).
         assert_matches!(crate::fallible_async().await, Ok(42));
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[test]
+    pub async fn it_observes_a_module_request_failing_while_its_chunk_loads() {
+        use crate::fetch_hook::*;
+        // The module's own fetch fails at once while its shared chunk is held
+        // back. The chunk is released only once that failure, if unobserved,
+        // has been reported: a spawned task first runs after the load below
+        // has started its requests.
+        hook_fetch(r"/split_refused_module\.wasm$", r"/chunk_\d+\.wasm$");
+        wasm_bindgen_futures::spawn_local(async {
+            let _ = unhandled_rejections().await;
+            release_delayed();
+        });
+        let refused = crate::refused_module().await;
+        let unhandled = unhandled_rejections().await.unwrap();
+        let held_back = delayed_requests();
+        restore_fetch();
+        assert!(
+            held_back > 0,
+            "no chunk request was held back: the split no longer loads a chunk"
+        );
+        assert_matches!(refused, Err(_), "a refused module fetch fails the load");
+        assert_eq!(
+            unhandled, 0,
+            "the refused fetch escaped as an unhandled rejection"
+        );
+        assert_matches!(
+            crate::refused_module().await,
+            Ok(_),
+            "the next attempt loads"
+        );
+        assert_matches!(crate::refused_module_sibling().await, Ok(_));
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[test]
+    pub async fn it_observes_a_module_request_abandoned_after_a_chunk_fails() {
+        use crate::fetch_hook::*;
+        // The chunk fails first, so the loader gives up before it ever awaits
+        // the module's own fetch, which fails as well.
+        hook_fetch(r"/(chunk_\d+|split_refused_chunk_member)\.wasm$", "");
+        let refused = crate::refused_chunk_member().await;
+        let unhandled = unhandled_rejections().await.unwrap();
+        let refusals = refused_requests();
+        restore_fetch();
+        assert!(
+            refusals >= 2,
+            "expected the module and a chunk to be refused, got {refusals} refusals: \
+             the split no longer loads a chunk"
+        );
+        assert_matches!(refused, Err(_), "a refused chunk fails the load");
+        assert_eq!(
+            unhandled, 0,
+            "the refused fetch escaped as an unhandled rejection"
+        );
+        assert_matches!(
+            crate::refused_chunk_member().await,
+            Ok(_),
+            "the next attempt loads"
+        );
+        assert_matches!(crate::refused_chunk_sibling().await, Ok(_));
     }
 
     #[test]
