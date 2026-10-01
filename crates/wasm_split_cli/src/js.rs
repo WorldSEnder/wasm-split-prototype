@@ -99,9 +99,9 @@ function getSharedImports() {{
         // Note: the expression returned from here should:
         // - allow lazily fetching the wasm module (no top-level import)
         // - allow bundlers and downstream code to recognize it as an expression to a path ("relocate" the import)
-        // - observe the module's promise as soon as it exists: the loader awaits it only after the module's
-        //   chunks have loaded, and never once one of them fails, so its rejection would otherwise reach the
-        //   page as an unhandled rejection. Awaiting the promise still reports the failure to the loader.
+        // - observe any promises that run in parallel; The loader runs the instantiation only after dependency
+        //   fetching succeeds. On failure or before, rejections of promises here would else be unhandled and lead
+        //   to spurious `unhandledrejection` events.
         match self.input_options.target {
             // Note: we use the form `new URL(<string literal>, import.meta.url)` which is understood by some
             // bundlers as syntax that can get rewritten if the path from where the file gets fetched is changed
