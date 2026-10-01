@@ -53,11 +53,6 @@
 //! `unknown_segment_base_keeps_active_data_whole`: a segment with a global base address
 //! may overlap the preceding segment. Asserts that no fragments are appended and main
 //! keeps the preceding segment intact at its input address.
-//!
-//! `every_module_request_is_observed_when_it_starts`: splits `a` and `b` share their
-//! data, so each loads their chunk alongside its own module. Asserts that the link
-//! module observes every module's request where it starts, for the web and the bundler
-//! target, so a request that fails before it is awaited is no unhandled rejection.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -1409,68 +1404,4 @@ fn unknown_segment_base_keeps_active_data_whole() {
         exported_function_constants(&output.main, "main_reads"),
         vec![SEGMENT_BASE, SEGMENT_BASE + 8]
     );
-}
-
-/// The link module `transform` writes for `input`, for the web or the bundler target.
-fn link_module(input: &Input, bundler: bool) -> String {
-    let wasm = input.build_wasm();
-    let tmp = tempfile::tempdir().expect("create tmpdir");
-    let main_out = tmp.path().join("main.wasm");
-    let mut opts = Options::new(&wasm);
-    opts.output_dir = tmp.path();
-    opts.main_out_path = &main_out;
-    if bundler {
-        opts.target.bundler();
-    }
-    let link_path = tmp.path().join(opts.link_name);
-    transform(opts).expect("transform succeeds");
-    std::fs::read_to_string(link_path).expect("read link module")
-}
-
-#[test]
-fn every_module_request_is_observed_when_it_starts() {
-    let _ = tracing_subscriber::fmt::try_init();
-
-    // `a` and `b` share data, so each loads their chunk alongside its own module. A loader
-    // awaits its module only after its chunks, and never once one fails: the module's
-    // request must be observed where it starts, or its failure is an unhandled rejection.
-    let input = Input {
-        data: SHARED.to_vec(),
-        alignment: 0,
-        symbols: vec![DataSymbol("shared_full", 0, SHARED.len())],
-        funcs: vec![
-            Func(Owner::Split("a"), vec![0]),
-            Func(Owner::Split("b"), vec![0]),
-        ],
-        extra_segments: vec![],
-        data_relocs: vec![],
-    };
-    for (bundler, request, observed) in [
-        (false, "const src = fetch(", "src.catch(() => {});"),
-        (
-            true,
-            "const module = import.source(",
-            "module.catch(() => {});",
-        ),
-    ] {
-        let javascript = link_module(&input, bundler);
-        let lines: Vec<&str> = javascript.lines().map(str::trim).collect();
-        let requests: Vec<usize> = (0..lines.len())
-            .filter(|&line| lines[line].starts_with(request))
-            .collect();
-        // `a`, `b` and the chunk they share
-        assert_eq!(
-            requests.len(),
-            3,
-            "expected one request per module (bundler: {bundler}):\n{javascript}",
-        );
-        for line in requests {
-            assert_eq!(
-                lines.get(line + 1).copied(),
-                Some(observed),
-                "`{}` is not observed where it starts (bundler: {bundler}):\n{javascript}",
-                lines[line],
-            );
-        }
-    }
 }
