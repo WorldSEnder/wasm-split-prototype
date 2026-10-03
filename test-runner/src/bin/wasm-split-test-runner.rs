@@ -103,6 +103,36 @@ fn collect_file_sizes(
     Ok(())
 }
 
+fn check_emitted_modules(split: &wasm_split_cli_support::SplitWasm) -> Result<()> {
+    for module in &split.split_modules {
+        ensure!(
+            module_defines_something(&std::fs::read(module)?)?,
+            "emitted module {} defines no function and no data; it should have been skipped",
+            module.display()
+        );
+    }
+    Ok(())
+}
+
+fn module_defines_something(bytes: &[u8]) -> Result<bool> {
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        match payload? {
+            wasmparser::Payload::FunctionSection(functions) if functions.count() > 0 => {
+                return Ok(true);
+            }
+            wasmparser::Payload::DataSection(segments) => {
+                for segment in segments {
+                    if !segment?.data.is_empty() {
+                        return Ok(true);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
 fn check_reproducible(first_report: &Report, second_report: &Report) -> Result<()> {
     ensure!(
         first_report.file_hashes == second_report.file_hashes,
@@ -207,6 +237,7 @@ fn wasm_split_cli(target: &Path, dir: &Path, report_dir: &Path) -> Result<(PathB
     report.cli_runtime = time_taken;
 
     collect_file_sizes(&mut report, &main_file, &split)?;
+    check_emitted_modules(&split)?;
 
     Ok((main_file, report))
 }

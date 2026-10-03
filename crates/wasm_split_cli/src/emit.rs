@@ -9,7 +9,7 @@ use crate::{
     magic_constants,
     read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
-    split_point::{SplitModuleIdentifier, SplitProgramInfo},
+    split_point::{OutputModuleInfo, SplitModuleIdentifier, SplitProgramInfo},
     tracing_support::perf_span,
     util::{wasm_data_len, wasm_data_start},
 };
@@ -33,6 +33,7 @@ pub(crate) struct EmitState<'a> {
     shared_names: HashMap<DepNode, Cow<'a, str>>,
     no_reloc_stubs: &'a HashSet<InputFuncId>,
     canary_import_name: &'a str,
+    empty_modules: Vec<bool>,
 }
 
 impl<'a> EmitState<'a> {
@@ -45,6 +46,16 @@ impl<'a> EmitState<'a> {
     ) -> Result<Self> {
         let indirect_functions = IndirectFunctionEmitInfo::new(module, program_info)?;
         let data_relocations = DataEmitInfo::new(module, program_info)?;
+
+        let empty_modules = program_info
+            .output_modules
+            .iter()
+            .enumerate()
+            .map(|(module_index, (_, info))| {
+                info.is_empty
+                    || !module_defines_anything(module, info, &data_relocations, module_index)
+            })
+            .collect();
 
         let mut shared_names = HashMap::new();
         // We potentially overwrite the mapping later on again, but that's okay.
@@ -97,7 +108,12 @@ impl<'a> EmitState<'a> {
             shared_names,
             no_reloc_stubs,
             canary_import_name: program_info.canary_export_name(),
+            empty_modules,
         })
+    }
+
+    pub(crate) fn module_is_empty(&self, output_module_index: usize) -> bool {
+        self.empty_modules[output_module_index]
     }
 
     pub(crate) fn input(&self) -> &'a InputModule<'a> {
@@ -768,6 +784,35 @@ impl DataEmitInfo {
         let range = &ranges[range_index];
         Ok(Some(base_address + range.segment_offset + offset_in_range))
     }
+
+    fn emits_data_in(&self, input_module: &InputModule, output_module_index: usize) -> bool {
+        self.per_segment
+            .iter()
+            .zip(&input_module.data_segments)
+            .any(|(emit_info, segment)| match emit_info {
+                DataSegmentEmitInfo::FromInputInAll => wasm_data_len(segment) > 0,
+                DataSegmentEmitInfo::FromInputOnlyIn(module) => {
+                    *module == output_module_index && wasm_data_len(segment) > 0
+                }
+                DataSegmentEmitInfo::Ranges { layout, .. } => layout
+                    .fragments
+                    .iter()
+                    .any(|fragment| fragment.module == output_module_index),
+            })
+    }
+}
+
+fn module_defines_anything(
+    input_module: &InputModule,
+    info: &OutputModuleInfo,
+    data: &DataEmitInfo,
+    output_module_index: usize,
+) -> bool {
+    let defines_function = info.included_symbols.iter().any(|dep| match dep {
+        DepNode::Function(id) => *id >= input_module.imported_funcs.len(),
+        _ => false,
+    });
+    defines_function || data.emits_data_in(input_module, output_module_index)
 }
 
 #[derive(Debug, Clone)]
@@ -1894,14 +1939,17 @@ pub fn emit_modules<'info, M>(
 ) -> Result<Vec<M>> {
     let modules = program_info.output_modules.iter().enumerate();
     modules
-        .map(|(output_module_index, (identifier, module))| {
+        .map(|(output_module_index, (identifier, _))| {
             let emit_span = perf_span!(
                 "emit module",
                 module_index = output_module_index,
                 data_size = tracing::field::Empty
             );
             let _emit_span = emit_span.enter();
-            if module.is_empty {
+            // The main module is written even when empty.
+            if !matches!(identifier, SplitModuleIdentifier::Main)
+                && emit_state.module_is_empty(output_module_index)
+            {
                 return Ok(None);
             }
             let mut emit_state =

@@ -14,16 +14,18 @@ pub struct LinkModuleWriter<'p> {
     input_module: &'p InputModule<'p>,
     input_options: &'p crate::Options<'p>,
     program_info: &'p SplitProgramInfo,
+    emit_state: &'p EmitState<'p>,
     javascript: String,
     prefetch_map: PrefetchMap,
 }
 
 impl<'p> LinkModuleWriter<'p> {
-    fn new(program_info: &'p SplitProgramInfo, emit_state: &'p EmitState) -> Self {
+    fn new(program_info: &'p SplitProgramInfo, emit_state: &'p EmitState<'p>) -> Self {
         Self {
             program_info,
             input_module: emit_state.input(),
             input_options: emit_state.input_options(),
+            emit_state,
             javascript: String::new(),
             prefetch_map: HashMap::new(),
         }
@@ -87,10 +89,7 @@ function getSharedImports() {{
             "export const {name} = {def};"
         )?)
     }
-    fn fetcher<'pth>(&self, empty: bool, file_path: impl 'pth + std::fmt::Display) -> String {
-        if empty {
-            return "() => async (_imp) => ({})".to_string();
-        }
+    fn fetcher<'pth>(&self, file_path: impl 'pth + std::fmt::Display) -> String {
         let wrap = if self.input_module.options.debug_assertions {
             "debugWrap"
         } else {
@@ -126,16 +125,18 @@ function getSharedImports() {{
     }
     fn write_loaders(&mut self, program: &SplitProgramInfo) -> Result<()> {
         let mut split_deps = HashMap::<String, Vec<String>>::new();
-        for (module_index, (name, output_module)) in program.output_modules.iter().enumerate() {
+        for (module_index, (name, _)) in program.output_modules.iter().enumerate() {
             let SplitModuleIdentifier::Chunk(splits) = name else {
                 continue;
             };
-            let is_empty = output_module.is_empty;
+            if self.emit_state.module_is_empty(module_index) {
+                continue;
+            }
             let file_name = name.filename(module_index);
             let var_name = format!("__chunk_{module_index}");
             let splits_dbg = splits.iter().cloned().collect::<Vec<_>>().join(", ");
             writeln!(&mut self.javascript, "/* {splits_dbg} */")?;
-            let fetcher = self.fetcher(is_empty, format_args!("\"./{file_name}.wasm\""));
+            let fetcher = self.fetcher(format_args!("\"./{file_name}.wasm\""));
             writeln!(
                 &mut self.javascript,
                 "const {var_name} = makeLoad({fetcher}, []);"
@@ -145,27 +146,27 @@ function getSharedImports() {{
                     .entry(split.clone())
                     .or_default()
                     .push(var_name.clone());
-                if !is_empty {
-                    self.prefetch_map
-                        .entry(split.clone())
-                        .or_default()
-                        .push(file_name.clone());
-                }
+                self.prefetch_map
+                    .entry(split.clone())
+                    .or_default()
+                    .push(file_name.clone());
             }
         }
-        for (module_index, (identifier, output_module)) in
-            program.output_modules.iter().enumerate().rev()
-        {
+        for (module_index, (identifier, _)) in program.output_modules.iter().enumerate().rev() {
             let split = match &identifier {
                 SplitModuleIdentifier::Main | SplitModuleIdentifier::Chunk(_) => continue,
                 SplitModuleIdentifier::Split(split) => split,
             };
-            let is_empty = output_module.is_empty;
+            let is_empty = self.emit_state.module_is_empty(module_index);
             let file_name = identifier.filename(module_index);
             let loader_name = identifier.loader_name();
             let deps = split_deps.remove(split).unwrap_or_default();
             let deps = deps.join(", ");
-            let fetch_opts = self.fetcher(is_empty, format_args!("\"./{file_name}.wasm\""));
+            let fetch_opts = if is_empty {
+                "() => async (_imp) => ({})".to_string()
+            } else {
+                self.fetcher(format_args!("\"./{file_name}.wasm\""))
+            };
             self.write_export_const(
                 &loader_name,
                 &format_args!("wrapAsyncCb(makeLoad({fetch_opts}, [{deps}]))"),

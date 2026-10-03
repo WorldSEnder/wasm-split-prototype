@@ -8,6 +8,7 @@ members = [
     "callback-in-split",
     "optimize_splits",
     "static_mut",
+    "empty_chunks",
     "undefined_data",
     "position-independent-code",
 ]
