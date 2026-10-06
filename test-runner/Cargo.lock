@@ -2081,6 +2081,7 @@ dependencies = [
  "tracing-subscriber",
  "wasm-bindgen-cli",
  "wasm_split_cli_support",
+ "wasmparser 0.257.1",
 ]
 
 [[package]]
@@ -2104,6 +2105,19 @@ checksum = "4f08c9adee0428b7bddf3890fc27e015ac4b761cc608c822667102b8bfd6995e"
 dependencies = [
  "bitflags 2.13.1",
  "hashbrown 0.16.1",
+ "indexmap 2.14.2",
+ "semver",
+ "serde",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.257.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d92fc335fb6d48f46bda1d8b26b69e28320c15ac3272208333833d6e217e2b4a"
+dependencies = [
+ "bitflags 2.13.1",
+ "hashbrown 0.17.1",
  "indexmap 2.14.2",
  "semver",
  "serde",

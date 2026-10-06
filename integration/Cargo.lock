@@ -107,6 +107,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "empty_chunks"
+version = "0.1.0"
+dependencies = [
+ "wasm-bindgen-test",
+ "wasm_split_helpers",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
