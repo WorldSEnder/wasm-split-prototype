@@ -15,6 +15,7 @@ use super::{OutputModuleInfo, SplitProgramInfo};
 
 #[derive(Debug)]
 pub struct LateDataRange {
+    // range of bytes in the input segment data that makes up this symbol
     pub input_range: Range<u64>,
     // the modules whose symbols are in this range, see `SplitModuleIdentifier::also_in`
     needed_by: SplitModuleIdentifier,
@@ -41,7 +42,7 @@ pub struct Fragment {
 #[derive(Debug)]
 pub struct RangeLayout {
     // indices into the ranges, in the order they are placed in the segment
-    pub emit_order: Vec<usize>,
+    emit_order: Vec<usize>,
     // in placement order; the fragments of one module are in ascending order
     fragments: Vec<(usize, Fragment)>,
     segment_len: u64,
@@ -110,39 +111,36 @@ pub struct DataEmitInfo {
     pub per_segment: Vec<DataSegmentEmitInfo>,
 }
 
-impl DataEmitInfo {
+impl OutputModuleInfo {
     /// The fragments of `segment_idx` that `module` emits, in ascending order.
-    pub fn fragments<'s>(
-        &'s self,
-        segment_idx: usize,
-        module: &'s OutputModuleInfo,
-    ) -> impl Iterator<Item = &'s Fragment> {
-        module
-            .data_fragments
+    fn fragments(&self, segment_idx: usize) -> impl Iterator<Item = &Fragment> {
+        self.data_fragments
             .get(&segment_idx)
             .into_iter()
             .flat_map(|frags| frags.iter())
     }
 
+    /// The first fragment is emitted at the same index as the segment's index in the input file.
+    pub fn head_fragment(&self, segment_idx: usize) -> Option<&Fragment> {
+        self.fragments(segment_idx).next()
+    }
+
     /// Every input segment keeps its index in every output module, holding the module's first
     /// fragment of it (or nothing). Further fragments are appended after all input segments;
     /// this lists them as `(input segment, fragment)`, in the order they are appended.
-    pub fn extra_fragments<'s>(
-        &'s self,
-        module: &'s OutputModuleInfo,
-    ) -> Vec<(usize, &'s Fragment)> {
-        (0..self.per_segment.len())
-            .flat_map(|segment_idx| {
-                self.fragments(segment_idx, module)
-                    .skip(1)
-                    .map(move |fragment| (segment_idx, fragment))
-            })
-            .collect()
+    pub fn extra_fragments(&self) -> impl Iterator<Item = (usize, &Fragment)> {
+        let mut segments = self.data_fragments.keys().copied().collect::<Vec<_>>();
+        segments.sort();
+        segments.into_iter().flat_map(|segment_idx| {
+            self.fragments(segment_idx)
+                .skip(1)
+                .map(move |fragment| (segment_idx, fragment))
+        })
     }
 }
 
 impl DataEmitInfo {
-    pub fn new(input_module: &InputModule, program_info: &mut SplitProgramInfo) -> Result<Self> {
+    pub fn build(input_module: &InputModule, program_info: &mut SplitProgramInfo) -> Result<Self> {
         enum DataSegmentAnalysis {
             FromInputInAll,
             FromInputOnlyInMain,
@@ -509,7 +507,7 @@ impl DataEmitInfo {
         Ok(Some(base_address + range.segment_offset + offset_in_range))
     }
 
-    fn emits_data_in(
+    pub fn emits_data_in(
         &self,
         input_module: &InputModule,
         output_module_index: usize,
@@ -530,17 +528,4 @@ impl DataEmitInfo {
                     .is_some_and(|frags| !frags.is_empty()),
             })
     }
-}
-
-pub fn module_defines_anything(
-    input_module: &InputModule,
-    info: &OutputModuleInfo,
-    data: &DataEmitInfo,
-    output_module_index: usize,
-) -> bool {
-    let defines_function = info.included_symbols.iter().any(|dep| match dep {
-        DepNode::Function(id) => *id >= input_module.imported_funcs.len(),
-        _ => false,
-    });
-    defines_function || data.emits_data_in(input_module, output_module_index, info)
 }

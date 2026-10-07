@@ -919,11 +919,7 @@ impl<'a> ModuleEmitState<'a> {
 
     fn generate_data_count_section(&mut self) {
         let data_section_count = self.input_module.data_segments.len()
-            + self
-                .emit_state
-                .data_relocations
-                .extra_fragments(self.output_module_info)
-                .len();
+            + self.output_module_info.extra_fragments().count();
         let section = wasm_encoder::DataCountSection {
             count: data_section_count
                 .try_into()
@@ -1108,9 +1104,8 @@ impl<'a> ModuleEmitState<'a> {
         // `(input segment, address, data)`; the address is `None` to copy the input's offset
         let mut segments: Vec<(usize, Option<u64>, Vec<u8>)> = vec![];
         // Every input segment keeps its index, so that indices in the code stay valid.
-        for (segment_idx, segment) in data_reloc.per_segment.iter().enumerate() {
-            let input_data = &self.input_module.data_segments[segment_idx];
-            let (addr_offset, data) = match segment {
+        for (segment_idx, input_data) in self.input_module.data_segments.iter().enumerate() {
+            let (addr_offset, data) = match &data_reloc.per_segment[segment_idx] {
                 DataSegmentEmitInfo::FromInputInAll => (
                     None,
                     self.get_relocated_segment_data(segment_idx, input_data)?,
@@ -1123,10 +1118,7 @@ impl<'a> ModuleEmitState<'a> {
                     (None, vec![]) // no data, but emit the segment to not shift data indices
                 }
                 DataSegmentEmitInfo::Ranges { base_address, .. } => {
-                    match data_reloc
-                        .fragments(segment_idx, self.output_module_info)
-                        .next()
-                    {
+                    match self.output_module_info.head_fragment(segment_idx) {
                         Some(fragment) => (
                             Some(base_address + fragment.offset),
                             self.fragment_data(segment_idx, fragment)?,
@@ -1138,7 +1130,7 @@ impl<'a> ModuleEmitState<'a> {
             segments.push((segment_idx, addr_offset, data));
         }
         // Further fragments are appended, see `DataEmitInfo::extra_fragments`.
-        for (segment_idx, fragment) in data_reloc.extra_fragments(self.output_module_info) {
+        for (segment_idx, fragment) in self.output_module_info.extra_fragments() {
             let DataSegmentEmitInfo::Ranges { base_address, .. } =
                 &data_reloc.per_segment[segment_idx]
             else {
@@ -1260,9 +1252,8 @@ impl<'a> ModuleEmitState<'a> {
             let mut data_names = self.input_module.names.data_segments.clone();
             let input_count = self.input_module.data_segments.len();
             for (i, (segment_idx, _)) in self
-                .emit_state
-                .data_relocations
-                .extra_fragments(self.output_module_info)
+                .output_module_info
+                .extra_fragments()
                 .into_iter()
                 .enumerate()
             {

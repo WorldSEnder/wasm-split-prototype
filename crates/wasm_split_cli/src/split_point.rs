@@ -626,9 +626,9 @@ pub fn compute_split_modules(
     let perf_span = perf_span.enter();
     // Data symbols can overlap without dependencies between them, mostly due to string tail merging.
     // Hence, not every included symbol in a module should lead to data bytes in its segments.
-    program_info.data_relocations = data::DataEmitInfo::new(module, &mut program_info)?;
+    program_info.data_relocations = data::DataEmitInfo::build(module, &mut program_info)?;
     for (module_index, (_, output_module)) in program_info.output_modules.iter_mut().enumerate() {
-        output_module.is_empty |= !data::module_defines_anything(
+        output_module.is_empty |= !module_defines_anything(
             module,
             output_module,
             &program_info.data_relocations,
@@ -648,4 +648,17 @@ pub fn compute_split_modules(
     program_info.canary_export_name = format!("__canary_{:x}", hasher.finish());
     perf_span.exit();
     Ok(program_info)
+}
+
+fn module_defines_anything(
+    input_module: &InputModule,
+    info: &OutputModuleInfo,
+    data: &data::DataEmitInfo,
+    output_module_index: usize,
+) -> bool {
+    let defines_function = info.included_symbols.iter().any(|dep| match dep {
+        DepNode::Function(id) => *id >= input_module.imported_funcs.len(),
+        _ => false,
+    });
+    defines_function || data.emits_data_in(input_module, output_module_index, info)
 }
