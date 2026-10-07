@@ -11,6 +11,10 @@ use regex::Regex;
 use tracing::{field, trace, warn};
 use wasmparser::TypeRef;
 
+pub(crate) mod data;
+
+pub(crate) const MAIN_MODULE: usize = 0;
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SplitPoint {
     pub module_name: String,
