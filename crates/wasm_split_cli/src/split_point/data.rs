@@ -103,7 +103,7 @@ pub enum DataSegmentEmitInfo {
     },
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct DataEmitInfo {
     pub per_segment: Vec<DataSegmentEmitInfo>,
 }

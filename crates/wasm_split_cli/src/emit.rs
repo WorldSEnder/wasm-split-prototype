@@ -10,7 +10,7 @@ use crate::{
     read::{InputFuncId, InputModule, InputOffset},
     reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::{
-        data::{module_defines_anything, DataEmitInfo, DataSegmentEmitInfo, Fragment},
+        data::{DataEmitInfo, DataSegmentEmitInfo, Fragment},
         SplitModuleIdentifier, SplitProgramInfo, MAIN_MODULE,
     },
     tracing_support::perf_span,
@@ -26,11 +26,10 @@ pub(crate) struct EmitState<'a> {
     link_module: &'a str,
     // info about shared usage
     indirect_functions: IndirectFunctionEmitInfo,
-    data_relocations: DataEmitInfo,
     shared_names: HashMap<DepNode, Cow<'a, str>>,
     no_reloc_stubs: &'a HashSet<InputFuncId>,
     canary_import_name: &'a str,
-    empty_modules: Vec<bool>,
+    data_relocations: &'a DataEmitInfo,
 }
 
 impl<'a> EmitState<'a> {
@@ -42,17 +41,6 @@ impl<'a> EmitState<'a> {
         no_reloc_stubs: &'a HashSet<InputFuncId>,
     ) -> Result<Self> {
         let indirect_functions = IndirectFunctionEmitInfo::new(module, program_info)?;
-        let data_relocations = DataEmitInfo::new(module, program_info)?;
-
-        let empty_modules = program_info
-            .output_modules
-            .iter()
-            .enumerate()
-            .map(|(module_index, (_, info))| {
-                info.is_empty
-                    || !module_defines_anything(module, info, &data_relocations, module_index)
-            })
-            .collect();
 
         let mut shared_names = HashMap::new();
         // We potentially overwrite the mapping later on again, but that's okay.
@@ -101,16 +89,11 @@ impl<'a> EmitState<'a> {
             input_module: module,
             link_module,
             indirect_functions,
-            data_relocations,
             shared_names,
             no_reloc_stubs,
             canary_import_name: program_info.canary_export_name(),
-            empty_modules,
+            data_relocations: &program_info.data_relocations,
         })
-    }
-
-    pub(crate) fn module_is_empty(&self, output_module_index: usize) -> bool {
-        self.empty_modules[output_module_index]
     }
 
     pub(crate) fn input(&self) -> &'a InputModule<'a> {
@@ -1420,7 +1403,7 @@ pub fn emit_modules<'info, M>(
 ) -> Result<Vec<M>> {
     let modules = program_info.output_modules.iter().enumerate();
     modules
-        .map(|(output_module_index, (identifier, _))| {
+        .map(|(output_module_index, (identifier, module))| {
             let emit_span = perf_span!(
                 "emit module",
                 module_index = output_module_index,
@@ -1428,9 +1411,7 @@ pub fn emit_modules<'info, M>(
             );
             let _emit_span = emit_span.enter();
             // The main module is written even when empty.
-            if !matches!(identifier, SplitModuleIdentifier::Main)
-                && emit_state.module_is_empty(output_module_index)
-            {
+            if !matches!(identifier, SplitModuleIdentifier::Main) && module.is_empty {
                 return Ok(None);
             }
             let mut emit_state =

@@ -390,6 +390,7 @@ pub struct SplitProgramInfo {
     /// - an additional shim function needs to be used in the indirect_function_table instead of it,
     ///   because other modules expect the original signature.
     pub needs_shim_in_main: HashSet<InputFuncId>,
+    pub data_relocations: data::DataEmitInfo,
 }
 
 impl SplitProgramInfo {
@@ -640,5 +641,14 @@ pub fn compute_split_modules(
     program_info.canary_export_name = format!("__canary_{:x}", hasher.finish());
     perf_span.exit();
 
+    program_info.data_relocations = data::DataEmitInfo::new(module, &program_info)?;
+    for (module_index, (_, output_module)) in program_info.output_modules.iter_mut().enumerate() {
+        output_module.is_empty |= !data::module_defines_anything(
+            module,
+            output_module,
+            &program_info.data_relocations,
+            module_index,
+        )
+    }
     Ok(program_info)
 }
