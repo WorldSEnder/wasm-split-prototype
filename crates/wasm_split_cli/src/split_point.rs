@@ -517,13 +517,9 @@ pub fn compute_split_modules(
         if split_point_imports.contains(&node) {
             continue;
         }
-        let module = match split_module_contents.get_mut(&color) {
+        let module = match split_module_contents.get_mut(color) {
             Some(module) => module,
-            None => split_module_contents
-                .entry(color.clone())
-                .or_insert_with(|| {
-                    return OutputModuleInfo::default();
-                }),
+            None => split_module_contents.entry(color.clone()).or_default(),
         };
         module.included_symbols.insert(node);
         let DepNode::Function(func_id) = node else {

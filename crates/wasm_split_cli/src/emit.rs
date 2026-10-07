@@ -1251,12 +1251,7 @@ impl<'a> ModuleEmitState<'a> {
             // appended fragments are named after their input segment
             let mut data_names = self.input_module.names.data_segments.clone();
             let input_count = self.input_module.data_segments.len();
-            for (i, (segment_idx, _)) in self
-                .output_module_info
-                .extra_fragments()
-                .into_iter()
-                .enumerate()
-            {
+            for (i, (segment_idx, _)) in self.output_module_info.extra_fragments().enumerate() {
                 if let Some(name) = self.input_module.names.data_segments.get(&segment_idx) {
                     data_names.insert(input_count + i, name);
                 }
