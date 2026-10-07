@@ -1721,7 +1721,7 @@ impl<'a> ModuleEmitState<'a> {
 
         fn convert_name_map(parser_map: &wasmparser::NameMap<'_>) -> Result<wasm_encoder::NameMap> {
             let mut encoder_map = wasm_encoder::NameMap::new();
-            for r in parser_map.clone().into_iter() {
+            for r in parser_map.clone() {
                 let naming = r?;
                 encoder_map.append(naming.index, naming.name);
             }

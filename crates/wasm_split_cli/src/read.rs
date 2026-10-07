@@ -32,6 +32,8 @@ pub type ElementId = usize;
 pub type DataSegmentId = usize;
 pub type TagId = usize;
 pub type SectionId = usize;
+pub type ParameterId = usize;
+pub type TagParameterId = usize;
 
 #[derive(Debug)]
 pub struct ImportedFunc {
@@ -58,6 +60,8 @@ pub struct Names<'a> {
     pub elements: HashMap<ElementId, &'a str>,
     pub data_segments: HashMap<DataSegmentId, &'a str>,
     pub tags: HashMap<TagId, &'a str>,
+    pub parameters: HashMap<ParameterId, wasmparser::NameMap<'a>>,
+    pub tag_parameters: HashMap<TagParameterId, wasmparser::NameMap<'a>>,
 }
 
 fn convert_name_map<'a>(name_map: wasmparser::NameMap<'a>) -> Result<HashMap<usize, &'a str>> {
@@ -121,6 +125,12 @@ impl<'a> Names<'a> {
                 }
                 Name::Field(_name_map) => {
                     bail!("Field names not supported");
+                }
+                Name::Parameter(name_map) => {
+                    names.parameters = convert_indirect_name_map(name_map)?;
+                }
+                Name::TagParameter(name_map) => {
+                    names.tag_parameters = convert_indirect_name_map(name_map)?;
                 }
                 Name::Unknown { ty, .. } => {
                     bail!("Unknown name subsection: {:?}", ty);
