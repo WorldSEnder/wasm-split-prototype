@@ -111,6 +111,8 @@ pub struct OutputModuleInfo {
     pub included_symbols: HashSet<DepNode>,
     pub used_shared_deps: HashSet<DepNode>,
     pub is_empty: bool,
+    // a map segment_index -> fragments in this module, filled in by DataEmitInfo
+    pub data_fragments: HashMap<usize, Vec<data::Fragment>>,
 }
 
 impl OutputModuleInfo {
@@ -624,7 +626,7 @@ pub fn compute_split_modules(
     let perf_span = perf_span.enter();
     // Data symbols can overlap without dependencies between them, mostly due to string tail merging.
     // Hence, not every included symbol in a module should lead to data bytes in its segments.
-    program_info.data_relocations = data::DataEmitInfo::new(module, &program_info)?;
+    program_info.data_relocations = data::DataEmitInfo::new(module, &mut program_info)?;
     for (module_index, (_, output_module)) in program_info.output_modules.iter_mut().enumerate() {
         output_module.is_empty |= !data::module_defines_anything(
             module,

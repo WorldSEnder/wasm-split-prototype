@@ -101,7 +101,7 @@ pub enum DataSegmentEmitInfo {
         ranges: Vec<LateDataRange>,
         // symbol index -> (index in 'ranges', offset in range)
         range_lookup: HashMap<usize, (usize, u64)>,
-        layout: RangeLayout,
+        emit_order: Vec<usize>,
     },
 }
 
@@ -112,20 +112,25 @@ pub struct DataEmitInfo {
 
 impl DataEmitInfo {
     /// The fragments of `segment_idx` that `module` emits, in ascending order.
-    pub fn fragments(&self, segment_idx: usize, module: usize) -> impl Iterator<Item = &Fragment> {
-        let fragments = match &self.per_segment[segment_idx] {
-            DataSegmentEmitInfo::Ranges { layout, .. } => layout.fragments.as_slice(),
-            _ => &[],
-        };
-        fragments
-            .iter()
-            .filter_map(move |(frag_module, fragment)| (*frag_module == module).then_some(fragment))
+    pub fn fragments<'s>(
+        &'s self,
+        segment_idx: usize,
+        module: &'s OutputModuleInfo,
+    ) -> impl Iterator<Item = &'s Fragment> {
+        module
+            .data_fragments
+            .get(&segment_idx)
+            .into_iter()
+            .flat_map(|frags| frags.iter())
     }
 
     /// Every input segment keeps its index in every output module, holding the module's first
     /// fragment of it (or nothing). Further fragments are appended after all input segments;
     /// this lists them as `(input segment, fragment)`, in the order they are appended.
-    pub fn extra_fragments(&self, module: usize) -> Vec<(usize, &Fragment)> {
+    pub fn extra_fragments<'s>(
+        &'s self,
+        module: &'s OutputModuleInfo,
+    ) -> Vec<(usize, &'s Fragment)> {
         (0..self.per_segment.len())
             .flat_map(|segment_idx| {
                 self.fragments(segment_idx, module)
@@ -137,7 +142,7 @@ impl DataEmitInfo {
 }
 
 impl DataEmitInfo {
-    pub fn new(input_module: &InputModule, program_info: &SplitProgramInfo) -> Result<Self> {
+    pub fn new(input_module: &InputModule, program_info: &mut SplitProgramInfo) -> Result<Self> {
         enum DataSegmentAnalysis {
             FromInputInAll,
             FromInputOnlyInMain,
@@ -455,17 +460,20 @@ impl DataEmitInfo {
                         // There might be data symbols that are not included/depended upon anywhere though.
                         // Some gaps will exist, introduced by padding for alignment! This padding should be zeroed.
                         // So for the moment, don't bother with this sanity analysis.
-                        let layout = layout_ranges(&mut ranges);
-                        if layout.segment_len > input_len {
+                        let RangeLayout { emit_order, fragments, segment_len } = layout_ranges(&mut ranges);
+                        if segment_len > input_len {
                             trace!("{ranges:?}");
                             warn!("Overlong segment {segment_index} after relocation, putting it in main module.");
                             DataSegmentEmitInfo::FromInputOnlyInMain
                         } else {
+                            for (module_index, fragment) in fragments {
+                                program_info.output_modules[module_index].1.data_fragments.entry(segment_index).or_default().push(fragment);
+                            }
                             DataSegmentEmitInfo::Ranges {
                                 ranges,
                                 base_address,
                                 range_lookup,
-                                layout,
+                                emit_order,
                             }
                         }
                     }
@@ -501,19 +509,25 @@ impl DataEmitInfo {
         Ok(Some(base_address + range.segment_offset + offset_in_range))
     }
 
-    fn emits_data_in(&self, input_module: &InputModule, output_module_index: usize) -> bool {
+    fn emits_data_in(
+        &self,
+        input_module: &InputModule,
+        output_module_index: usize,
+        output_module_info: &OutputModuleInfo,
+    ) -> bool {
         self.per_segment
             .iter()
             .zip(&input_module.data_segments)
-            .any(|(emit_info, segment)| match emit_info {
+            .enumerate()
+            .any(|(segment_index, (emit_info, segment))| match emit_info {
                 DataSegmentEmitInfo::FromInputInAll => wasm_data_len(segment) > 0,
                 DataSegmentEmitInfo::FromInputOnlyInMain => {
                     MAIN_MODULE == output_module_index && wasm_data_len(segment) > 0
                 }
-                DataSegmentEmitInfo::Ranges { layout, .. } => layout
-                    .fragments
-                    .iter()
-                    .any(|(frag_module, _)| *frag_module == output_module_index),
+                DataSegmentEmitInfo::Ranges { .. } => output_module_info
+                    .data_fragments
+                    .get(&segment_index)
+                    .is_some_and(|frags| !frags.is_empty()),
             })
     }
 }
@@ -528,5 +542,5 @@ pub fn module_defines_anything(
         DepNode::Function(id) => *id >= input_module.imported_funcs.len(),
         _ => false,
     });
-    defines_function || data.emits_data_in(input_module, output_module_index)
+    defines_function || data.emits_data_in(input_module, output_module_index, info)
 }

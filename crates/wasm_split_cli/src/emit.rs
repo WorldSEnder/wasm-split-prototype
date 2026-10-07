@@ -11,7 +11,7 @@ use crate::{
     reloc::{RelocDetails, RelocInfo, RelocTarget},
     split_point::{
         data::{DataEmitInfo, DataSegmentEmitInfo, Fragment},
-        SplitModuleIdentifier, SplitProgramInfo, MAIN_MODULE,
+        OutputModuleInfo, SplitModuleIdentifier, SplitProgramInfo, MAIN_MODULE,
     },
     tracing_support::perf_span,
     util::wasm_data_start,
@@ -316,6 +316,7 @@ struct ModuleEmitState<'a> {
     emit_state: &'a EmitState<'a>,
 
     output_module_index: usize,
+    output_module_info: &'a OutputModuleInfo,
     output_module: wasm_encoder::Module,
 
     imports: Vec<OutputImport<'a>>,
@@ -610,6 +611,7 @@ impl<'a> ModuleEmitState<'a> {
             input_module: emit_state.input_module,
             emit_state,
             output_module_index,
+            output_module_info,
             output_module: wasm_encoder::Module::new(),
             defined_functions,
             imports,
@@ -920,7 +922,7 @@ impl<'a> ModuleEmitState<'a> {
             + self
                 .emit_state
                 .data_relocations
-                .extra_fragments(self.output_module_index)
+                .extra_fragments(self.output_module_info)
                 .len();
         let section = wasm_encoder::DataCountSection {
             count: data_section_count
@@ -1072,8 +1074,9 @@ impl<'a> ModuleEmitState<'a> {
 
     /// The data of `fragment`, with the relocations inside applied.
     fn fragment_data(&self, segment_idx: usize, fragment: &Fragment) -> Result<Vec<u8>> {
-        let DataSegmentEmitInfo::Ranges { ranges, layout, .. } =
-            &self.emit_state.data_relocations.per_segment[segment_idx]
+        let DataSegmentEmitInfo::Ranges {
+            ranges, emit_order, ..
+        } = &self.emit_state.data_relocations.per_segment[segment_idx]
         else {
             unreachable!("fragments only exist for relocated segments");
         };
@@ -1083,7 +1086,7 @@ impl<'a> ModuleEmitState<'a> {
             .get_segment_data_address(segment_idx);
         let input_range_start = wasm_data_start(&self.input_module.data_segments[segment_idx]);
         let mut data = vec![];
-        for &range_idx in &layout.emit_order[fragment.ranges.clone()] {
+        for &range_idx in &emit_order[fragment.ranges.clone()] {
             let range = &ranges[range_idx];
             let input_range = (input_range_start + range.input_range.start)
                 ..(input_range_start + range.input_range.end);
@@ -1121,7 +1124,7 @@ impl<'a> ModuleEmitState<'a> {
                 }
                 DataSegmentEmitInfo::Ranges { base_address, .. } => {
                     match data_reloc
-                        .fragments(segment_idx, self.output_module_index)
+                        .fragments(segment_idx, self.output_module_info)
                         .next()
                     {
                         Some(fragment) => (
@@ -1135,7 +1138,7 @@ impl<'a> ModuleEmitState<'a> {
             segments.push((segment_idx, addr_offset, data));
         }
         // Further fragments are appended, see `DataEmitInfo::extra_fragments`.
-        for (segment_idx, fragment) in data_reloc.extra_fragments(self.output_module_index) {
+        for (segment_idx, fragment) in data_reloc.extra_fragments(self.output_module_info) {
             let DataSegmentEmitInfo::Ranges { base_address, .. } =
                 &data_reloc.per_segment[segment_idx]
             else {
@@ -1259,7 +1262,7 @@ impl<'a> ModuleEmitState<'a> {
             for (i, (segment_idx, _)) in self
                 .emit_state
                 .data_relocations
-                .extra_fragments(self.output_module_index)
+                .extra_fragments(self.output_module_info)
                 .into_iter()
                 .enumerate()
             {
