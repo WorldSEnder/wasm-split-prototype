@@ -107,11 +107,6 @@ pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
 }
 
 #[derive(Debug, Default)]
-pub struct ReachabilityGraph {
-    pub reachable: HashSet<DepNode>,
-}
-
-#[derive(Debug, Default)]
 pub struct OutputModuleInfo {
     pub included_symbols: HashSet<DepNode>,
     pub used_shared_deps: HashSet<DepNode>,
@@ -121,15 +116,6 @@ pub struct OutputModuleInfo {
 impl OutputModuleInfo {
     pub fn print(&self, module_name: &str, module: &InputModule) {
         print_deps(module_name, module, &self.included_symbols);
-    }
-}
-
-impl From<ReachabilityGraph> for OutputModuleInfo {
-    fn from(reachability: ReachabilityGraph) -> Self {
-        Self {
-            included_symbols: reachability.reachable,
-            ..Default::default()
-        }
     }
 }
 
