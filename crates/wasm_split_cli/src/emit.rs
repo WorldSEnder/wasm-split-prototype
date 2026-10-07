@@ -1112,15 +1112,11 @@ impl<'a> ModuleEmitState<'a> {
                     None,
                     self.get_relocated_segment_data(segment_idx, input_data)?,
                 ),
-                DataSegmentEmitInfo::FromInputOnlyIn(module)
-                    if *module == self.output_module_index =>
-                {
-                    (
-                        None,
-                        self.get_relocated_segment_data(segment_idx, input_data)?,
-                    )
-                }
-                DataSegmentEmitInfo::FromInputOnlyIn(_) => {
+                DataSegmentEmitInfo::FromInputOnlyInMain if self.is_main() => (
+                    None,
+                    self.get_relocated_segment_data(segment_idx, input_data)?,
+                ),
+                DataSegmentEmitInfo::FromInputOnlyInMain => {
                     (None, vec![]) // no data, but emit the segment to not shift data indices
                 }
                 DataSegmentEmitInfo::Ranges { base_address, .. } => {

@@ -93,7 +93,7 @@ fn layout_ranges(ranges: &mut [LateDataRange]) -> RangeLayout {
 pub enum DataSegmentEmitInfo {
     // Copy this segment from the input, either in all or a specific output module
     FromInputInAll,
-    FromInputOnlyIn(usize),
+    FromInputOnlyInMain,
     Ranges {
         // some reloc information
         base_address: u64,
@@ -140,7 +140,7 @@ impl DataEmitInfo {
     pub fn new(input_module: &InputModule, program_info: &SplitProgramInfo) -> Result<Self> {
         enum DataSegmentAnalysis {
             FromInputInAll,
-            FromInputOnlyIn(usize),
+            FromInputOnlyInMain,
             Ranges {
                 ranges: Vec<LateDataRange>,
                 // symbol -> (index in ranges, offset in range)
@@ -210,18 +210,18 @@ impl DataEmitInfo {
                             wasmparser::Operator::I64Const { value } => value,
                             op => {
                                 warn!("Non-constant operator {op:?} found to specify a segment #{segment_idx}'s base address.");
-                                return DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE);
+                                return DataSegmentAnalysis::FromInputOnlyInMain;
                             }
                         };
                         warn!("Invalid base address ({invalid_value}) found as segment #{segment_idx}'s base address");
-                        return DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE);
+                        return DataSegmentAnalysis::FromInputOnlyInMain;
                     };
                     if active_unknown_address.is_some() {
-                        return DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE);
+                        return DataSegmentAnalysis::FromInputOnlyInMain;
                     }
                     if overlaps_other_segment(segment_idx) {
                         warn!("Data segment {segment_idx} overlaps another data segment in memory. Putting it into main.");
-                        return DataSegmentAnalysis::FromInputOnlyIn(MAIN_MODULE);
+                        return DataSegmentAnalysis::FromInputOnlyInMain;
                     }
                     let address = extent.start;
                     DataSegmentAnalysis::Ranges {
@@ -431,8 +431,8 @@ impl DataEmitInfo {
             .enumerate()
             .map(|(segment_index, segment)| match segment {
                 DataSegmentAnalysis::FromInputInAll => DataSegmentEmitInfo::FromInputInAll,
-                DataSegmentAnalysis::FromInputOnlyIn(module) => {
-                    DataSegmentEmitInfo::FromInputOnlyIn(module)
+                DataSegmentAnalysis::FromInputOnlyInMain => {
+                    DataSegmentEmitInfo::FromInputOnlyInMain
                 }
                 DataSegmentAnalysis::Ranges {
                     mut ranges,
@@ -448,7 +448,7 @@ impl DataEmitInfo {
                             "Data segment {segment_index}: partially overlapping symbols at {:?} need an alignment of {} that their start does not have. Putting it into main.",
                             range.input_range, range.data_align
                         );
-                        DataSegmentEmitInfo::FromInputOnlyIn(MAIN_MODULE)
+                        DataSegmentEmitInfo::FromInputOnlyInMain
                     } else {
                         // check that range_lookup completely covers the (non-zero) data segment?
                         // Otherwise there is non-relocated data, which most likely indicates an error.
@@ -459,7 +459,7 @@ impl DataEmitInfo {
                         if layout.segment_len > input_len {
                             trace!("{ranges:?}");
                             warn!("Overlong segment {segment_index} after relocation, putting it in main module.");
-                            DataSegmentEmitInfo::FromInputOnlyIn(MAIN_MODULE)
+                            DataSegmentEmitInfo::FromInputOnlyInMain
                         } else {
                             DataSegmentEmitInfo::Ranges {
                                 ranges,
@@ -507,8 +507,8 @@ impl DataEmitInfo {
             .zip(&input_module.data_segments)
             .any(|(emit_info, segment)| match emit_info {
                 DataSegmentEmitInfo::FromInputInAll => wasm_data_len(segment) > 0,
-                DataSegmentEmitInfo::FromInputOnlyIn(module) => {
-                    *module == output_module_index && wasm_data_len(segment) > 0
+                DataSegmentEmitInfo::FromInputOnlyInMain => {
+                    MAIN_MODULE == output_module_index && wasm_data_len(segment) > 0
                 }
                 DataSegmentEmitInfo::Ranges { layout, .. } => layout
                     .fragments
