@@ -11,6 +11,10 @@ use regex::Regex;
 use tracing::{field, trace, warn};
 use wasmparser::TypeRef;
 
+pub(crate) mod data;
+
+pub(crate) const MAIN_MODULE: usize = 0;
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SplitPoint {
     pub module_name: String,
@@ -103,29 +107,17 @@ pub fn get_split_points(module: &InputModule) -> Result<Vec<SplitPoint>> {
 }
 
 #[derive(Debug, Default)]
-pub struct ReachabilityGraph {
-    pub reachable: HashSet<DepNode>,
-}
-
-#[derive(Debug, Default)]
 pub struct OutputModuleInfo {
     pub included_symbols: HashSet<DepNode>,
     pub used_shared_deps: HashSet<DepNode>,
     pub is_empty: bool,
+    // a map segment_index -> fragments in this module, filled in by DataEmitInfo
+    pub data_fragments: HashMap<usize, Vec<data::Fragment>>,
 }
 
 impl OutputModuleInfo {
     pub fn print(&self, module_name: &str, module: &InputModule) {
         print_deps(module_name, module, &self.included_symbols);
-    }
-}
-
-impl From<ReachabilityGraph> for OutputModuleInfo {
-    fn from(reachability: ReachabilityGraph) -> Self {
-        Self {
-            included_symbols: reachability.reachable,
-            ..Default::default()
-        }
     }
 }
 
@@ -386,6 +378,7 @@ pub struct SplitProgramInfo {
     /// - an additional shim function needs to be used in the indirect_function_table instead of it,
     ///   because other modules expect the original signature.
     pub needs_shim_in_main: HashSet<InputFuncId>,
+    pub data_relocations: data::DataEmitInfo,
 }
 
 impl SplitProgramInfo {
@@ -489,7 +482,7 @@ pub fn compute_split_modules(
         .iter()
         .map(|split_point| (split_point.import_func, split_point.export_func))
         .collect();
-    let all_imports: HashSet<_> = split_func_map
+    let split_point_imports: HashSet<_> = split_func_map
         .keys()
         .map(|&import| DepNode::Function(import))
         .collect();
@@ -521,14 +514,14 @@ pub fn compute_split_modules(
     let mut painter = graph_analysis.into_painter();
     let mut split_module_contents = HashMap::<SplitModuleIdentifier, OutputModuleInfo>::new();
     while let Some((node, color)) = painter.next() {
-        if all_imports.contains(&node) {
+        if split_point_imports.contains(&node) {
             continue;
         }
-        split_module_contents
-            .entry(color.clone())
-            .or_default()
-            .included_symbols
-            .insert(node);
+        let module = match split_module_contents.get_mut(color) {
+            Some(module) => module,
+            None => split_module_contents.entry(color.clone()).or_default(),
+        };
+        module.included_symbols.insert(node);
         let DepNode::Function(func_id) = node else {
             continue;
         };
@@ -625,6 +618,21 @@ pub fn compute_split_modules(
     }
     perf_span.exit();
 
+    let perf_span = perf_span!("data symbols");
+    let perf_span = perf_span.enter();
+    // Data symbols can overlap without dependencies between them, mostly due to string tail merging.
+    // Hence, not every included symbol in a module should lead to data bytes in its segments.
+    program_info.data_relocations = data::DataEmitInfo::build(module, &mut program_info)?;
+    for (module_index, (_, output_module)) in program_info.output_modules.iter_mut().enumerate() {
+        output_module.is_empty |= !module_defines_anything(
+            module,
+            output_module,
+            &program_info.data_relocations,
+            module_index,
+        )
+    }
+    perf_span.exit();
+
     // This exact implementation can differ between different compilations of the CLI, specifically
     // between rust versions. That is fine and intended.
     let perf_span = perf_span!("canary fingerprint");
@@ -635,6 +643,18 @@ pub fn compute_split_modules(
     // once options impact the output module, these should be hashed too
     program_info.canary_export_name = format!("__canary_{:x}", hasher.finish());
     perf_span.exit();
-
     Ok(program_info)
+}
+
+fn module_defines_anything(
+    input_module: &InputModule,
+    info: &OutputModuleInfo,
+    data: &data::DataEmitInfo,
+    output_module_index: usize,
+) -> bool {
+    let defines_function = info.included_symbols.iter().any(|dep| match dep {
+        DepNode::Function(id) => *id >= input_module.imported_funcs.len(),
+        _ => false,
+    });
+    defines_function || data.emits_data_in(input_module, output_module_index, info)
 }
