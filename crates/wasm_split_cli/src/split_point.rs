@@ -480,7 +480,7 @@ pub fn compute_split_modules(
         .iter()
         .map(|split_point| (split_point.import_func, split_point.export_func))
         .collect();
-    let all_imports: HashSet<_> = split_func_map
+    let split_point_imports: HashSet<_> = split_func_map
         .keys()
         .map(|&import| DepNode::Function(import))
         .collect();
@@ -512,14 +512,18 @@ pub fn compute_split_modules(
     let mut painter = graph_analysis.into_painter();
     let mut split_module_contents = HashMap::<SplitModuleIdentifier, OutputModuleInfo>::new();
     while let Some((node, color)) = painter.next() {
-        if all_imports.contains(&node) {
+        if split_point_imports.contains(&node) {
             continue;
         }
-        split_module_contents
-            .entry(color.clone())
-            .or_default()
-            .included_symbols
-            .insert(node);
+        let module = match split_module_contents.get_mut(&color) {
+            Some(module) => module,
+            None => split_module_contents
+                .entry(color.clone())
+                .or_insert_with(|| {
+                    return OutputModuleInfo::default();
+                }),
+        };
+        module.included_symbols.insert(node);
         let DepNode::Function(func_id) = node else {
             continue;
         };
@@ -616,6 +620,21 @@ pub fn compute_split_modules(
     }
     perf_span.exit();
 
+    let perf_span = perf_span!("data symbols");
+    let perf_span = perf_span.enter();
+    // Data symbols can overlap without dependencies between them, mostly due to string tail merging.
+    // Hence, not every included symbol in a module should lead to data bytes in its segments.
+    program_info.data_relocations = data::DataEmitInfo::new(module, &program_info)?;
+    for (module_index, (_, output_module)) in program_info.output_modules.iter_mut().enumerate() {
+        output_module.is_empty |= !data::module_defines_anything(
+            module,
+            output_module,
+            &program_info.data_relocations,
+            module_index,
+        )
+    }
+    perf_span.exit();
+
     // This exact implementation can differ between different compilations of the CLI, specifically
     // between rust versions. That is fine and intended.
     let perf_span = perf_span!("canary fingerprint");
@@ -626,15 +645,5 @@ pub fn compute_split_modules(
     // once options impact the output module, these should be hashed too
     program_info.canary_export_name = format!("__canary_{:x}", hasher.finish());
     perf_span.exit();
-
-    program_info.data_relocations = data::DataEmitInfo::new(module, &program_info)?;
-    for (module_index, (_, output_module)) in program_info.output_modules.iter_mut().enumerate() {
-        output_module.is_empty |= !data::module_defines_anything(
-            module,
-            output_module,
-            &program_info.data_relocations,
-            module_index,
-        )
-    }
     Ok(program_info)
 }

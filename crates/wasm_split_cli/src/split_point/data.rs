@@ -31,8 +31,8 @@ pub struct LateDataRange {
 /// A contiguous run of ranges of one output module, emitted as one data segment.
 #[derive(Debug)]
 pub struct Fragment {
-    module: usize,
-    // offset in the relocated segment
+    // offset in the relocated segment,
+    // also accessible as the `LateDataRange::segment_offset` of the first referenced range
     pub offset: u64,
     // the ranges, as a range of indices into `RangeLayout::emit_order`
     pub ranges: Range<usize>,
@@ -43,7 +43,7 @@ pub struct RangeLayout {
     // indices into the ranges, in the order they are placed in the segment
     pub emit_order: Vec<usize>,
     // in placement order; the fragments of one module are in ascending order
-    fragments: Vec<Fragment>,
+    fragments: Vec<(usize, Fragment)>,
     segment_len: u64,
 }
 
@@ -63,21 +63,23 @@ fn layout_ranges(ranges: &mut [LateDataRange]) -> RangeLayout {
             range.input_range.start,
         )
     });
-    let mut fragments: Vec<Fragment> = vec![];
+    let mut fragments: Vec<(usize, Fragment)> = vec![];
     let mut segment_len: u64 = 0;
     for (order_idx, &range_idx) in emit_order.iter().enumerate() {
         let range = &mut ranges[range_idx];
         range.segment_offset = segment_len.next_multiple_of(range.data_align);
         segment_len = range.segment_offset + (range.input_range.end - range.input_range.start);
         match fragments.last_mut() {
-            Some(fragment) if fragment.module == range.in_module => {
+            Some(&mut (module, ref mut fragment)) if module == range.in_module => {
                 fragment.ranges.end = order_idx + 1;
             }
-            _ => fragments.push(Fragment {
-                module: range.in_module,
-                offset: range.segment_offset,
-                ranges: order_idx..order_idx + 1,
-            }),
+            _ => fragments.push((
+                range.in_module,
+                Fragment {
+                    offset: range.segment_offset,
+                    ranges: order_idx..order_idx + 1,
+                },
+            )),
         }
     }
     RangeLayout {
@@ -117,7 +119,7 @@ impl DataEmitInfo {
         };
         fragments
             .iter()
-            .filter(move |fragment| fragment.module == module)
+            .filter_map(move |(frag_module, fragment)| (*frag_module == module).then_some(fragment))
     }
 
     /// Every input segment keeps its index in every output module, holding the module's first
@@ -441,7 +443,7 @@ impl DataEmitInfo {
                     // Partial overlaps must leave the range start aligned. Keep the segment
                     // whole in main if they do not, or if the relocated layout is overlong:
                     // other active segments cannot be moved and must not be overwritten.
-                    if let Some(range) = ranges.iter().find(|r| r.input_range.start % r.data_align != 0) {
+                    if let Some(range) = ranges.iter().find(|r| !r.input_range.start.is_multiple_of(r.data_align)) {
                         warn!(
                             "Data segment {segment_index}: partially overlapping symbols at {:?} need an alignment of {} that their start does not have. Putting it into main.",
                             range.input_range, range.data_align
@@ -511,7 +513,7 @@ impl DataEmitInfo {
                 DataSegmentEmitInfo::Ranges { layout, .. } => layout
                     .fragments
                     .iter()
-                    .any(|fragment| fragment.module == output_module_index),
+                    .any(|(frag_module, _)| *frag_module == output_module_index),
             })
     }
 }
