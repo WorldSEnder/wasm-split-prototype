@@ -190,15 +190,20 @@ fn reexported_shared_symbols(
     module: &OutputModuleInfo,
 ) -> Result<String> {
     let mut shares = String::new();
-    let exported = program_info.shared_deps.iter().filter_map(|dep| {
-        if let DepNode::Function(_) | DepNode::DataSymbol(_) = dep {
-            return None;
-        }
-        if !module.included_symbols.contains(dep) {
-            return None;
-        }
-        Some(emit_state.name_for(dep))
-    });
+    let mut exported: Vec<_> = program_info
+        .shared_deps
+        .iter()
+        .filter_map(|dep| {
+            if let DepNode::Function(_) | DepNode::DataSymbol(_) = dep {
+                return None;
+            }
+            if !module.included_symbols.contains(dep) {
+                return None;
+            }
+            Some(emit_state.name_for(dep))
+        })
+        .collect();
+    exported.sort();
     for export in exported {
         let () = write!(&mut shares, "{}, ", export.as_ref())?;
     }
