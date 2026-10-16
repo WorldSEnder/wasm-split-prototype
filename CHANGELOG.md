@@ -10,6 +10,8 @@
   chunks were still loading or after one of them failed.
 - Emit only modules that contain some functions or data. For example, omit a chunk whose only
   data is a zero-sized symbol.
+- Emit the shared imports in the link module in a fixed order, so splitting the same input
+  twice gives the same `__wasm_split.js` (#79).
 
 ## wasm-split-cli v0.2.3
 

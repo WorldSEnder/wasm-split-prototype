@@ -88,11 +88,12 @@ fn collect_file_sizes(
     main_file: &Path,
     split: &wasm_split_cli_support::SplitWasm,
 ) -> Result<()> {
+    let link_file = main_file.with_file_name("__wasm_split.js");
     for module in split
         .split_modules
         .iter()
         .map(|p| p.as_ref())
-        .chain([main_file])
+        .chain([main_file, link_file.as_path()])
     {
         let meta = std::fs::File::open(module)?.metadata()?;
         let file_hash = hash_file(module)?;
