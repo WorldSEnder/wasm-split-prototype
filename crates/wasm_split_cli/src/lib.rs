@@ -1,9 +1,11 @@
 use std::{
     collections::HashMap,
+    mem,
     path::{Path, PathBuf},
 };
 
 use eyre::{Result, WrapErr};
+use rayon::ThreadPoolBuilder;
 use split_point::SplitModuleIdentifier;
 
 mod dep_graph;
@@ -20,7 +22,9 @@ mod util;
 
 pub use options::*;
 
+use tracing::dispatcher;
 use tracing_support::perf_span;
+use util::instrument_once;
 
 #[non_exhaustive]
 pub struct SplitWasm {
@@ -31,6 +35,17 @@ pub struct SplitWasm {
 }
 
 pub fn transform(opts: Options) -> Result<SplitWasm> {
+    let dispatch = dispatcher::get_default(Clone::clone);
+    let pool = ThreadPoolBuilder::new()
+        .start_handler(move |_thread| {
+            let guard = dispatcher::set_default(&dispatch);
+            mem::forget(guard); // make it permanent for the thread lifetime
+        })
+        .build()?;
+    pool.install(move || run_transform(opts))
+}
+
+fn run_transform(opts: Options) -> Result<SplitWasm> {
     let strictness = if opts.strict_tests {
         read::Strictness::IntegrationTesting
     } else {
@@ -69,20 +84,28 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
         link_module,
         &deps.stub_fns,
     )?;
-    let wasm_modules = emit::emit_modules(
-        &split_program_info,
-        &emit_state,
-        |output_module_index, identifier, data| {
-            let output_path = match identifier {
-                SplitModuleIdentifier::Main => opts.main_out_path.to_path_buf(),
-                _ => opts
-                    .output_dir
-                    .join(identifier.filename(output_module_index) + ".wasm"),
-            };
-            (identifier, output_path, data)
-        },
-    )?;
-    let js_link_module = js::link_module(opts.main_module, &split_program_info, &emit_state)?;
+    let wasm_modules = || {
+        emit::emit_modules(
+            &split_program_info,
+            &emit_state,
+            |output_module_index, identifier, data| {
+                let output_path = match identifier {
+                    SplitModuleIdentifier::Main => opts.main_out_path.to_path_buf(),
+                    _ => opts
+                        .output_dir
+                        .join(identifier.filename(output_module_index) + ".wasm"),
+                };
+                (identifier, output_path, data)
+            },
+        )
+    };
+    let js_link_module = || js::link_module(opts.main_module, &split_program_info, &emit_state);
+    let (wasm_modules, js_link_module) = rayon::join(
+        instrument_once(wasm_modules),
+        instrument_once(js_link_module),
+    );
+    let wasm_modules = wasm_modules?;
+    let js_link_module = js_link_module?;
     emit_span.exit();
     // (4) write the output
     let write_span = perf_span!("write");

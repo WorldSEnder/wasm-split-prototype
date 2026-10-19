@@ -2091,6 +2091,7 @@ dependencies = [
  "eyre",
  "gimli 0.34.0",
  "lazy_static",
+ "rayon",
  "regex",
  "tracing",
  "wasm-encoder 0.261.0",
