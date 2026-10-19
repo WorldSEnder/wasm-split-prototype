@@ -1381,14 +1381,15 @@ impl wasm_encoder::reencode::Reencode for FuncReencoder<'_> {
     }
 }
 
-pub fn emit_modules<'info, M>(
+pub fn emit_modules<'info, M: Send>(
     program_info: &'info SplitProgramInfo,
     emit_state: &EmitState,
-    emit_fn: impl Fn(usize, &'info SplitModuleIdentifier, Vec<u8>) -> M,
+    emit_fn: impl Fn(usize, &'info SplitModuleIdentifier, Vec<u8>) -> M + Sync,
 ) -> Result<Vec<M>> {
-    let modules = program_info.output_modules.iter().enumerate();
-    modules
-        .map(|(output_module_index, (identifier, module))| {
+    use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+    let modules = program_info.output_modules.par_iter().enumerate();
+    let modules: Vec<M> = modules
+        .map(|(output_module_index, (identifier, module))| -> Result<_> {
             let emit_span = perf_span!(
                 "emit module",
                 module_index = output_module_index,
@@ -1410,6 +1411,7 @@ pub fn emit_modules<'info, M>(
             emit_span.record("data_size", data.len());
             Ok(Some(emit_fn(output_module_index, identifier, data)))
         })
-        .filter_map(|res| res.transpose())
-        .collect()
+        .filter_map(|maybe_empty| maybe_empty.transpose())
+        .collect::<Result<_>>()?;
+    Ok(modules)
 }
