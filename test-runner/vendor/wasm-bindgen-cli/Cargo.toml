@@ -1,0 +1,13 @@
+# this package exists purely to avoid recompilations due to briansmith/ring#2840
+[package]
+name = "wasm-bindgen-cli"
+version = "0.2.129"
+edition = "2024"
+
+[dependencies]
+exec = "0.3"
+
+[[bin]]
+name = "wasm-bindgen-test-runner"
+[[bin]]
+name = "wasm-bindgen"

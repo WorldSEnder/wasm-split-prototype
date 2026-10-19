@@ -1,5 +1,6 @@
 [workspace]
 # this is in its own workspace to disconnect the toolchain requirement
+members = [".", "vendor/wasm-bindgen-cli"]
 
 [package]
 name = "wasm-split-test-runner"
@@ -11,7 +12,7 @@ default-run = "wasm-split-test-runner"
 
 [dependencies]
 # this MUST be the same bindgen version as used on the tested artifact
-wasm-bindgen-cli = { version = "=0.2.129", artifact = ["bin:wasm-bindgen-test-runner", "bin:wasm-bindgen"] }
+wasm-bindgen-cli = { path = "vendor/wasm-bindgen-cli", version = "=0.2.129", artifact = ["bin:wasm-bindgen-test-runner", "bin:wasm-bindgen"] }
 wasm_split_cli_support = { path = "../crates/wasm_split_cli" }
 wasmparser = "0.261"
 eyre = "0.6.12"
