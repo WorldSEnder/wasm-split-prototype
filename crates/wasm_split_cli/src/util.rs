@@ -73,6 +73,17 @@ pub fn wasm_reloc_range(reloc: &wasmparser::RelocationEntry) -> Range<u64> {
     start..start + len
 }
 
+/// Instrument an `FnOnce` to run the scope of the `Span` at the place of calling this function.
+/// Ensure that span is still active while this is run. Uses parent scopes, not follows_from.
+pub fn instrument_once<R>(f: impl FnOnce() -> R) -> impl FnOnce() -> R {
+    let capture = tracing::Span::current();
+    move || {
+        let span = tracing::span!(parent: &capture, tracing::Level::TRACE, "rayon task");
+        let _s = span.enter();
+        f()
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn test_exponential_partition() {

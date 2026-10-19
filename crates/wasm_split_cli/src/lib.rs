@@ -24,6 +24,7 @@ pub use options::*;
 
 use tracing::dispatcher;
 use tracing_support::perf_span;
+use util::instrument_once;
 
 #[non_exhaustive]
 pub struct SplitWasm {
@@ -99,7 +100,10 @@ fn run_transform(opts: Options) -> Result<SplitWasm> {
         )
     };
     let js_link_module = || js::link_module(opts.main_module, &split_program_info, &emit_state);
-    let (wasm_modules, js_link_module) = rayon::join(wasm_modules, js_link_module);
+    let (wasm_modules, js_link_module) = rayon::join(
+        instrument_once(wasm_modules),
+        instrument_once(js_link_module),
+    );
     let wasm_modules = wasm_modules?;
     let js_link_module = js_link_module?;
     emit_span.exit();

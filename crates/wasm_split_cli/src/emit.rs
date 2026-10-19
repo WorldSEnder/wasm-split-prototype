@@ -1387,9 +1387,13 @@ pub fn emit_modules<'info, M: Send>(
     emit_fn: impl Fn(usize, &'info SplitModuleIdentifier, Vec<u8>) -> M + Sync,
 ) -> Result<Vec<M>> {
     use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+    let emit_span = tracing::span::Span::current();
     let modules = program_info.output_modules.par_iter().enumerate();
     let modules: Vec<M> = modules
         .map(|(output_module_index, (identifier, module))| -> Result<_> {
+            let span =
+                tracing::span!(parent: &emit_span, tracing::Level::TRACE, "module rayon task");
+            let _s = span.enter();
             let emit_span = perf_span!(
                 "emit module",
                 module_index = output_module_index,

@@ -211,6 +211,15 @@ fn with_perf_tracing<R>(report_dir: &Path, f: impl FnOnce() -> R) -> R {
     }));
     let subscriber = tracing_subscriber::registry().with(fmt).with(perf);
     let dispatch = tracing::Dispatch::new(subscriber);
+    // work-around for thoren-d/tracing-chrome#32, google/perfetto#8074. We spawn a simple thread that claims tid 0,
+    // so all other events use a positive thread id.
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            tracing::dispatcher::with_default(&dispatch, || {
+                tracing::trace!(perf_key = "fake event");
+            })
+        });
+    });
     let r = tracing::dispatcher::with_default(&dispatch, f);
     let _ = perf_guard;
     r
