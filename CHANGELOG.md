@@ -1,4 +1,4 @@
-## wasm-split-cli vfuture
+## wasm-split-cli v0.2.4
 
 - Improve data layout in optimized builds, with less data ending up in the main module and more
   data in the split modules, in particular when `wasm-ld` deduplicates strings and performs tail
