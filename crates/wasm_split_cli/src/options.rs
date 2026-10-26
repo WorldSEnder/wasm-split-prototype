@@ -89,6 +89,12 @@ pub struct Options<'a> {
     /// This option is experimental.
     /// Default: `true` if the `WASM_SPLIT_CLI_ENABLE_DWARF` environment variable is non-empty.
     pub emit_dwarf: bool,
+    /// Shared chunks whose estimated code size is below this many bytes are merged into
+    /// other chunks (or the main module), trading a few extra downloaded bytes for far
+    /// fewer requests. 0 keeps every chunk as split.
+    ///
+    /// Default: 0
+    pub min_chunk_size: usize,
     /// Enables explicit tests for assumptions we make about the input wasm file during integration testing.
     #[doc(hidden)]
     pub strict_tests: bool,
@@ -107,6 +113,7 @@ impl<'wasm> Options<'wasm> {
             verbose: false,
             emit_dwarf: std::env::var_os("WASM_SPLIT_CLI_ENABLE_DWARF")
                 .is_some_and(|v| !v.is_empty()),
+            min_chunk_size: 0,
             strict_tests: false,
         }
     }

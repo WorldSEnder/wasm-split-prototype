@@ -1,3 +1,10 @@
+## wasm-split-cli vfuture
+
+- Add `Options::min_chunk_size` (`--min-chunk-size` in the cli). Shared chunks whose estimated
+  code size is below it are merged into the chunk or main module where that downloads the fewest
+  extra bytes. With many split points this cuts the number of chunks one split module loads from
+  hundreds to tens. The default 0 keeps the current output.
+
 ## wasm-split-cli v0.2.4
 
 - Improve data layout in optimized builds, with less data ending up in the main module and more

@@ -28,6 +28,10 @@ struct Cli {
     #[arg(long)]
     out_name: Option<String>,
 
+    /// Merge shared chunks whose estimated code size is below this many bytes.
+    #[arg(long, default_value_t = 0)]
+    min_chunk_size: usize,
+
     /// Print verbose split information.
     #[arg(short, long)]
     verbose: bool,
@@ -47,6 +51,7 @@ fn main() -> Result<()> {
     let _ = this::transform({
         let mut opts = this::Options::new(&input_wasm);
         opts.verbose = args.verbose;
+        opts.min_chunk_size = args.min_chunk_size;
         opts.output_dir = &args.output;
         opts.main_out_path = &main_out_path;
         if let Some(name) = args.out_name.as_ref() {
