@@ -22,7 +22,7 @@ mod util;
 
 pub use options::*;
 
-use tracing::dispatcher;
+use tracing::{dispatcher, subscriber::NoSubscriber};
 use tracing_support::perf_span;
 use util::instrument_once;
 
@@ -38,6 +38,11 @@ pub fn transform(opts: Options) -> Result<SplitWasm> {
     let dispatch = dispatcher::get_default(Clone::clone);
     let pool = ThreadPoolBuilder::new()
         .start_handler(move |_thread| {
+            if dispatch.is::<NoSubscriber>()
+                && dispatcher::get_default(|default| default.is::<NoSubscriber>())
+            {
+                return;
+            }
             let guard = dispatcher::set_default(&dispatch);
             mem::forget(guard); // make it permanent for the thread lifetime
         })
