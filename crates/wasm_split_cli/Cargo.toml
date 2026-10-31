@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 eyre = "0.6"
+fixedbitset = "0.5"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 lazy_static = "1.4"
 regex = "1.12"

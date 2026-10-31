@@ -1,9 +1,10 @@
 ## wasm-split-cli vfuture
 
-- Add `Options::min_chunk_size` (`--min-chunk-size` in the cli). Shared chunks whose estimated
-  code size is below it are merged into the chunk or main module where that downloads the fewest
-  extra bytes. With many split points this cuts the number of chunks one split module loads from
-  hundreds to tens. The default 0 keeps the current output.
+- Add `Options::cost_model` (`--request-cost` and `--load-probability` in the cli). Shared chunks
+  are merged when that lowers the expected loading cost, which weighs the requests saved against
+  the extra bytes loaded, and counts data as well as code. With many split points this cuts the
+  number of chunks one split module loads from hundreds to tens. The web target merges by default,
+  the bundler target does not. `--request-cost 0` keeps the previous output.
 
 ## wasm-split-cli v0.2.4
 

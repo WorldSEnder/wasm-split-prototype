@@ -69,7 +69,7 @@ fn run_transform(opts: Options) -> Result<SplitWasm> {
         &module,
         &deps.graph,
         split_points,
-        opts.min_chunk_size,
+        opts.resolved_cost_model(),
     )?;
     deps_span.exit();
 

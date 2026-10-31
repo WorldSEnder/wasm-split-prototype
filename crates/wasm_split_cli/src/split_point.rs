@@ -3,6 +3,7 @@ use std::hash::{DefaultHasher, Hasher};
 
 use crate::dep_graph::{DepGraph, DepNode};
 use crate::graph_utils::tarjan_scc::{SccEvent, SccId, TarjanSccResult};
+use crate::options::CostModel;
 use crate::read::{ExportId, ImportId, InputFuncId, InputModule};
 use crate::tracing_support::perf_span;
 use eyre::{anyhow, bail, Result};
@@ -470,7 +471,7 @@ pub fn compute_split_modules(
     module: &InputModule,
     dep_graph: &DepGraph,
     split_points: Vec<SplitPoint>,
-    min_chunk_size: usize,
+    cost_model: CostModel,
 ) -> Result<SplitProgramInfo> {
     let split_span = perf_span!("compute splits", module_count = field::Empty);
     let _perf_span = split_span.enter();
@@ -525,9 +526,9 @@ pub fn compute_split_modules(
         module.included_symbols.insert(node);
     }
     perf_span.exit();
-    // Fold small shared chunks into bigger ones before deciding imports, so every later
-    // step sees the merged modules.
-    crate::merge::merge_small_chunks(module, &mut split_module_contents, min_chunk_size);
+    // Merge shared chunks before deciding imports, so every later step sees the merged
+    // modules.
+    crate::merge::merge_chunks(module, &mut split_module_contents, cost_model);
     if let Some(main) = split_module_contents.get(&SplitModuleIdentifier::Main) {
         for node in &main.included_symbols {
             let DepNode::Function(func_id) = *node else {

@@ -64,7 +64,7 @@ use wasm_encoder::{
 };
 use wasmparser::{DataKind, Operator, Parser, Payload};
 
-use wasm_split_cli_support::{transform, Options};
+use wasm_split_cli_support::{transform, CostModel, Options};
 
 #[path = "../src/magic_constants.rs"]
 mod magic_constants;
@@ -482,6 +482,8 @@ fn split_wasm(wasm: &[u8]) -> Output {
     let mut opts = Options::new(wasm);
     opts.output_dir = tmp.path();
     opts.main_out_path = &main_out;
+    // These tests assert where the painter puts symbols, before any merging.
+    opts.cost_model = Some(CostModel::None);
 
     let link_path = tmp.path().join(opts.link_name);
     let output = transform(opts).expect("transform succeeds");
