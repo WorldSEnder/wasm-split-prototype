@@ -52,6 +52,35 @@ impl OutputTarget {
     }
 }
 
+/// How the shared chunks are merged after splitting.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum CostModel {
+    /// Keep every chunk as split.
+    None,
+    /// Merge chunks when that lowers the expected loading cost.
+    Expected {
+        /// What one more request costs, in downloaded bytes.
+        request_cost: usize,
+        /// The chance that one split module gets loaded, assuming independent splits.
+        load_probability: f64,
+    },
+}
+
+impl OutputTarget {
+    /// Chunks of the web target are fetched over the network, one request each.
+    /// A bundler decides on its own how they get loaded.
+    fn default_cost_model(&self) -> CostModel {
+        match self {
+            Self::Web(_) => CostModel::Expected {
+                request_cost: 16384,
+                load_probability: 0.05,
+            },
+            Self::Bundler(_) => CostModel::None,
+        }
+    }
+}
+
 #[non_exhaustive]
 pub struct Options<'a> {
     /// The input wasm to split
@@ -89,12 +118,21 @@ pub struct Options<'a> {
     /// This option is experimental.
     /// Default: `true` if the `WASM_SPLIT_CLI_ENABLE_DWARF` environment variable is non-empty.
     pub emit_dwarf: bool,
+    /// How to merge the shared chunks.
+    ///
+    /// Default: `None`, which picks the model of the output target
+    pub cost_model: Option<CostModel>,
     /// Enables explicit tests for assumptions we make about the input wasm file during integration testing.
     #[doc(hidden)]
     pub strict_tests: bool,
 }
 
 impl<'wasm> Options<'wasm> {
+    pub(crate) fn resolved_cost_model(&self) -> CostModel {
+        self.cost_model
+            .unwrap_or_else(|| self.target.default_cost_model())
+    }
+
     /// New default options of the specified input wasm.
     pub fn new(input_wasm: &'wasm [u8]) -> Self {
         Self {
@@ -107,6 +145,7 @@ impl<'wasm> Options<'wasm> {
             verbose: false,
             emit_dwarf: std::env::var_os("WASM_SPLIT_CLI_ENABLE_DWARF")
                 .is_some_and(|v| !v.is_empty()),
+            cost_model: None,
             strict_tests: false,
         }
     }

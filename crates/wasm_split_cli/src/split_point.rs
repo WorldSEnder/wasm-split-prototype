@@ -3,6 +3,7 @@ use std::hash::{DefaultHasher, Hasher};
 
 use crate::dep_graph::{DepGraph, DepNode};
 use crate::graph_utils::tarjan_scc::{SccEvent, SccId, TarjanSccResult};
+use crate::options::CostModel;
 use crate::read::{ExportId, ImportId, InputFuncId, InputModule};
 use crate::tracing_support::perf_span;
 use eyre::{anyhow, bail, Result};
@@ -470,6 +471,7 @@ pub fn compute_split_modules(
     module: &InputModule,
     dep_graph: &DepGraph,
     split_points: Vec<SplitPoint>,
+    cost_model: CostModel,
 ) -> Result<SplitProgramInfo> {
     let split_span = perf_span!("compute splits", module_count = field::Empty);
     let _perf_span = split_span.enter();
@@ -522,18 +524,24 @@ pub fn compute_split_modules(
             None => split_module_contents.entry(color.clone()).or_default(),
         };
         module.included_symbols.insert(node);
-        let DepNode::Function(func_id) = node else {
-            continue;
-        };
-        if color == &SplitModuleIdentifier::Main
-            && dep_graph
-                .get(&node)
-                .is_some_and(|deps| !deps.is_disjoint(&wbg_rooting_deps))
-        {
-            program_info.needs_shim_in_main.insert(func_id);
-        }
     }
     perf_span.exit();
+    // Merge shared chunks before deciding imports, so every later step sees the merged
+    // modules.
+    crate::merge::merge_chunks(module, &mut split_module_contents, cost_model);
+    if let Some(main) = split_module_contents.get(&SplitModuleIdentifier::Main) {
+        for node in &main.included_symbols {
+            let DepNode::Function(func_id) = *node else {
+                continue;
+            };
+            if dep_graph
+                .get(node)
+                .is_some_and(|deps| !deps.is_disjoint(&wbg_rooting_deps))
+            {
+                program_info.needs_shim_in_main.insert(func_id);
+            }
+        }
+    }
 
     // Now, check for each module which of its dependencies it needs to import from some other module.
     for (name, out_module) in split_module_contents.iter_mut() {

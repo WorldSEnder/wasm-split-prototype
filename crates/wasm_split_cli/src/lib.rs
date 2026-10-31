@@ -13,6 +13,7 @@ mod emit;
 mod graph_utils;
 mod js;
 mod magic_constants;
+mod merge;
 mod options;
 mod read;
 mod reloc;
@@ -69,8 +70,12 @@ fn run_transform(opts: Options) -> Result<SplitWasm> {
     let deps_span = deps_span.enter();
     let deps = dep_graph::get_dependencies(&module)?;
     let split_points = split_point::get_split_points(&module)?;
-    let split_program_info =
-        split_point::compute_split_modules(&module, &deps.graph, split_points)?;
+    let split_program_info = split_point::compute_split_modules(
+        &module,
+        &deps.graph,
+        split_points,
+        opts.resolved_cost_model(),
+    )?;
     deps_span.exit();
 
     if split_point::trace_enabled(opts.verbose) {

@@ -28,6 +28,15 @@ struct Cli {
     #[arg(long)]
     out_name: Option<String>,
 
+    /// What one more chunk request costs, in downloaded bytes. 0 keeps every chunk as
+    /// split. Default: depends on the target.
+    #[arg(long)]
+    request_cost: Option<usize>,
+
+    /// The chance that one split module gets loaded, used with --request-cost.
+    #[arg(long, default_value_t = 0.05)]
+    load_probability: f64,
+
     /// Print verbose split information.
     #[arg(short, long)]
     verbose: bool,
@@ -47,6 +56,13 @@ fn main() -> Result<()> {
     let _ = this::transform({
         let mut opts = this::Options::new(&input_wasm);
         opts.verbose = args.verbose;
+        opts.cost_model = args.request_cost.map(|request_cost| match request_cost {
+            0 => this::CostModel::None,
+            request_cost => this::CostModel::Expected {
+                request_cost,
+                load_probability: args.load_probability,
+            },
+        });
         opts.output_dir = &args.output;
         opts.main_out_path = &main_out_path;
         if let Some(name) = args.out_name.as_ref() {
