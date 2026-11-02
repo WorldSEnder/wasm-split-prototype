@@ -94,6 +94,22 @@ impl OutputTarget {
     }
 }
 
+impl CostModel {
+    pub(crate) fn validate(&self) -> eyre::Result<()> {
+        match self {
+            Self::None => {}
+            Self::Expected(model) => {
+                eyre::ensure!(
+                    0. <= model.load_probability && model.load_probability <= 1.,
+                    "expected a load probability between 0 and 1, got {}",
+                    model.load_probability
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 #[non_exhaustive]
 pub struct Options<'a> {
     /// The input wasm to split
