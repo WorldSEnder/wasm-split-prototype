@@ -24,7 +24,7 @@ use wasm_encoder::{
 };
 use wasmparser::{Operator, Parser, Payload, TypeRef};
 
-use wasm_split_cli_support::{transform, Options};
+use wasm_split_cli_support::{transform, CostModel, Options};
 
 /// Input layout (with 1 import): 0 = placeholder import, 1..=10 = padding,
 /// 11 = helper, 12 = stub, 13 = dangerous_stub, 14 = split_body, 15 = main.
@@ -264,6 +264,8 @@ fn no_reloc_stub_is_rewritten_and_dangerous_stub_is_raw_copied() {
     let mut opts = Options::new(&input);
     opts.output_dir = tmp.path();
     opts.main_out_path = &main_out;
+    // These tests assert where the painter puts symbols, before any merging.
+    opts.cost_model = Some(CostModel::None);
 
     transform(opts).expect("transform succeeds");
 

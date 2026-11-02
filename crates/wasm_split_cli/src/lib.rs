@@ -13,6 +13,7 @@ mod emit;
 mod graph_utils;
 mod js;
 mod magic_constants;
+mod merge;
 mod options;
 mod read;
 mod reloc;
@@ -64,13 +65,24 @@ fn run_transform(opts: Options) -> Result<SplitWasm> {
     if opts.verbose {
         module.reloc_info.print_relocs();
     }
+    if let Some(cost_model) = &opts.cost_model {
+        let () = cost_model.validate()?;
+    }
     // (2) dependency analysis and decide on splits
     let deps_span = perf_span!("dependency-analysis");
     let deps_span = deps_span.enter();
     let deps = dep_graph::get_dependencies(&module)?;
     let split_points = split_point::get_split_points(&module)?;
+    let default_cost_model;
+    let cost_model = match &opts.cost_model {
+        Some(model) => model,
+        None => {
+            default_cost_model = opts.default_cost_model();
+            &default_cost_model
+        }
+    };
     let split_program_info =
-        split_point::compute_split_modules(&module, &deps.graph, split_points)?;
+        split_point::compute_split_modules(&module, &deps.graph, split_points, cost_model)?;
     deps_span.exit();
 
     if split_point::trace_enabled(opts.verbose) {

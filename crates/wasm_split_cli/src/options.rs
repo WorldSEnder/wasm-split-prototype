@@ -52,6 +52,64 @@ impl OutputTarget {
     }
 }
 
+/// Merge chunks under a simple probablistic loading cost model.
+///
+/// Each split is assumed to be loaded independently from each other, and independent
+/// of the code size of the split, according to a fixed probability.
+#[derive(Clone, Copy, Debug)]
+pub struct BernoulliCost {
+    /// The equivalent byte count that can be fetched and loaded in the time it takes
+    /// to make a network request.
+    ///
+    /// Approximate values could be 10ms waiting on the connection, 2MiB/s fetch and load,
+    /// leading to an equivalent request cost of ~20.5 kiB.
+    ///
+    /// The current default uses a round 16 kiB equivalent cost.
+    pub request_cost: usize,
+    /// The chance that one split module gets loaded.
+    pub load_probability: f64,
+}
+
+/// Used in the optimizer for chunk merging to avoid a large number of chunks.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum CostModel {
+    /// Keep every chunk as split.
+    None,
+    /// Merge chunks when that lowers the expected loading cost.
+    Expected(BernoulliCost),
+}
+
+impl OutputTarget {
+    /// Chunks of the web target are fetched over the network, one request each.
+    /// A bundler decides on its own how they get loaded.
+    fn default_cost_model(&self) -> CostModel {
+        match self {
+            Self::Web(_) => CostModel::Expected(BernoulliCost {
+                request_cost: 16384,
+                load_probability: 0.05,
+            }),
+            Self::Bundler(_) => CostModel::None,
+        }
+    }
+}
+
+impl CostModel {
+    pub(crate) fn validate(&self) -> eyre::Result<()> {
+        match self {
+            Self::None => {}
+            Self::Expected(model) => {
+                eyre::ensure!(
+                    0. <= model.load_probability && model.load_probability <= 1.,
+                    "expected a load probability between 0 and 1, got {}",
+                    model.load_probability
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 #[non_exhaustive]
 pub struct Options<'a> {
     /// The input wasm to split
@@ -89,12 +147,22 @@ pub struct Options<'a> {
     /// This option is experimental.
     /// Default: `true` if the `WASM_SPLIT_CLI_ENABLE_DWARF` environment variable is non-empty.
     pub emit_dwarf: bool,
+    /// How to merge the shared chunks.
+    ///
+    /// The default model is not subject to semver stability guarantees.
+    ///
+    /// Default: `None`, which picks a default model based on the output target.
+    pub cost_model: Option<CostModel>,
     /// Enables explicit tests for assumptions we make about the input wasm file during integration testing.
     #[doc(hidden)]
     pub strict_tests: bool,
 }
 
 impl<'wasm> Options<'wasm> {
+    pub(crate) fn default_cost_model(&self) -> CostModel {
+        self.target.default_cost_model()
+    }
+
     /// New default options of the specified input wasm.
     pub fn new(input_wasm: &'wasm [u8]) -> Self {
         Self {
@@ -107,6 +175,7 @@ impl<'wasm> Options<'wasm> {
             verbose: false,
             emit_dwarf: std::env::var_os("WASM_SPLIT_CLI_ENABLE_DWARF")
                 .is_some_and(|v| !v.is_empty()),
+            cost_model: None,
             strict_tests: false,
         }
     }

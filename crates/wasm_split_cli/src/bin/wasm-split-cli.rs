@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, ValueEnum};
 use eyre::Result;
 use std::path::Path;
 
@@ -9,6 +9,27 @@ enum Target {
     #[default]
     Web,
     Bundler,
+}
+
+#[derive(Debug, ValueEnum, Clone, Copy, PartialEq, Eq, Default)]
+enum CostModel {
+    #[default]
+    Auto,
+    None,
+    Expected,
+}
+
+#[derive(Debug, Args)]
+#[command(next_help_heading = "Options for `--cost-model=expected`")]
+struct CostModelExpectedOpts {
+    /// What one more chunk request costs, in downloaded bytes. 0 keeps every chunk as
+    /// split.
+    #[arg(long, default_value_t = 16 * 1024)]
+    request_cost: usize,
+
+    /// The chance that one split module gets loaded.
+    #[arg(long, default_value_t = 0.05)]
+    load_probability: f64,
 }
 
 #[derive(Debug, Parser)]
@@ -28,9 +49,17 @@ struct Cli {
     #[arg(long)]
     out_name: Option<String>,
 
+    /// The cost model under which the chunk count is reduced.
+    /// Default: auto, which infers a cost model from the target.
+    #[arg(long)]
+    cost_model: Option<CostModel>,
+
     /// Print verbose split information.
     #[arg(short, long)]
     verbose: bool,
+
+    #[clap(flatten)]
+    cost_model_exp_opts: CostModelExpectedOpts,
 }
 
 fn main() -> Result<()> {
@@ -47,6 +76,16 @@ fn main() -> Result<()> {
     let _ = this::transform({
         let mut opts = this::Options::new(&input_wasm);
         opts.verbose = args.verbose;
+        match args.cost_model.unwrap_or_default() {
+            CostModel::Expected if args.cost_model_exp_opts.request_cost > 0 => {
+                opts.cost_model = Some(this::CostModel::Expected(this::BernoulliCost {
+                    request_cost: args.cost_model_exp_opts.request_cost,
+                    load_probability: args.cost_model_exp_opts.load_probability,
+                }))
+            }
+            CostModel::Expected | CostModel::None => opts.cost_model = Some(this::CostModel::None),
+            _ => {}
+        }
         opts.output_dir = &args.output;
         opts.main_out_path = &main_out_path;
         if let Some(name) = args.out_name.as_ref() {
