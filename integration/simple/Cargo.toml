@@ -17,3 +17,5 @@ wasm-bindgen-test.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 tokio.workspace = true
 
+[package.metadata.wasm-split-test-runner]
+cost-model = "none"

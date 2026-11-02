@@ -225,15 +225,54 @@ fn with_perf_tracing<R>(report_dir: &Path, f: impl FnOnce() -> R) -> R {
     r
 }
 
-fn wasm_split_cli(target: &Path, dir: &Path, report_dir: &Path) -> Result<(PathBuf, Report)> {
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
+enum CostModel {
+    Auto,
+    None,
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(rename_all = "kebab-case")]
+struct MetadataOpts {
+    cost_model: Option<CostModel>,
+}
+
+fn parse_package_metadata(metadata: &serde_json::Value) -> Option<MetadataOpts> {
+    let metadata = metadata.as_object()?;
+    let ours = metadata.get("wasm-split-test-runner")?;
+    Some(serde_json::from_value(ours.clone()).expect("invalid metadata options"))
+}
+
+fn wasm_split_cli(
+    target: &Path,
+    manifest_path: &Path,
+    dir: &Path,
+    report_dir: &Path,
+) -> Result<(PathBuf, Report)> {
     let main_file = dir.join("main.wasm");
     let input = std::fs::read(target)?;
     let mut report: Report = Report::default();
+
+    let metadata = cargo_metadata::MetadataCommand::new()
+        .manifest_path(manifest_path)
+        .exec()?;
+    let metadata = &metadata
+        .root_package()
+        .expect("the tested package root")
+        .metadata;
+    let options = parse_package_metadata(metadata);
+
     let start_time = Instant::now();
 
     let split = with_perf_tracing(report_dir, || {
         wasm_split_cli_support::transform({
             let mut split_opts = wasm_split_cli_support::Options::new(&input);
+            if let Some(CostModel::None) =
+                options.as_ref().and_then(|opts| opts.cost_model.as_ref())
+            {
+                split_opts.cost_model = Some(wasm_split_cli_support::CostModel::None);
+            }
             split_opts.output_dir = dir;
             split_opts.main_out_path = &main_file;
             split_opts.main_module = "./wasm-bindgen-test";
@@ -274,7 +313,7 @@ pub fn main() -> Result<()> {
     let mut args = args_os();
     let _ = args.next().expect("args[0] to be the name of this runner");
     let target = args.next().expect("args[1] to be a wasm program to test");
-    let target_manifest_dir = std::env::var_os("XCARGO_MANIFEST_DIR")
+    let target_manifest_path = std::env::var_os("XCARGO_MANIFEST_PATH")
         .expect("env variable to manifest should be set by runner script");
 
     let target = Path::new(&target);
@@ -283,17 +322,27 @@ pub fn main() -> Result<()> {
     tempdir.disable_cleanup(true); // keep the dir for debugging
     eprintln!(
         "Splitting wasm from {} in {}",
-        target_manifest_dir.display(),
+        target_manifest_path.display(),
         tempdir.path().display()
     );
 
-    let (split_main, report) = wasm_split_cli(target, tempdir.path(), &target_report_dir)?;
+    let (split_main, report) = wasm_split_cli(
+        target,
+        Path::new(&target_manifest_path),
+        tempdir.path(),
+        &target_report_dir,
+    )?;
     print_report(&report, &target_report_dir)?;
     if !std::env::var_os("XTEST_SKIP_REPRODUCTION").is_some_and(|skip| !skip.is_empty()) {
         // check that the result is reproducible.
         // we could do this in its own directory. However, when the result is reproducible,
         // the second output should not have overwritten anything from the first either way.
-        let (_, second_report) = wasm_split_cli(target, tempdir.path(), &target_report_dir)?;
+        let (_, second_report) = wasm_split_cli(
+            target,
+            Path::new(&target_manifest_path),
+            tempdir.path(),
+            &target_report_dir,
+        )?;
         check_reproducible(&report, &second_report)?;
     }
 
