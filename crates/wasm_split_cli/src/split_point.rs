@@ -649,6 +649,7 @@ pub fn compute_split_modules(
     hasher.write(env!("CARGO_PKG_VERSION").as_bytes()); // TODO: hasher.write_str(_) once that's stabilized
     hasher.write(module.raw);
     // once options impact the output module, these should be hashed too
+    // TODO: hash outcome of merge for the canary to be differential against cost models.
     program_info.canary_export_name = format!("__canary_{:x}", hasher.finish());
     perf_span.exit();
     Ok(program_info)

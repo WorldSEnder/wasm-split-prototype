@@ -22,6 +22,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use fixedbitset::FixedBitSet;
+use wasmparser::SymbolInfo;
 
 use crate::dep_graph::DepNode;
 use crate::options::CostModel;
@@ -32,11 +33,7 @@ use crate::BernoulliCost;
 
 /// Emitted bytes do not track input bytes exactly, but code and data dominate both.
 /// Data symbols can overlap (string tail merging), so this may count some bytes twice.
-fn estimated_size(
-    module: &InputModule,
-    info: &OutputModuleInfo,
-    data_sizes: &HashMap<usize, usize>,
-) -> usize {
+fn estimated_size(module: &InputModule, info: &OutputModuleInfo) -> usize {
     let imported = module.imported_funcs.len();
     info.included_symbols
         .iter()
@@ -45,7 +42,16 @@ fn estimated_size(
                 let range = module.defined_funcs[func - imported].body.range();
                 (range.end - range.start) as usize
             }
-            DepNode::DataSymbol(symbol) => data_sizes.get(&symbol).copied().unwrap_or(0),
+            DepNode::DataSymbol(symbol) => {
+                let SymbolInfo::Data {
+                    symbol: Some(defined_symbol),
+                    ..
+                } = module.reloc_info.symbols[symbol]
+                else {
+                    return 0;
+                };
+                defined_symbol.size as usize
+            }
             _ => 0,
         })
         .sum()
@@ -66,7 +72,8 @@ struct ExpectedCost {
 
 impl ExpectedCost {
     fn load_chance(&self, splits: usize) -> f64 {
-        1.0 - (1.0 - self.load_probability).powi(splits as i32)
+        // cap out at splits == i32::MAX, which most likely corresponds to probability 0. or 1. up to floating precision
+        1.0 - (1.0 - self.load_probability).powi(splits.min(i32::MAX as usize) as i32)
     }
 
     fn cost(&self, splits: usize, size: usize) -> f64 {
@@ -146,17 +153,6 @@ pub fn merge_chunks(
         request_cost: request_cost as f64,
         load_probability,
     };
-    let data_sizes: HashMap<usize, usize> = module
-        .reloc_info
-        .data_symbols
-        .iter()
-        .map(|data| {
-            (
-                data.symbol_index,
-                (data.range.end - data.range.start) as usize,
-            )
-        })
-        .collect();
     let names: Vec<String> = contents
         .keys()
         .filter_map(|id| match id {
@@ -199,7 +195,7 @@ pub fn merge_chunks(
         set.iter().for_each(|n| splits.insert(index[n.as_str()]));
         groups.push(Group {
             splits,
-            size: estimated_size(module, info, &data_sizes),
+            size: estimated_size(module, info),
             is_main: false,
             members: vec![id.clone()],
         });
