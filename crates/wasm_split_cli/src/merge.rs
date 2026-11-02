@@ -28,6 +28,7 @@ use crate::options::CostModel;
 use crate::read::InputModule;
 use crate::split_point::{OutputModuleInfo, SplitModuleIdentifier};
 use crate::tracing_support::perf_span;
+use crate::BernoulliCost;
 
 /// Emitted bytes do not track input bytes exactly, but code and data dominate both.
 /// Data symbols can overlap (string tail merging), so this may count some bytes twice.
@@ -130,14 +131,14 @@ fn merge_groups(groups: &mut [Group], cost: &ExpectedCost) -> Vec<bool> {
 pub fn merge_chunks(
     module: &InputModule,
     contents: &mut HashMap<SplitModuleIdentifier, OutputModuleInfo>,
-    cost_model: CostModel,
+    cost_model: &CostModel,
 ) {
-    let CostModel::Expected {
+    let BernoulliCost {
         request_cost,
         load_probability,
-    } = cost_model
-    else {
-        return;
+    } = match cost_model {
+        CostModel::None => return,
+        CostModel::Expected(bernoulli_cost) => *bernoulli_cost,
     };
     let perf_span = perf_span!("merge chunks");
     let _perf_span = perf_span.enter();

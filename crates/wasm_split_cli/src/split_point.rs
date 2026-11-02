@@ -471,7 +471,7 @@ pub fn compute_split_modules(
     module: &InputModule,
     dep_graph: &DepGraph,
     split_points: Vec<SplitPoint>,
-    cost_model: CostModel,
+    cost_model: &CostModel,
 ) -> Result<SplitProgramInfo> {
     let split_span = perf_span!("compute splits", module_count = field::Empty);
     let _perf_span = split_span.enter();
