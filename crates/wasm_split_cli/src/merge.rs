@@ -153,21 +153,16 @@ pub fn merge_chunks(
         request_cost: request_cost as f64,
         load_probability,
     };
-    let needed: FixedBitSet = contents
-        .keys()
-        .filter_map(|id| match id {
-            &SplitModuleIdentifier::Split { index, .. } => Some(index),
-            _ => None,
-        })
-        .chain(contents.keys().flat_map(|id| match id {
-            SplitModuleIdentifier::Chunk { needed_by } => {
-                Some(needed_by.ones()).into_iter().flatten()
-            }
-            _ => None.into_iter().flatten(),
-        }))
-        .collect();
+    let mut all: FixedBitSet = FixedBitSet::new();
+    for id in contents.keys() {
+        match id {
+            &SplitModuleIdentifier::Split { index } => all.grow_and_insert(index),
+            SplitModuleIdentifier::Chunk { needed_by } => all.union_with(needed_by),
+            _ => {}
+        }
+    }
+    let capacity = all.len();
 
-    let all = needed.clone();
     let mut groups = vec![Group {
         splits: all,
         size: 0,
@@ -185,7 +180,7 @@ pub fn merge_chunks(
             unreachable!()
         };
         let info = &contents[id];
-        let mut splits = FixedBitSet::with_capacity(needed.len());
+        let mut splits = FixedBitSet::with_capacity(capacity);
         splits.union_with(set);
         groups.push(Group {
             splits,
