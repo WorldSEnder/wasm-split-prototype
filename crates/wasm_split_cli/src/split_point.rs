@@ -660,17 +660,21 @@ pub fn compute_split_modules(
     }
     perf_span.exit();
 
-    // This exact implementation can differ between different compilations of the CLI, specifically
-    // between rust versions. That is fine and intended.
-    let perf_span = perf_span!("canary fingerprint");
-    let perf_span = perf_span.enter();
-    let mut hasher = DefaultHasher::new();
-    hasher.write(env!("CARGO_PKG_VERSION").as_bytes()); // TODO: hasher.write_str(_) once that's stabilized
-    hasher.write(module.raw);
-    // once options impact the output module, these should be hashed too
-    // TODO: hash outcome of merge for the canary to be differential against cost models.
-    program_info.canary_export_name = format!("__canary_{:x}", hasher.finish());
-    perf_span.exit();
+    program_info.canary_export_name = if module.options.debug_assertions {
+        // This exact implementation can differ between different compilations of the CLI, specifically
+        // between rust versions. That is fine and intended.
+        let perf_span = perf_span!("canary fingerprint");
+        let _perf_span = perf_span.enter();
+        let mut hasher = DefaultHasher::new();
+        hasher.write(env!("CARGO_PKG_VERSION").as_bytes()); // TODO: hasher.write_str(_) once that's stabilized
+        hasher.write(module.raw);
+        // once options impact the output module, these should be hashed too
+        // TODO: hash outcome of merge for the canary to be differential against cost models.
+        format!("__canary_{:x}", hasher.finish())
+    } else {
+        // should never land in the output
+        "[canary disabled]".to_string()
+    };
     Ok(program_info)
 }
 
