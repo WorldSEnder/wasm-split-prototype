@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hasher};
 
 use crate::dep_graph::{DepGraph, DepNode};
@@ -7,6 +7,7 @@ use crate::options::CostModel;
 use crate::read::{ExportId, ImportId, InputFuncId, InputModule};
 use crate::tracing_support::perf_span;
 use eyre::{anyhow, bail, Result};
+use fixedbitset::FixedBitSet;
 use lazy_static::lazy_static;
 use regex::Regex;
 use tracing::{field, trace, warn};
@@ -302,22 +303,22 @@ pub fn get_split_points_by_module(
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum SplitModuleIdentifier {
     Main,
-    Split(String),
-    Chunk(BTreeSet<String>),
+    Split { index: usize, name: String },
+    Chunk { needed_by: FixedBitSet },
 }
 
 impl SplitModuleIdentifier {
     pub fn filename(&self, module_index: usize) -> String {
         match self {
             Self::Main => unreachable!("main wasm filepath is handled separately"),
-            Self::Split(name) => format!("split_{name}"),
-            Self::Chunk(_) => format!("chunk_{module_index}"),
+            Self::Split { name, .. } => format!("split_{name}"),
+            Self::Chunk { .. } => format!("chunk_{module_index}"),
         }
     }
     pub fn loader_name(&self) -> String {
         match self {
             // MUST match the name in wasm_split_macros
-            Self::Split(name) => format!("__wasm_split_load_{name}"),
+            Self::Split { name, .. } => format!("__wasm_split_load_{name}"),
             _ => unreachable!("only whole modules have a loader"),
         }
     }
@@ -325,34 +326,43 @@ impl SplitModuleIdentifier {
     /// Make this identifier also cover everything that requires `other`: the modules that
     /// require the result are a superset of those requiring either input.
     pub(crate) fn also_in(&mut self, other: &SplitModuleIdentifier) {
-        let mut needed_by = BTreeSet::new();
-        match self {
-            SplitModuleIdentifier::Main => return,
-            SplitModuleIdentifier::Split(split) => {
-                needed_by.insert(split.clone());
-            }
-            // temporarily swap out
-            SplitModuleIdentifier::Chunk(chunk) => std::mem::swap(chunk, &mut needed_by),
-        };
-        match other {
-            SplitModuleIdentifier::Main => {
+        match (&mut *self, other) {
+            (SplitModuleIdentifier::Main, _) => {}
+            (_, SplitModuleIdentifier::Main) => {
                 *self = SplitModuleIdentifier::Main;
-                return;
             }
-            SplitModuleIdentifier::Split(split) => {
-                needed_by.insert(split.clone());
+            (
+                SplitModuleIdentifier::Chunk { needed_by },
+                SplitModuleIdentifier::Chunk { needed_by: theirs },
+            ) => {
+                needed_by.union_with(theirs);
             }
-            SplitModuleIdentifier::Chunk(chunk) => {
-                needed_by.extend(chunk.iter().cloned());
+            (
+                SplitModuleIdentifier::Chunk { needed_by },
+                &SplitModuleIdentifier::Split { index: theirs, .. },
+            ) => {
+                needed_by.grow_and_insert(theirs);
             }
-        };
-        if needed_by.len() == 1 {
-            *self = SplitModuleIdentifier::Split(needed_by.pop_first().unwrap());
-        } else {
-            debug_assert!(needed_by.len() > 1);
-            match self {
-                SplitModuleIdentifier::Chunk(chunk) => std::mem::swap(chunk, &mut needed_by),
-                _ => *self = SplitModuleIdentifier::Chunk(needed_by),
+            (
+                &mut SplitModuleIdentifier::Split { index: ours, .. },
+                SplitModuleIdentifier::Chunk { needed_by: theirs },
+            ) => {
+                let mut needed_by = FixedBitSet::with_capacity(theirs.len().max(ours + 1));
+                needed_by.union_with(theirs);
+                needed_by.insert(ours);
+                *self = SplitModuleIdentifier::Chunk { needed_by };
+            }
+            (
+                &mut SplitModuleIdentifier::Split { index: ours, .. },
+                &SplitModuleIdentifier::Split { index: theirs, .. },
+            ) => {
+                if ours == theirs {
+                    return;
+                }
+                let mut needed_by = FixedBitSet::with_capacity(ours.max(theirs) + 1);
+                needed_by.insert(ours);
+                needed_by.insert(theirs);
+                *self = SplitModuleIdentifier::Chunk { needed_by };
             }
         }
     }
@@ -362,6 +372,7 @@ impl SplitModuleIdentifier {
 pub struct SplitProgramInfo {
     pub output_modules: Vec<(SplitModuleIdentifier, OutputModuleInfo)>,
     pub split_points: Vec<SplitPoint>,
+    pub split_names: Vec<String>,
     pub split_point_exports: HashSet<InputFuncId>,
 
     pub shared_deps: HashSet<DepNode>,
@@ -476,7 +487,10 @@ pub fn compute_split_modules(
     let split_span = perf_span!("compute splits", module_count = field::Empty);
     let _perf_span = split_span.enter();
 
-    let split_points_by_module = get_split_points_by_module(&split_points);
+    let mut split_points_by_module: Vec<_> = get_split_points_by_module(&split_points)
+        .into_iter()
+        .collect();
+    split_points_by_module.sort_unstable_by(|l, r| l.0.cmp(&r.0));
 
     trace!("split_points={split_points:?}");
 
@@ -501,14 +515,19 @@ pub fn compute_split_modules(
     graph_analysis.explore(main_roots, SplitModuleIdentifier::Main);
     perf_span.exit();
 
-    for (module_name, entry_points) in &split_points_by_module {
+    let mut program_info = SplitProgramInfo::default();
+    for (module_index, (module_name, entry_points)) in split_points_by_module.iter().enumerate() {
         let perf_span = perf_span!("explore module", module = module_name);
         let _perf_span = perf_span.enter();
         let roots = get_split_roots(entry_points);
-        graph_analysis.explore(roots, SplitModuleIdentifier::Split(module_name.clone()));
+        let color = SplitModuleIdentifier::Split {
+            name: module_name.clone(),
+            index: module_index,
+        };
+        program_info.split_names.push(module_name.clone());
+        graph_analysis.explore(roots, color);
     }
 
-    let mut program_info = SplitProgramInfo::default();
     // We "paint" each dependency with the modules it must be loaded in, then put them into that module
     // accordingly.
     let perf_span = perf_span!("paint dep nodes");
@@ -580,9 +599,12 @@ pub fn compute_split_modules(
         }
     }
     // Then, guarantee that we have a module for each declared on in the code (so that it doesn't get lost during emit).
-    for out_module in split_points_by_module.keys() {
+    for (module_index, (out_module, _)) in split_points_by_module.iter().enumerate() {
         split_module_contents
-            .entry(SplitModuleIdentifier::Split(out_module.clone()))
+            .entry(SplitModuleIdentifier::Split {
+                index: module_index,
+                name: out_module.clone(),
+            })
             .or_insert_with(|| {
                 // An optimization pass can sometimes merge multiple exported functions across split modules, when
                 // two modules end up doing "the same thing". In that case, a module might be completely empty, i.e.

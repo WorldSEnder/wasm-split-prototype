@@ -259,7 +259,7 @@ impl DataEmitInfo {
             if let Some(&index) = module_by_identifier.get(needed_by) {
                 return index;
             }
-            let SplitModuleIdentifier::Chunk(needed_by) = needed_by else {
+            let SplitModuleIdentifier::Chunk { needed_by } = needed_by else {
                 return MAIN_MODULE;
             };
             // No chunk is shared by exactly these splits: use the smallest one that is loaded
@@ -269,8 +269,10 @@ impl DataEmitInfo {
                 .iter()
                 .enumerate()
                 .filter_map(|(index, (identifier, _))| match identifier {
-                    SplitModuleIdentifier::Chunk(splits) if splits.is_superset(needed_by) => {
-                        Some((splits.len(), index))
+                    SplitModuleIdentifier::Chunk { needed_by: splits }
+                        if splits.is_superset(needed_by) =>
+                    {
+                        Some((splits.count_ones(..), index))
                     }
                     _ => None,
                 })

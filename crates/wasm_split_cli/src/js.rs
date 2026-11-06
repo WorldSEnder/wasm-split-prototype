@@ -124,7 +124,7 @@ function getSharedImports() {{
     fn write_loaders(&mut self, program: &SplitProgramInfo) -> Result<()> {
         let mut split_deps = HashMap::<String, Vec<String>>::new();
         for (module_index, (name, module)) in program.output_modules.iter().enumerate() {
-            let SplitModuleIdentifier::Chunk(splits) = name else {
+            let SplitModuleIdentifier::Chunk { needed_by: splits } = name else {
                 continue;
             };
             if module.is_empty {
@@ -132,14 +132,19 @@ function getSharedImports() {{
             }
             let file_name = name.filename(module_index);
             let var_name = format!("__chunk_{module_index}");
-            let splits_dbg = splits.iter().cloned().collect::<Vec<_>>().join(", ");
+            let splits_dbg = splits
+                .ones()
+                .map(|ix| program.split_names[ix].clone())
+                .collect::<Vec<_>>()
+                .join(", ");
             writeln!(&mut self.javascript, "/* {splits_dbg} */")?;
             let fetcher = self.fetcher(format_args!("\"./{file_name}.wasm\""));
             writeln!(
                 &mut self.javascript,
                 "const {var_name} = makeLoad({fetcher}, []);"
             )?;
-            for split in splits {
+            for split in splits.ones() {
+                let split = &program.split_names[split];
                 split_deps
                     .entry(split.clone())
                     .or_default()
@@ -153,8 +158,8 @@ function getSharedImports() {{
         for (module_index, (identifier, module)) in program.output_modules.iter().enumerate().rev()
         {
             let split = match &identifier {
-                SplitModuleIdentifier::Main | SplitModuleIdentifier::Chunk(_) => continue,
-                SplitModuleIdentifier::Split(split) => split,
+                SplitModuleIdentifier::Main | SplitModuleIdentifier::Chunk { .. } => continue,
+                SplitModuleIdentifier::Split { name, .. } => name,
             };
             let is_empty = module.is_empty;
             let file_name = identifier.filename(module_index);
