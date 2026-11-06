@@ -1,10 +1,11 @@
-## wasm-split-cli vfuture
+## wasm-split-cli v0.2.5
 
 - Add `Options::cost_model` with a bernoulli model (`--cost-model` in the cli). Shared chunks
   are merged when that lowers the expected loading time, which weighs the requests saved against
   the extra bytes loaded. This tends to cut the number of chunks one split module loads from
   hundreds to tens. The default cost model depends on the target. The web target uses the
   new cost model, the bundler target keeps the previous output, equivalent to `--cost-model=none`.
+- Fix to keep tracing's `log` fallback active when no subscriber is configured.
 
 ## wasm-split-cli v0.2.4
 
