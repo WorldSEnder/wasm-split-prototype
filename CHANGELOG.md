@@ -1,10 +1,10 @@
 ## wasm-split-cli vfuture
 
-- Add `Options::cost_model` (`--request-cost` and `--load-probability` in the cli). Shared chunks
-  are merged when that lowers the expected loading cost, which weighs the requests saved against
-  the extra bytes loaded, and counts data as well as code. With many split points this cuts the
-  number of chunks one split module loads from hundreds to tens. The web target merges by default,
-  the bundler target does not. `--request-cost 0` keeps the previous output.
+- Add `Options::cost_model` with a bernoulli model (`--cost-model` in the cli). Shared chunks
+  are merged when that lowers the expected loading time, which weighs the requests saved against
+  the extra bytes loaded. This tends to cut the number of chunks one split module loads from
+  hundreds to tens. The default cost model depends on the target. The web target uses the
+  new cost model, the bundler target keeps the previous output, equivalent to `--cost-model=none`.
 
 ## wasm-split-cli v0.2.4
 

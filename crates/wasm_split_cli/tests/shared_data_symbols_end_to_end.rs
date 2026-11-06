@@ -483,7 +483,7 @@ fn split_wasm(wasm: &[u8]) -> Output {
     opts.output_dir = tmp.path();
     opts.main_out_path = &main_out;
     // These tests assert where the painter puts symbols, before any merging.
-    opts.cost_model = Some(CostModel::None);
+    opts.cost_model = Some(CostModel::DisableMerging);
 
     let link_path = tmp.path().join(opts.link_name);
     let output = transform(opts).expect("transform succeeds");

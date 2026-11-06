@@ -18,4 +18,4 @@ wasm-bindgen-test.workspace = true
 tokio.workspace = true
 
 [package.metadata.wasm-split-test-runner]
-cost-model = "none"
+cost-model = "disable-merging"
