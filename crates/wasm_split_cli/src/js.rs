@@ -124,22 +124,27 @@ function getSharedImports() {{
     fn write_loaders(&mut self, program: &SplitProgramInfo) -> Result<()> {
         let mut split_deps = HashMap::<String, Vec<String>>::new();
         for (module_index, (name, module)) in program.output_modules.iter().enumerate() {
-            let SplitModuleIdentifier::Chunk(splits) = name else {
+            let SplitModuleIdentifier::Chunk { needed_by: splits } = name else {
                 continue;
             };
             if module.is_empty {
                 continue;
             }
-            let file_name = name.filename(module_index);
+            let file_stem = program.filestem(name, module_index);
             let var_name = format!("__chunk_{module_index}");
-            let splits_dbg = splits.iter().cloned().collect::<Vec<_>>().join(", ");
+            let splits_dbg = splits
+                .ones()
+                .map(|ix| program.split_names[ix].clone())
+                .collect::<Vec<_>>()
+                .join(", ");
             writeln!(&mut self.javascript, "/* {splits_dbg} */")?;
-            let fetcher = self.fetcher(format_args!("\"./{file_name}.wasm\""));
+            let fetcher = self.fetcher(format_args!("\"./{file_stem}.wasm\""));
             writeln!(
                 &mut self.javascript,
                 "const {var_name} = makeLoad({fetcher}, []);"
             )?;
-            for split in splits {
+            for split in splits.ones() {
+                let split = &program.split_names[split];
                 split_deps
                     .entry(split.clone())
                     .or_default()
@@ -147,24 +152,24 @@ function getSharedImports() {{
                 self.prefetch_map
                     .entry(split.clone())
                     .or_default()
-                    .push(file_name.clone());
+                    .push(file_stem.clone());
             }
         }
         for (module_index, (identifier, module)) in program.output_modules.iter().enumerate().rev()
         {
-            let split = match &identifier {
-                SplitModuleIdentifier::Main | SplitModuleIdentifier::Chunk(_) => continue,
-                SplitModuleIdentifier::Split(split) => split,
+            let split = match identifier {
+                SplitModuleIdentifier::Main | SplitModuleIdentifier::Chunk { .. } => continue,
+                &SplitModuleIdentifier::Split { index, .. } => &program.split_names[index],
             };
             let is_empty = module.is_empty;
-            let file_name = identifier.filename(module_index);
-            let loader_name = identifier.loader_name();
+            let file_stem = program.filestem(identifier, module_index);
+            let loader_name = program.loader_name(identifier);
             let deps = split_deps.remove(split).unwrap_or_default();
             let deps = deps.join(", ");
             let fetch_opts = if is_empty {
                 "() => async (_imp) => ({})".to_string()
             } else {
-                self.fetcher(format_args!("\"./{file_name}.wasm\""))
+                self.fetcher(format_args!("\"./{file_stem}.wasm\""))
             };
             self.write_export_const(
                 &loader_name,
@@ -172,7 +177,7 @@ function getSharedImports() {{
             )?;
             let prefetches = self.prefetch_map.entry(split.clone()).or_default();
             if !is_empty {
-                prefetches.push(file_name);
+                prefetches.push(file_stem);
             }
         }
         Ok(())

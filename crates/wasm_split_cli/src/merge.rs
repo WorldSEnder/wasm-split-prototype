@@ -19,7 +19,7 @@
 //! Greedy: take the smallest chunk, merge it where that saves the most, leave it
 //! alone if nothing saves anything, repeat until a whole pass merges nothing.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use fixedbitset::FixedBitSet;
 use wasmparser::SymbolInfo;
@@ -153,27 +153,16 @@ pub fn merge_chunks(
         request_cost: request_cost as f64,
         load_probability,
     };
-    let names: Vec<String> = contents
-        .keys()
-        .filter_map(|id| match id {
-            SplitModuleIdentifier::Split(name) => Some(name.clone()),
-            _ => None,
-        })
-        .chain(contents.keys().flat_map(|id| match id {
-            SplitModuleIdentifier::Chunk(set) => set.iter().cloned().collect(),
-            _ => vec![],
-        }))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let index: HashMap<&str, usize> = names
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.as_str(), i))
-        .collect();
+    let mut all: FixedBitSet = FixedBitSet::new();
+    for id in contents.keys() {
+        match id {
+            &SplitModuleIdentifier::Split { index } => all.grow_and_insert(index),
+            SplitModuleIdentifier::Chunk { needed_by } => all.union_with(needed_by),
+            _ => {}
+        }
+    }
+    let capacity = all.len();
 
-    let mut all = FixedBitSet::with_capacity(names.len());
-    all.insert_range(..);
     let mut groups = vec![Group {
         splits: all,
         size: 0,
@@ -183,16 +172,16 @@ pub fn merge_chunks(
     // Sorted, so ties break the same way on every run and the output is reproducible.
     let mut chunk_ids: Vec<&SplitModuleIdentifier> = contents
         .keys()
-        .filter(|id| matches!(id, SplitModuleIdentifier::Chunk(_)))
+        .filter(|id| matches!(id, SplitModuleIdentifier::Chunk { .. }))
         .collect();
     chunk_ids.sort();
     for id in chunk_ids {
-        let SplitModuleIdentifier::Chunk(set) = id else {
+        let SplitModuleIdentifier::Chunk { needed_by: set } = id else {
             unreachable!()
         };
         let info = &contents[id];
-        let mut splits = FixedBitSet::with_capacity(names.len());
-        set.iter().for_each(|n| splits.insert(index[n.as_str()]));
+        let mut splits = FixedBitSet::with_capacity(capacity);
+        splits.union_with(set);
         groups.push(Group {
             splits,
             size: estimated_size(module, info),
@@ -213,10 +202,10 @@ pub fn merge_chunks(
         let id = if group.is_main {
             SplitModuleIdentifier::Main
         } else {
-            let set: BTreeSet<String> = group.splits.ones().map(|i| names[i].clone()).collect();
+            let needed_by = group.splits;
             // Every chunk is shared by at least two splits, so every union is too.
-            debug_assert!(set.len() > 1);
-            SplitModuleIdentifier::Chunk(set)
+            debug_assert!(needed_by.len() > 1);
+            SplitModuleIdentifier::Chunk { needed_by }
         };
         // Two groups can end with the same split set; they share one module.
         let info: &mut OutputModuleInfo = merged.entry(id).or_default();
@@ -228,7 +217,7 @@ pub fn merge_chunks(
     }
     let chunks_after = merged
         .keys()
-        .filter(|id| matches!(id, SplitModuleIdentifier::Chunk(_)))
+        .filter(|id| matches!(id, SplitModuleIdentifier::Chunk { .. }))
         .count();
     // Splits were never merged; carry them over unchanged.
     merged.extend(contents.drain());
