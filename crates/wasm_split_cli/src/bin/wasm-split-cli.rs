@@ -16,12 +16,12 @@ enum CostModel {
     #[default]
     Auto,
     None,
-    Expected,
+    Binary,
 }
 
 #[derive(Debug, Args)]
-#[command(next_help_heading = "Options for `--cost-model=expected`")]
-struct CostModelExpectedOpts {
+#[command(next_help_heading = "Options for `--cost-model=binary`")]
+struct CostModelBinaryOpts {
     /// What one more chunk request costs, in downloaded bytes. 0 keeps every chunk as
     /// split.
     #[arg(long, default_value_t = 16 * 1024)]
@@ -59,7 +59,7 @@ struct Cli {
     verbose: bool,
 
     #[clap(flatten)]
-    cost_model_exp_opts: CostModelExpectedOpts,
+    cost_model_bin_opts: CostModelBinaryOpts,
 }
 
 fn main() -> Result<()> {
@@ -77,13 +77,15 @@ fn main() -> Result<()> {
         let mut opts = this::Options::new(&input_wasm);
         opts.verbose = args.verbose;
         match args.cost_model.unwrap_or_default() {
-            CostModel::Expected if args.cost_model_exp_opts.request_cost > 0 => {
-                opts.cost_model = Some(this::CostModel::Expected(this::BernoulliCost {
-                    request_cost: args.cost_model_exp_opts.request_cost,
-                    load_probability: args.cost_model_exp_opts.load_probability,
+            CostModel::Binary if args.cost_model_bin_opts.request_cost > 0 => {
+                opts.cost_model = Some(this::CostModel::Binary(this::BernoulliCost {
+                    request_cost: args.cost_model_bin_opts.request_cost,
+                    load_probability: args.cost_model_bin_opts.load_probability,
                 }))
             }
-            CostModel::Expected | CostModel::None => opts.cost_model = Some(this::CostModel::None),
+            CostModel::Binary | CostModel::None => {
+                opts.cost_model = Some(this::CostModel::DisableMerging)
+            }
             _ => {}
         }
         opts.output_dir = &args.output;

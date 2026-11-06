@@ -265,7 +265,7 @@ fn no_reloc_stub_is_rewritten_and_dangerous_stub_is_raw_copied() {
     opts.output_dir = tmp.path();
     opts.main_out_path = &main_out;
     // These tests assert where the painter puts symbols, before any merging.
-    opts.cost_model = Some(CostModel::None);
+    opts.cost_model = Some(CostModel::DisableMerging);
 
     transform(opts).expect("transform succeeds");
 

@@ -226,10 +226,10 @@ fn with_perf_tracing<R>(report_dir: &Path, f: impl FnOnce() -> R) -> R {
 }
 
 #[derive(serde::Deserialize, Debug)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 enum CostModel {
     Auto,
-    None,
+    DisableMerging,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -268,10 +268,15 @@ fn wasm_split_cli(
     let split = with_perf_tracing(report_dir, || {
         wasm_split_cli_support::transform({
             let mut split_opts = wasm_split_cli_support::Options::new(&input);
-            if let Some(CostModel::None) =
-                options.as_ref().and_then(|opts| opts.cost_model.as_ref())
-            {
-                split_opts.cost_model = Some(wasm_split_cli_support::CostModel::None);
+            let cost_model = options
+                .as_ref()
+                .and_then(|opts| opts.cost_model.as_ref())
+                .unwrap_or(&CostModel::Auto);
+            match cost_model {
+                CostModel::DisableMerging => {
+                    split_opts.cost_model = Some(wasm_split_cli_support::CostModel::DisableMerging)
+                }
+                CostModel::Auto => {}
             }
             split_opts.output_dir = dir;
             split_opts.main_out_path = &main_file;

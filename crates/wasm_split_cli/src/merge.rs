@@ -64,7 +64,7 @@ struct Group {
     members: Vec<SplitModuleIdentifier>,
 }
 
-/// [`CostModel::Expected`] with both parameters as `f64`.
+/// [`CostModel::Binary`] with both parameters as `f64`.
 struct ExpectedCost {
     request_cost: f64,
     load_probability: f64,
@@ -144,8 +144,8 @@ pub fn merge_chunks(
         request_cost,
         load_probability,
     } = match cost_model {
-        CostModel::None => return,
-        CostModel::Expected(bernoulli_cost) => *bernoulli_cost,
+        CostModel::DisableMerging => return,
+        CostModel::Binary(bernoulli_cost) => *bernoulli_cost,
     };
     let perf_span = perf_span!("merge chunks");
     let _perf_span = perf_span.enter();

@@ -74,22 +74,26 @@ pub struct BernoulliCost {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum CostModel {
-    /// Keep every chunk as split.
-    None,
-    /// Merge chunks when that lowers the expected loading cost.
-    Expected(BernoulliCost),
+    /// Keep every chunk as-is, disables chunk merging. This is equivalent to assuming
+    /// that a chunk load has no cost.
+    DisableMerging,
+    /// Merge chunks when that lowers the expected loading cost. Each split module's
+    /// loading state is modelled as a [binary random variable].
+    ///
+    /// [binary random variable]: https://en.wikipedia.org/wiki/Bernoulli_distribution
+    Binary(BernoulliCost),
 }
 
 impl OutputTarget {
-    /// Chunks of the web target are fetched over the network, one request each.
-    /// A bundler decides on its own how they get loaded.
     fn default_cost_model(&self) -> CostModel {
+        // Chunks of the web target are fetched over the network, so we use the bernoulli loading model here.
+        // A bundler decides on its own how chunks get loaded.
         match self {
-            Self::Web(_) => CostModel::Expected(BernoulliCost {
-                request_cost: 16384,
+            Self::Web(_) => CostModel::Binary(BernoulliCost {
+                request_cost: 16 * 1024,
                 load_probability: 0.05,
             }),
-            Self::Bundler(_) => CostModel::None,
+            Self::Bundler(_) => CostModel::DisableMerging,
         }
     }
 }
@@ -97,8 +101,8 @@ impl OutputTarget {
 impl CostModel {
     pub(crate) fn validate(&self) -> eyre::Result<()> {
         match self {
-            Self::None => {}
-            Self::Expected(model) => {
+            Self::DisableMerging => {}
+            Self::Binary(model) => {
                 eyre::ensure!(
                     0. <= model.load_probability && model.load_probability <= 1.,
                     "expected a load probability between 0 and 1, got {}",
@@ -147,11 +151,10 @@ pub struct Options<'a> {
     /// This option is experimental.
     /// Default: `true` if the `WASM_SPLIT_CLI_ENABLE_DWARF` environment variable is non-empty.
     pub emit_dwarf: bool,
-    /// How to merge the shared chunks.
-    ///
-    /// The default model is not subject to semver stability guarantees.
+    /// A cost model under which chunk optimization is performed.
     ///
     /// Default: `None`, which picks a default model based on the output target.
+    /// This default model is not subject to semver stability guarantees.
     pub cost_model: Option<CostModel>,
     /// Enables explicit tests for assumptions we make about the input wasm file during integration testing.
     #[doc(hidden)]
