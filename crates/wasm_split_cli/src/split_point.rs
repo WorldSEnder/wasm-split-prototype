@@ -303,26 +303,11 @@ pub fn get_split_points_by_module(
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum SplitModuleIdentifier {
     Main,
-    Split { index: usize, name: String },
+    Split { index: usize },
     Chunk { needed_by: FixedBitSet },
 }
 
 impl SplitModuleIdentifier {
-    pub fn filename(&self, module_index: usize) -> String {
-        match self {
-            Self::Main => unreachable!("main wasm filepath is handled separately"),
-            Self::Split { name, .. } => format!("split_{name}"),
-            Self::Chunk { .. } => format!("chunk_{module_index}"),
-        }
-    }
-    pub fn loader_name(&self) -> String {
-        match self {
-            // MUST match the name in wasm_split_macros
-            Self::Split { name, .. } => format!("__wasm_split_load_{name}"),
-            _ => unreachable!("only whole modules have a loader"),
-        }
-    }
-
     /// Make this identifier also cover everything that requires `other`: the modules that
     /// require the result are a superset of those requiring either input.
     pub(crate) fn also_in(&mut self, other: &SplitModuleIdentifier) {
@@ -398,6 +383,22 @@ impl SplitProgramInfo {
     /// are loaded from the correct main module.
     pub fn canary_export_name(&self) -> &str {
         &self.canary_export_name
+    }
+    pub fn filestem(&self, identifier: &SplitModuleIdentifier, module_index: usize) -> String {
+        match identifier {
+            SplitModuleIdentifier::Main => unreachable!("main wasm filepath is handled separately"),
+            &SplitModuleIdentifier::Split { index } => format!("split_{}", self.split_names[index]),
+            SplitModuleIdentifier::Chunk { .. } => format!("chunk_{module_index}"),
+        }
+    }
+    pub fn loader_name(&self, identifier: &SplitModuleIdentifier) -> String {
+        match identifier {
+            // MUST match the name in wasm_split_macros
+            &SplitModuleIdentifier::Split { index } => {
+                format!("__wasm_split_load_{}", self.split_names[index])
+            }
+            _ => unreachable!("only whole modules have a loader"),
+        }
     }
 }
 
@@ -521,7 +522,6 @@ pub fn compute_split_modules(
         let _perf_span = perf_span.enter();
         let roots = get_split_roots(entry_points);
         let color = SplitModuleIdentifier::Split {
-            name: module_name.clone(),
             index: module_index,
         };
         program_info.split_names.push(module_name.clone());
@@ -599,12 +599,9 @@ pub fn compute_split_modules(
         }
     }
     // Then, guarantee that we have a module for each declared on in the code (so that it doesn't get lost during emit).
-    for (module_index, (out_module, _)) in split_points_by_module.iter().enumerate() {
+    for (index, _) in split_points_by_module.iter().enumerate() {
         split_module_contents
-            .entry(SplitModuleIdentifier::Split {
-                index: module_index,
-                name: out_module.clone(),
-            })
+            .entry(SplitModuleIdentifier::Split { index })
             .or_insert_with(|| {
                 // An optimization pass can sometimes merge multiple exported functions across split modules, when
                 // two modules end up doing "the same thing". In that case, a module might be completely empty, i.e.

@@ -108,9 +108,9 @@ fn run_transform(opts: Options) -> Result<SplitWasm> {
             |output_module_index, identifier, data| {
                 let output_path = match identifier {
                     SplitModuleIdentifier::Main => opts.main_out_path.to_path_buf(),
-                    _ => opts
-                        .output_dir
-                        .join(identifier.filename(output_module_index) + ".wasm"),
+                    _ => opts.output_dir.join(
+                        split_program_info.filestem(identifier, output_module_index) + ".wasm",
+                    ),
                 };
                 (identifier, output_path, data)
             },
