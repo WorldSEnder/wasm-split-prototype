@@ -53,10 +53,24 @@ fn wasm_bindgen_test_runner() -> Command {
     )
 }
 
-#[derive(PartialEq, Eq, Serialize)]
+#[derive(PartialEq, Eq)]
 #[repr(transparent)]
-#[serde(transparent)]
 struct ContentHash([u8; 32]);
+impl Serialize for ContentHash {
+    fn serialize<S>(&self, serializer: S) -> std::prelude::v1::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // inline impl of hex::encode
+        let mut bytes = [0u8; 64];
+        for (i, &byte) in self.0.iter().enumerate() {
+            const TABLE: &[u8; 16] = b"0123456789abcdef";
+            bytes[2 * i] = TABLE[((byte & 0xf0) >> 4) as usize];
+            bytes[2 * i + 1] = TABLE[(byte & 0x0f) as usize];
+        }
+        serializer.serialize_str(str::from_utf8(&bytes).unwrap())
+    }
+}
 impl std::fmt::Debug for ContentHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for d in &self.0 {
