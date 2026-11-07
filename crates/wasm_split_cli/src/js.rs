@@ -132,12 +132,16 @@ function getSharedImports() {{
             }
             let file_stem = program.filestem(name, module_index);
             let var_name = format!("__chunk_{module_index}");
-            let splits_dbg = splits
-                .ones()
-                .map(|ix| program.split_names[ix].clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            writeln!(&mut self.javascript, "/* {splits_dbg} */")?;
+            // The list of splits needing this chunk is only a debugging aid. It grows with
+            // splits × chunks, so it is withheld in release mode.
+            if self.input_module.options.debug_assertions {
+                let splits_dbg = splits
+                    .ones()
+                    .map(|ix| program.split_names[ix].clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(&mut self.javascript, "/* {splits_dbg} */")?;
+            }
             let fetcher = self.fetcher(format_args!("\"./{file_stem}.wasm\""));
             writeln!(
                 &mut self.javascript,
