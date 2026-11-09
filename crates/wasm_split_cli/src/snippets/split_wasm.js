@@ -9,7 +9,7 @@ function makeLoad(fetcher, deps) {
     const loader = async () => {
         const parallelStuff = deps.map(d => d())
         const src = fetcher()
-        src.catch(() => 0)
+        src && src.catch(() => 0)
         await Promise.all(parallelStuff)
         return instantiate(src)
     };

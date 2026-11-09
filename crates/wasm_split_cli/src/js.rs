@@ -35,14 +35,12 @@ impl<'p> LinkModuleWriter<'p> {
         match self.input_options.target {
             crate::OutputTarget::Web(_) => writeln!(
                 &mut self.javascript,
-                r#"import {{ initSync }} from "{}";
-"#,
+                r#"import {{ initSync }} from "{}""#,
                 mod_path
             )?,
             crate::OutputTarget::Bundler(_) => writeln!(
                 &mut self.javascript,
-                r#"import * as __wasm from "{}";
-"#,
+                r#"import * as __wasm from "{}""#,
                 mod_path
             )?,
         }
@@ -60,14 +58,14 @@ impl<'p> LinkModuleWriter<'p> {
         };
         Ok(write!(
             &mut self.javascript,
-            r#"let sharedImports;
+            r#"let sharedImports
 function getSharedImports() {{
     if (sharedImports === undefined) {{
-        sharedImports = {{ __wasm_split: {{ {canary_props} }} }};
-        const {{ {main_shares} }} = {main_exports};
-        Object.assign(sharedImports.__wasm_split, {{ {main_shares} }});
+        sharedImports = {{ __wasm_split: {{ {canary_props} }} }}
+        const {{ {main_shares} }} = {main_exports}
+        Object.assign(sharedImports.__wasm_split, {{ {main_shares} }})
     }}
-    return sharedImports;
+    return sharedImports
 }}
 "#
         )?)
@@ -85,25 +83,25 @@ function getSharedImports() {{
             ""
         };
         match self.input_options.target {
-            crate::OutputTarget::Web(_) => self.javascript.push_str(&format!(
+            crate::OutputTarget::Web(_) => writeln!(
+                &mut self.javascript,
                 r#"async function instantiate(src) {{
-    return {wrap}(WebAssembly.instantiateStreaming(src, getSharedImports()))
-}}
-"#
-            )),
-            crate::OutputTarget::Bundler(_) => self.javascript.push_str(&format!(
+    return src && {wrap}(WebAssembly.instantiateStreaming(src, getSharedImports()))
+}}"#
+            )?,
+            crate::OutputTarget::Bundler(_) => writeln!(
+                &mut self.javascript,
                 r#"async function instantiate(module) {{
-    return {wrap}(new WebAssembly.Instance(await module, getSharedImports()))
-}}
-"#
-            )),
+    return module && {wrap}(new WebAssembly.Instance(await module, getSharedImports()))
+}}"#
+            )?,
         }
         Ok(())
     }
     fn write_export_const(&mut self, name: &str, def: &impl std::fmt::Display) -> Result<()> {
         Ok(writeln!(
             &mut self.javascript,
-            "export const {name} = {def};"
+            "export const {name} = {def}"
         )?)
     }
     fn fetcher<'pth>(&self, file_path: impl 'pth + std::fmt::Display) -> String {
@@ -147,7 +145,7 @@ function getSharedImports() {{
             let fetcher = self.fetcher(format_args!("\"./{file_stem}.wasm\""));
             writeln!(
                 &mut self.javascript,
-                "const {var_name} = makeLoad({fetcher}, []);"
+                "const {var_name} = makeLoad({fetcher}, [])"
             )?;
             for split in splits.ones() {
                 let split = &program.split_names[split];
@@ -173,7 +171,7 @@ function getSharedImports() {{
             let deps = split_deps.remove(split).unwrap_or_default();
             let deps = deps.join(", ");
             let fetch_opts = if is_empty {
-                "() => async (_imp) => ({})".to_string()
+                "() => undefined".to_string()
             } else {
                 self.fetcher(format_args!("\"./{file_stem}.wasm\""))
             };
