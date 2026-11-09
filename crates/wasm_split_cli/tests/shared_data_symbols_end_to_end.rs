@@ -534,7 +534,7 @@ fn split_wasm(wasm: &[u8]) -> Output {
                 .filter_map(|dep| {
                     let index: usize = dep
                         .trim()
-                        .strip_prefix("__chunk_")
+                        .strip_prefix("_c")
                         .expect("chunk dependency")
                         .parse()
                         .expect("chunk index");
